@@ -1,6 +1,6 @@
-# Kora Delivery Platform
+# delivery_app
 
-Kora is a configuration-first, multi-service delivery platform foundation for Ethiopia. It starts with ETB, an Ethiopian launch configuration, and English UI copy while keeping cities, zones, fees, languages, providers, and service categories configurable. **Kora is a working name only**; it must not be used publicly before trademark, business-name, domain, and store-availability checks are recorded.
+delivery_app is a configuration-first, multi-service delivery platform foundation for Ethiopia. It starts with ETB, an Ethiopian launch configuration, and English UI copy while keeping cities, zones, fees, languages, providers, and service categories configurable.
 
 ## What is in this repository
 

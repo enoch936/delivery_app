@@ -1,5 +1,5 @@
 {
-  "name": "@kora/merchant-web",
+  "name": "@delivery-app/merchant-web",
   "private": true,
   "version": "0.1.0",
   "scripts": {

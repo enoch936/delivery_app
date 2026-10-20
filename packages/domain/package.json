@@ -1,5 +1,5 @@
 {
-  "name": "@kora/domain",
+  "name": "@delivery-app/domain",
   "private": true,
   "version": "0.1.0",
   "type": "module",

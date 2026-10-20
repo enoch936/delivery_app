@@ -1,9 +1,9 @@
 :root {
-  --kora-color-ink: #263127;
-  --kora-color-paper: #f5f2e8;
-  --kora-color-action: #ed6947;
-  --kora-color-ops: #dcff77;
-  --kora-radius-md: 0.5rem;
-  --kora-space-4: 1rem;
-  --kora-space-8: 2rem;
+  --delivery-color-ink: #263127;
+  --delivery-color-paper: #f5f2e8;
+  --delivery-color-action: #ed6947;
+  --delivery-color-ops: #dcff77;
+  --delivery-radius-md: 0.5rem;
+  --delivery-space-4: 1rem;
+  --delivery-space-8: 2rem;
 }

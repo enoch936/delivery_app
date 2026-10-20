@@ -1,19 +1,19 @@
-name: kora-delivery
+name: delivery_app
 
 services:
   db:
     image: postgis/postgis:16-3.4
     environment:
-      POSTGRES_DB: kora
-      POSTGRES_USER: kora
-      POSTGRES_PASSWORD: kora
+      POSTGRES_DB: delivery_app
+      POSTGRES_USER: delivery_app
+      POSTGRES_PASSWORD: delivery_app
     ports:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infrastructure:/workspace/infrastructure:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U kora -d kora"]
+      test: ["CMD-SHELL", "pg_isready -U delivery_app -d delivery_app"]
       interval: 5s
       timeout: 5s
       retries: 10

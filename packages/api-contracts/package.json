@@ -1,5 +1,5 @@
 {
-  "name": "@kora/api-contracts",
+  "name": "@delivery-app/api-contracts",
   "private": true,
   "version": "0.1.0",
   "type": "module",

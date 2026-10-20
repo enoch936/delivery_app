@@ -1,7 +1,7 @@
 # Architecture foundation
 
 **Status:** accepted for Milestones 0–1 on 2026-10-20.
-**Working brand:** Kora (not cleared for public use).
+**Project name:** delivery_app.
 
 ## Chosen shape
 

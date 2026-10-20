@@ -4,7 +4,7 @@ export default function OperationsHome() {
   return (
     <main>
       <header>
-        <p className="eyebrow">KORA / OPERATIONS</p>
+        <p className="eyebrow">DELIVERY_APP / OPERATIONS</p>
         <h1>Operate deliberately.</h1>
         <p className="lede">The operations console is connected only after an authenticated API and role policy are in place. No metric below is presented as live data.</p>
       </header>

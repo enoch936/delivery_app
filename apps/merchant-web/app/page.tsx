@@ -7,7 +7,7 @@ const journeys = [
 
 export default function MerchantHome() {
   return <main>
-    <header><p className="eyebrow">KORA / MERCHANT</p><h1>Make every handoff count.</h1><p className="lede">A merchant workspace designed around reliable fulfilment, not decorative dashboards.</p></header>
+    <header><p className="eyebrow">DELIVERY_APP / MERCHANT</p><h1>Make every handoff count.</h1><p className="lede">A merchant workspace designed around reliable fulfilment, not decorative dashboards.</p></header>
     <section className="journeys" aria-label="Merchant capability roadmap">
       {journeys.map(([number, title, detail]) => <article key={number}><span>{number}</span><h2>{title}</h2><p>{detail}</p></article>)}
     </section>

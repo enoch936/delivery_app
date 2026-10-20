@@ -18,7 +18,7 @@ async function bootstrap(): Promise<void> {
     reply.header("x-request-id", requestId);
     done();
   });
-  const document = SwaggerModule.createDocument(app, new DocumentBuilder().setTitle("Kora Delivery API").setDescription("Versioned API contracts for the Kora delivery platform.").setVersion("0.1.0").build());
+  const document = SwaggerModule.createDocument(app, new DocumentBuilder().setTitle("delivery_app API").setDescription("Versioned API contracts for delivery_app.").setVersion("0.1.0").build());
   SwaggerModule.setup("docs", app, document, { jsonDocumentUrl: "docs/openapi.json" });
   await app.listen({ port: config.port, host: "0.0.0.0" });
 }

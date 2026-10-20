@@ -1,8 +1,8 @@
 {
-  "name": "kora-delivery-platform",
+  "name": "delivery_app",
   "private": true,
   "version": "0.1.0",
-  "description": "Configuration-first delivery platform foundation for Ethiopia and East Africa.",
+  "description": "Configuration-first delivery app foundation for Ethiopia and East Africa.",
   "packageManager": "npm@11.17.0",
   "engines": {
     "node": ">=24.11.0 <25",
@@ -18,11 +18,11 @@
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run typecheck",
-    "dev:api": "npm run dev --workspace @kora/api",
-    "dev:merchant": "npm run dev --workspace @kora/merchant-web",
-    "dev:admin": "npm run dev --workspace @kora/admin-web",
-    "db:migrate": "docker compose exec -T db psql -U kora -d kora -f /workspace/infrastructure/postgres/migrations/0001_platform_core.sql",
-    "db:seed": "docker compose exec -T db psql -U kora -d kora -f /workspace/infrastructure/postgres/seeds/0001_demo_configuration.sql"
+    "dev:api": "npm run dev --workspace @delivery-app/api",
+    "dev:merchant": "npm run dev --workspace @delivery-app/merchant-web",
+    "dev:admin": "npm run dev --workspace @delivery-app/admin-web",
+    "db:migrate": "docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/migrations/0001_platform_core.sql",
+    "db:seed": "docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/seeds/0001_demo_configuration.sql"
   },
   "devDependencies": {
     "@types/node": "26.6.5",
