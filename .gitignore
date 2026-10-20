@@ -1,0 +1,25 @@
+# Dependencies and build output
+node_modules/
+.next/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Local configuration and generated runtime data
+.env
+.env.local
+!.env.example
+postgres-data/
+redis-data/
+
+# Mobile tooling
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

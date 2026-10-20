@@ -1,0 +1,12 @@
+:root { color-scheme: dark; --ink: #f8f4ea; --muted: #b7b3ab; --line: #38352f; --accent: #dcff77; --surface: #1a1917; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #12110f; color: var(--ink); font-family: Arial, Helvetica, sans-serif; }
+main { max-width: 1120px; margin: 0 auto; padding: 9rem 2rem; }
+.eyebrow { color: var(--accent); letter-spacing: .16em; font-size: .76rem; font-weight: 700; }
+h1 { font-size: clamp(3rem, 9vw, 7.2rem); letter-spacing: -.07em; margin: .5rem 0 1.4rem; line-height: .9; }
+.lede { color: var(--muted); font-size: 1.15rem; max-width: 42rem; line-height: 1.6; }
+.status-card { display: flex; gap: 1rem; align-items: flex-start; border: 1px solid var(--line); background: var(--surface); padding: 1.3rem; margin: 3.5rem 0; border-radius: .5rem; }
+.status-card span { color: var(--accent); margin-top: .25rem; }.status-card p, article p { color: var(--muted); margin-bottom: 0; line-height: 1.5; }
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); }
+article { background: #12110f; padding: 1.5rem; min-height: 155px; } h2 { font-size: 1.1rem; margin-top: 0; }
+@media (max-width: 700px) { main { padding: 4rem 1.25rem; } .grid { grid-template-columns: 1fr; } }
