@@ -7,9 +7,11 @@ import { CheckoutModule } from "./modules/checkout/checkout.module.js";
 import { UsersModule } from "./modules/users/users.module.js";
 import { OrdersModule } from "./modules/orders/orders.module.js";
 import { MerchantModule } from "./modules/merchant/merchant.module.js";
+import { CourierModule } from "./modules/courier/courier.module.js";
 
 @Module({ imports: [HealthModule, PlatformModule, AuthModule,     DiscoveryModule,
     CheckoutModule,     UsersModule,
     OrdersModule,
-    MerchantModule] })
+    MerchantModule,
+    CourierModule] })
 export class AppModule {}
