@@ -41,6 +41,9 @@ export function assertTransition(from: OrderStatus, to: OrderStatus): void {
   if (!canTransition(from, to)) throw new Error(`Invalid order transition: ${from} -> ${to}`);
 }
 
+export const canTransitionOrder = canTransition;
+export const assertOrderTransition = assertTransition;
+
 export function isTerminal(status: OrderStatus): boolean {
   return status === "DELIVERED" || status === "CANCELLED" || status === "REFUNDED";
 }
