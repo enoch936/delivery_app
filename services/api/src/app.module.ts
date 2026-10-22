@@ -8,10 +8,14 @@ import { UsersModule } from "./modules/users/users.module.js";
 import { OrdersModule } from "./modules/orders/orders.module.js";
 import { MerchantModule } from "./modules/merchant/merchant.module.js";
 import { CourierModule } from "./modules/courier/courier.module.js";
+import { AdminModule } from "./modules/admin/admin.module.js";
+import { BusinessModule } from "./modules/business/business.module.js";
 
 @Module({ imports: [HealthModule, PlatformModule, AuthModule,     DiscoveryModule,
     CheckoutModule,     UsersModule,
     OrdersModule,
     MerchantModule,
-    CourierModule] })
+    CourierModule,
+    AdminModule,
+    BusinessModule] })
 export class AppModule {}
