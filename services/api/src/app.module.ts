@@ -21,6 +21,7 @@ import { LedgerModule } from "./modules/ledger/ledger.module.js";
 import { ReportsModule } from "./modules/reports/reports.module.js";
 import { PromotionsModule } from "./modules/promotions/promotions.module.js";
 import { ReviewsModule } from "./modules/reviews/reviews.module.js";
+import { ZonesModule } from "./modules/zones/zones.module.js";
 
 @Module({ imports: [HealthModule, PlatformModule, AuthModule,     DiscoveryModule,
     CheckoutModule,     UsersModule,
@@ -39,5 +40,6 @@ import { ReviewsModule } from "./modules/reviews/reviews.module.js";
     LedgerModule,
     ReportsModule,
     PromotionsModule,
-    ReviewsModule] })
+    ReviewsModule,
+    ZonesModule] })
 export class AppModule {}
