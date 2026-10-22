@@ -12,6 +12,8 @@ import { AdminModule } from "./modules/admin/admin.module.js";
 import { BusinessModule } from "./modules/business/business.module.js";
 import { NotificationsModule } from "./modules/notifications/notifications.module.js";
 import { ChatModule } from "./modules/chat/chat.module.js";
+import { PaymentsModule } from "./modules/payments/payments.module.js";
+import { SupportModule } from "./modules/support/support.module.js";
 
 @Module({ imports: [HealthModule, PlatformModule, AuthModule,     DiscoveryModule,
     CheckoutModule,     UsersModule,
@@ -21,5 +23,7 @@ import { ChatModule } from "./modules/chat/chat.module.js";
     AdminModule,
     BusinessModule,
     NotificationsModule,
-    ChatModule] })
+    ChatModule,
+    PaymentsModule,
+    SupportModule] })
 export class AppModule {}
