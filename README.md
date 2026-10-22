@@ -28,7 +28,9 @@ This is the start of Milestones 0–1, not a production release. Checkout, payme
 5. Seed synthetic configuration: `npm run db:seed`.
 6. In separate terminals run `npm run dev:api`, `npm run dev:merchant`, and `npm run dev:admin`.
 
-The API exposes `GET /health/live`, `GET /health/ready`, and OpenAPI at `/docs`. Merchant and admin foundations run on ports 3001 and 3002 respectively.
+The API exposes `GET /api/health/live`, `GET /api/health/ready`, versioned routes under `/api/v1`, and OpenAPI at `/docs`. Merchant and admin foundations run on ports 3001 and 3002 respectively.
+
+After migrations and seeds, discovery endpoints such as `GET /api/v1/service-categories`, `GET /api/v1/merchants`, and `GET /api/v1/search?q=teff` return persisted demo catalogue data for the configured launch city.
 
 ## Quality commands
 

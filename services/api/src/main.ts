@@ -1,3 +1,4 @@
+import "dotenv/config";
 import "reflect-metadata";
 import { ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
@@ -10,6 +11,7 @@ import { readRuntimeConfig } from "./config/runtime-config.js";
 async function bootstrap(): Promise<void> {
   const config = readRuntimeConfig();
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter({ logger: config.nodeEnv === "production" }));
+  app.setGlobalPrefix("api");
   app.enableCors({ origin: [...config.corsOrigins], credentials: true, allowedHeaders: ["content-type", "authorization", "idempotency-key", "x-request-id"] });
   app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }));
   app.enableShutdownHooks();

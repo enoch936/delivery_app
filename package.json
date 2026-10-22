@@ -21,8 +21,8 @@
     "dev:api": "npm run dev --workspace @delivery-app/api",
     "dev:merchant": "npm run dev --workspace @delivery-app/merchant-web",
     "dev:admin": "npm run dev --workspace @delivery-app/admin-web",
-    "db:migrate": "docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/migrations/0001_platform_core.sql",
-    "db:seed": "docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/seeds/0001_demo_configuration.sql"
+    "db:migrate": "docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/migrations/0001_platform_core.sql && docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/migrations/0002_identity_sessions.sql && docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/migrations/0003_catalog_discovery.sql",
+    "db:seed": "docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/seeds/0001_demo_configuration.sql && docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/seeds/0002_demo_catalog.sql"
   },
   "devDependencies": {
     "@types/node": "26.6.5",
