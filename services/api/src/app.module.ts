@@ -22,6 +22,7 @@ import { ReportsModule } from "./modules/reports/reports.module.js";
 import { PromotionsModule } from "./modules/promotions/promotions.module.js";
 import { ReviewsModule } from "./modules/reviews/reviews.module.js";
 import { ZonesModule } from "./modules/zones/zones.module.js";
+import { AddressesModule } from "./modules/addresses/addresses.module.js";
 
 @Module({ imports: [HealthModule, PlatformModule, AuthModule,     DiscoveryModule,
     CheckoutModule,     UsersModule,
@@ -41,5 +42,6 @@ import { ZonesModule } from "./modules/zones/zones.module.js";
     ReportsModule,
     PromotionsModule,
     ReviewsModule,
-    ZonesModule] })
+    ZonesModule,
+    AddressesModule] })
 export class AppModule {}
