@@ -17,6 +17,7 @@ import { SupportModule } from "./modules/support/support.module.js";
 import { TrackingModule } from "./modules/tracking/tracking.module.js";
 import { ConfigModule } from "./modules/config/config.module.js";
 import { DispatchModule } from "./modules/dispatch/dispatch.module.js";
+import { LedgerModule } from "./modules/ledger/ledger.module.js";
 
 @Module({ imports: [HealthModule, PlatformModule, AuthModule,     DiscoveryModule,
     CheckoutModule,     UsersModule,
@@ -31,5 +32,6 @@ import { DispatchModule } from "./modules/dispatch/dispatch.module.js";
     SupportModule,
     TrackingModule,
     ConfigModule,
-    DispatchModule] })
+    DispatchModule,
+    LedgerModule] })
 export class AppModule {}
