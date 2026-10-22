@@ -33,12 +33,15 @@ const transitions: Record<OrderStatus, readonly OrderStatus[]> = {
   REFUNDED: []
 };
 
-export function canTransition(from: OrderStatus, to: OrderStatus): boolean {
+const merchantOnly: readonly OrderStatus[] = ["ACCEPTED_BY_MERCHANT", "PREPARING", "READY_FOR_PICKUP"];
+
+export function canTransition(orderType: string, from: OrderStatus, to: OrderStatus): boolean {
+  if (orderType === "PARCEL" && (merchantOnly.includes(to) || merchantOnly.includes(from))) return false;
   return transitions[from]?.includes(to) ?? false;
 }
 
-export function assertTransition(from: OrderStatus, to: OrderStatus): void {
-  if (!canTransition(from, to)) throw new Error(`Invalid order transition: ${from} -> ${to}`);
+export function assertTransition(_orderType: string, from: OrderStatus, to: OrderStatus): void {
+  if (!canTransition(_orderType, from, to)) throw new Error(`Invalid order transition: ${from} -> ${to}`);
 }
 
 export const canTransitionOrder = canTransition;
