@@ -19,6 +19,7 @@ import { ConfigModule } from "./modules/config/config.module.js";
 import { DispatchModule } from "./modules/dispatch/dispatch.module.js";
 import { LedgerModule } from "./modules/ledger/ledger.module.js";
 import { ReportsModule } from "./modules/reports/reports.module.js";
+import { PromotionsModule } from "./modules/promotions/promotions.module.js";
 
 @Module({ imports: [HealthModule, PlatformModule, AuthModule,     DiscoveryModule,
     CheckoutModule,     UsersModule,
@@ -35,5 +36,6 @@ import { ReportsModule } from "./modules/reports/reports.module.js";
     ConfigModule,
     DispatchModule,
     LedgerModule,
-    ReportsModule] })
+    ReportsModule,
+    PromotionsModule] })
 export class AppModule {}
