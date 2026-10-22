@@ -10,6 +10,8 @@ import { MerchantModule } from "./modules/merchant/merchant.module.js";
 import { CourierModule } from "./modules/courier/courier.module.js";
 import { AdminModule } from "./modules/admin/admin.module.js";
 import { BusinessModule } from "./modules/business/business.module.js";
+import { NotificationsModule } from "./modules/notifications/notifications.module.js";
+import { ChatModule } from "./modules/chat/chat.module.js";
 
 @Module({ imports: [HealthModule, PlatformModule, AuthModule,     DiscoveryModule,
     CheckoutModule,     UsersModule,
@@ -17,5 +19,7 @@ import { BusinessModule } from "./modules/business/business.module.js";
     MerchantModule,
     CourierModule,
     AdminModule,
-    BusinessModule] })
+    BusinessModule,
+    NotificationsModule,
+    ChatModule] })
 export class AppModule {}
