@@ -24,7 +24,7 @@ Use the direct (non-pooled) Neon host for migrations and seeds. Use the pooled h
 
 Neon migrations `0001`–`0008` and both demo seeds are applied to the `production` branch. Stripe test checkout was verified end-to-end against this deployment: the hosted checkout completed, the signed webhook was accepted, the payment became `SUCCEEDED`, and the order became `CONFIRMED`/`PAID`.
 
-Demo login: phone `+251918184887`, OTP `123456`. This account has customer, merchant-staff and admin roles plus owner membership in both seeded merchants so all three clients can be exercised. OTP requests are rate-limited; use the development code and wait if the limit is reached.
+Demo login: phone `+251918184887`, OTP `123456`. This account has customer, merchant-staff and admin roles plus owner membership in both seeded merchants so all three clients can be exercised. OTP requests are rate-limited; use the development code and wait if the limit is reached. Both Vercel portals were loaded in a browser against the deployed API with this session and rendered their live merchant/admin data.
 
 ## API on Render
 
