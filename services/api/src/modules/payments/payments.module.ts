@@ -1,12 +1,17 @@
 import { Module } from "@nestjs/common";
-import { readRuntimeConfig } from "../../config/runtime-config.js";
-import { PaymentsController } from "./payments.controller.js";
+import { DatabaseModule } from "../../database/database.module.js";
+import { AuthModule } from "../auth/auth.module.js";
+import { LedgerModule } from "../ledger/ledger.module.js";
+import { NotificationsModule } from "../notifications/notifications.module.js";
+import { OrdersModule } from "../orders/orders.module.js";
+import { PaymentWebhookController, PaymentsController } from "./payments.controller.js";
 import { PaymentsService } from "./payments.service.js";
-import { RUNTIME_CONFIG } from "./payments.types.js";
 
 @Module({
-  controllers: [PaymentsController],
-  providers: [PaymentsService, { provide: RUNTIME_CONFIG, useFactory: readRuntimeConfig }],
+  imports: [AuthModule, OrdersModule, LedgerModule, NotificationsModule, DatabaseModule],
+  controllers: [PaymentsController, PaymentWebhookController],
+  providers: [PaymentsService],
   exports: [PaymentsService]
 })
 export class PaymentsModule {}
+

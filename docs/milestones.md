@@ -3,15 +3,15 @@
 | Milestone | Status | Evidence / remaining gate |
 | --- | --- | --- |
 | 0: discovery and architecture | In progress | Architecture, ADRs, domain model, screen map, threat model and readiness register exist. Provider/cost/legal research and brand clearance remain. |
-| 1: project foundation | In progress | Monorepo, API, portals, migrations, Docker Compose, CI and domain tests exist. Docker/Flutter validation remains blocked by local tooling. |
-| 2: identity and access | In progress | Database-backed OTP challenges, opaque sessions, customer role assignment, `/api/v1/users/me`, session revocation, audit records, and unit tests are implemented. A real SMS provider, RBAC policy scopes, refresh tokens, and Docker migration verification remain. |
-| 3: discovery and catalogue | In progress | Catalog migration, demo seed merchants/products, service categories, merchant/product listing, search, and platform category configuration are implemented. Customer addresses, inventory-aware cart rules, mobile UI, and geospatial zone filtering remain. |
-| 4: checkout, orders and pricing | Not started | Authoritative quotes, transactions, idempotency and receipts. |
-| 5: courier and dispatch | Not started | Courier onboarding, assignment locking and proof. |
-| 6: payments | Not started | Verified provider, webhook, ledger and reconciliation. |
-| 7: tracking, chat, notifications | Not started | Location freshness, real-time authorization and reconnect. |
-| 8: business/admin tools | Not started | Authorized operational workflows and reports. |
-| 9: reliability/security | Not started | Offline sync, resilience, security verification. |
-| 10: production release | Not started | Staging, provider approvals, runbooks and acceptance gates. |
+| 1: project foundation | Complete (local) | Monorepo, API, four clients, migrations, seeds, Docker Compose and CI exist. API/web typecheck, tests and builds plus Flutter analyze/tests pass locally. Migrations `0001`–`0007` were applied to the local PostgreSQL instance and the API health check passes. A database-backed HTTP integration suite and CI migration/seed job exist; a clean CI fresh-install run remains pending. |
+| 2: identity and access | In progress | Database-backed OTP challenges, opaque access/refresh sessions, role assignment, revocation, `/api/v1/auth/me`, audit records and unit tests exist. A real SMS provider, reviewed RBAC policy scopes and production secret management remain. |
+| 3: discovery and catalogue | Complete (sandbox) | Categories, merchants, search, zones, favorites, addresses, inventory-aware cart and the customer mobile browse/cart flows exist. Geospatial zone filtering still depends on configured PostGIS data. |
+| 4: checkout, orders and pricing | Complete (sandbox) | Authoritative quotes, transactional order creation, idempotency keys, order lifecycle, delivery OTP, receipts/timeline, cancellation policy and the customer checkout UI exist. |
+| 5: courier and dispatch | Complete (sandbox) | Courier onboarding/documents, approval workflow, availability/location streaming, scored offers with expiry, assignment locking, pickup/transit/delivery transitions, proof code, earnings and courier mobile UI exist. Background location permissions/configuration are in place for Android and iOS. |
+| 6: payments | In progress | Sandbox and cash flows, webhook verification/deduplication, ledger postings, refunds/reconciliation records and finance reports exist. A verified Chapa/Telebirr integration, settlement rules and reconciliation sign-off are blocked on credentials and approval. |
+| 7: tracking, chat, notifications | In progress | Courier location samples, customer tracking view, order/chat/support APIs, persisted notifications, device-token registration, FCM push dispatch and mobile offline queues exist. Android customer/courier FCM tokens were accepted by Firebase and a queued push reached `SENT`. App-side foreground notification UX, iOS APNs verification, reconnect hardening and full offline sync testing remain. |
+| 8: business/admin tools | Complete (sandbox) | Merchant portal (orders, catalog, inventory, settlements) and operations console (dashboard, orders/reports, merchants, couriers/documents, users/roles, configuration, audit) are implemented against authorized APIs. |
+| 9: reliability/security | Not started | Offline queueing/sync paths exist, but cross-device conflict testing, provider outage drills, load/penetration testing and independent security assessment remain. |
+| 10: production release | Not started | Staging, provider approvals, signing/store workflows, runbooks and acceptance gates remain. |
 
-The foundation must not be marked complete until actual Docker, build, and CI evidence has been recorded.
+The foundation must not be marked complete for production until staging evidence and every release gate have passed.

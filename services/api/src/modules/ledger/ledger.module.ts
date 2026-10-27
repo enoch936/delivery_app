@@ -1,12 +1,14 @@
 import { Module } from "@nestjs/common";
-import { readRuntimeConfig } from "../../config/runtime-config.js";
+import { DatabaseModule } from "../../database/database.module.js";
+import { AuthModule } from "../auth/auth.module.js";
 import { LedgerController } from "./ledger.controller.js";
 import { LedgerService } from "./ledger.service.js";
-import { RUNTIME_CONFIG } from "./ledger.types.js";
 
 @Module({
+  imports: [AuthModule, DatabaseModule],
   controllers: [LedgerController],
-  providers: [LedgerService, { provide: RUNTIME_CONFIG, useFactory: readRuntimeConfig }],
+  providers: [LedgerService],
   exports: [LedgerService]
 })
 export class LedgerModule {}
+

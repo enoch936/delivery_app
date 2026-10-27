@@ -1,15 +1,29 @@
-import { Body, Controller, Post } from "@nestjs/common";
+import { Body, Controller, Post, Req, UseGuards } from "@nestjs/common";
+import { ApiBearerAuth, ApiCreatedResponse, ApiTags } from "@nestjs/swagger";
+import { Type } from "class-transformer";
+import { IsInt, IsISO8601, IsOptional, IsString, IsUUID, Length, Matches, Max, Min } from "class-validator";
+import { requireUser } from "../../common/auth-context.js";
+import { SessionGuard, type AuthenticatedRequest } from "../auth/session.guard.js";
 import { CheckoutService } from "./checkout.service.js";
 
-@Controller("api/v1/checkout")
+class CreateQuoteDto {
+  @IsOptional() @IsUUID() merchantId?: string;
+  @IsUUID() deliveryAddressId!: string;
+  @IsOptional() @IsString() @Length(3, 40) @Matches(/^[A-Za-z0-9-]+$/) promotionCode?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(1_000_000) tipMinor?: number;
+  @IsOptional() @IsISO8601() scheduledFor?: string;
+}
+
+@ApiTags("checkout")
+@ApiBearerAuth()
+@UseGuards(SessionGuard)
+@Controller("v1/checkout")
 export class CheckoutController {
   constructor(private readonly service: CheckoutService) {}
 
   @Post("quote")
-  createQuote(@Body() body: { currency: string; lines: { productId: string; displayName: string; quantity: number; unitPriceMinor: string }[]; discountMinor?: string }) {
-    const lines = body.lines.map((line) => ({ ...line, unitPriceMinor: BigInt(line.unitPriceMinor) }));
-    const input: { currency: string; lines: { productId: string; displayName: string; quantity: number; unitPriceMinor: bigint }[]; discountMinor?: bigint } = { currency: body.currency, lines };
-    if (body.discountMinor) input.discountMinor = BigInt(body.discountMinor);
-    return this.service.createQuote(input);
+  @ApiCreatedResponse({ description: "A server-calculated, expiring checkout quote." })
+  createQuote(@Req() request: AuthenticatedRequest, @Body() body: CreateQuoteDto) {
+    return this.service.createQuote({ ...body, userId: requireUser(request).id });
   }
 }

@@ -6,7 +6,69 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 24 }
+        with: { node-version: 24, cache: npm }
       - run: npm ci
+      - run: npm run build
       - run: npm run typecheck
       - run: npm test
+
+  db-integration:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: delivery_app
+          POSTGRES_USER: delivery_app
+          POSTGRES_PASSWORD: delivery_app
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U delivery_app -d delivery_app"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGPASSWORD: delivery_app
+      DATABASE_URL: postgresql://delivery_app:delivery_app@localhost:5432/delivery_app
+      NODE_ENV: development
+      OTP_PROVIDER: development
+      OTP_DEVELOPMENT_CODE: "123456"
+      AUTH_TOKEN_SECRET: ci-integration-secret-value-at-least-32-characters
+      PAYMENTS_PROVIDER: disabled
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: npm run build
+      - name: Apply migrations and demo seed
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          for file in infrastructure/postgres/migrations/*.sql; do
+            echo "Applying $file"
+            psql -h localhost -U delivery_app -d delivery_app -v ON_ERROR_STOP=1 -f "$file"
+          done
+          for file in infrastructure/postgres/seeds/*.sql; do
+            echo "Seeding $file"
+            psql -h localhost -U delivery_app -d delivery_app -v ON_ERROR_STOP=1 -f "$file"
+          done
+      - run: npm test --workspace @delivery-app/api
+
+  mobile:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: [customer-mobile, courier-mobile]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+      - run: flutter pub get
+        working-directory: apps/${{ matrix.app }}
+      - run: flutter analyze
+        working-directory: apps/${{ matrix.app }}
+      - run: flutter test
+        working-directory: apps/${{ matrix.app }}

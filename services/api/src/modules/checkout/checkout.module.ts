@@ -1,15 +1,15 @@
 import { Module } from "@nestjs/common";
-import { readRuntimeConfig } from "../../config/runtime-config.js";
+import { DatabaseModule } from "../../database/database.module.js";
+import { AuthModule } from "../auth/auth.module.js";
 import { CheckoutController } from "./checkout.controller.js";
 import { CheckoutService } from "./checkout.service.js";
-import { RUNTIME_CONFIG } from "./checkout.types.js";
 
 @Module({
+  imports: [AuthModule, DatabaseModule],
   controllers: [CheckoutController],
-  providers: [
-    CheckoutService,
-    { provide: RUNTIME_CONFIG, useFactory: readRuntimeConfig }
-  ],
+  providers: [CheckoutService],
   exports: [CheckoutService]
 })
 export class CheckoutModule {}
+
+

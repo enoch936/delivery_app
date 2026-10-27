@@ -20,6 +20,19 @@ class VerifyOtpDto extends RequestOtpDto {
   challengeId!: string;
 }
 
+class RefreshTokenDto {
+  @IsString()
+  @Length(43, 128)
+  refreshToken!: string;
+}
+
+class LogoutDto {
+  @IsOptional()
+  @IsString()
+  @Length(43, 128)
+  refreshToken?: string;
+}
+
 @ApiTags("authentication")
 @Controller("v1/auth")
 export class AuthController {
@@ -69,17 +82,4 @@ export class AuthController {
   async revoke(@Req() request: AuthenticatedRequest, @Headers("authorization") authorization: string, @Headers("x-request-id") requestId: string | undefined): Promise<void> {
     await this.authService.revoke(authorization.slice(7), requestId ?? null);
   }
-}
-
-class RefreshTokenDto {
-  @IsString()
-  @Length(43, 128)
-  refreshToken!: string;
-}
-
-class LogoutDto {
-  @IsOptional()
-  @IsString()
-  @Length(43, 128)
-  refreshToken?: string;
 }

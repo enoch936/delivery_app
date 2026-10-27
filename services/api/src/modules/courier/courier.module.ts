@@ -1,12 +1,13 @@
 import { Module } from "@nestjs/common";
-import { readRuntimeConfig } from "../../config/runtime-config.js";
+import { AuthModule } from "../auth/auth.module.js";
+import { OrdersModule } from "../orders/orders.module.js";
 import { CourierController } from "./courier.controller.js";
 import { CourierService } from "./courier.service.js";
-import { RUNTIME_CONFIG } from "./courier.types.js";
 
 @Module({
+  imports: [AuthModule, OrdersModule],
   controllers: [CourierController],
-  providers: [CourierService, { provide: RUNTIME_CONFIG, useFactory: readRuntimeConfig }],
+  providers: [CourierService],
   exports: [CourierService]
 })
 export class CourierModule {}

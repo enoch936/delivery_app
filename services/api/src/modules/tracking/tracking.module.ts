@@ -1,12 +1,7 @@
 import { Module } from "@nestjs/common";
-import { readRuntimeConfig } from "../../config/runtime-config.js";
+import { AuthModule } from "../auth/auth.module.js";
 import { TrackingController } from "./tracking.controller.js";
 import { TrackingService } from "./tracking.service.js";
-import { RUNTIME_CONFIG } from "./tracking.types.js";
 
-@Module({
-  controllers: [TrackingController],
-  providers: [TrackingService, { provide: RUNTIME_CONFIG, useFactory: readRuntimeConfig }],
-  exports: [TrackingService]
-})
+@Module({ imports: [AuthModule], controllers: [TrackingController], providers: [TrackingService], exports: [TrackingService] })
 export class TrackingModule {}

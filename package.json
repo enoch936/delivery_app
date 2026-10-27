@@ -18,11 +18,14 @@
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run typecheck",
+    "predev:api": "node scripts/free-port.mjs 3000",
     "dev:api": "npm run dev --workspace @delivery-app/api",
     "dev:merchant": "npm run dev --workspace @delivery-app/merchant-web",
     "dev:admin": "npm run dev --workspace @delivery-app/admin-web",
-    "db:migrate": "docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/migrations/0001_platform_core.sql && docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/migrations/0002_identity_sessions.sql && docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/migrations/0003_catalog_discovery.sql",
-    "db:seed": "docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/seeds/0001_demo_configuration.sql && docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/seeds/0002_demo_catalog.sql"
+    "db:migrate": "docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/migrations/0001_platform_core.sql && docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/migrations/0002_identity_sessions.sql && docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/migrations/0003_catalog_discovery.sql && docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/migrations/0004_customer_commerce.sql && docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/migrations/0005_auth_refresh.sql && docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/migrations/0006_operations.sql && docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/migrations/0007_push_devices.sql && docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/migrations/0008_stripe_payments.sql",
+    "db:seed": "docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/seeds/0001_demo_configuration.sql && docker compose exec -T db psql -U delivery_app -d delivery_app -f /workspace/infrastructure/postgres/seeds/0002_demo_catalog.sql",
+    "db:migrate:remote": "node scripts/apply-sql.mjs migrations",
+    "db:seed:remote": "node scripts/apply-sql.mjs seeds"
   },
   "devDependencies": {
     "@types/node": "26.6.5",
@@ -30,3 +33,4 @@
     "typescript": "6.0.3"
   }
 }
+

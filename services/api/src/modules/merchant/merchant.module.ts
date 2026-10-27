@@ -1,12 +1,13 @@
 import { Module } from "@nestjs/common";
-import { readRuntimeConfig } from "../../config/runtime-config.js";
+import { AuthModule } from "../auth/auth.module.js";
+import { OrdersModule } from "../orders/orders.module.js";
 import { MerchantController } from "./merchant.controller.js";
 import { MerchantService } from "./merchant.service.js";
-import { RUNTIME_CONFIG } from "./merchant.types.js";
 
 @Module({
+  imports: [AuthModule, OrdersModule],
   controllers: [MerchantController],
-  providers: [MerchantService, { provide: RUNTIME_CONFIG, useFactory: readRuntimeConfig }],
+  providers: [MerchantService],
   exports: [MerchantService]
 })
 export class MerchantModule {}

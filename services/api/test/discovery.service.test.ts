@@ -15,7 +15,7 @@ const config: RuntimeConfig = {
   authTokenSecret: undefined,
   otpProvider: "disabled",
   otpDevelopmentCode: undefined,
-  deliveryFeeMinor: 0n, serviceFeeMinor: 0n, quoteValiditySeconds: 300, accessTokenLifetimeSeconds: 900, refreshTokenLifetimeSeconds: 2592000
+  deliveryFeeMinor: 0n, serviceFeeMinor: 0n, quoteValiditySeconds: 300, accessTokenLifetimeSeconds: 900, refreshTokenLifetimeSeconds: 2592000, paymentsProvider: "disabled", paymentWebhookSecret: undefined, chapaSecretKey: undefined, chapaWebhookSecret: undefined, stripeSecretKey: undefined, stripeWebhookSecret: undefined, paymentReturnUrl: undefined, paymentCancelUrl: undefined, courierOfferTimeoutSeconds: 45, dispatchRadiusMeters: 8000, maxPendingOffersPerCourier: 3, deliveryProofOtpRequired: true, taxRateBps: 0, mapsProvider: "disabled", pushProvider: "disabled", firebaseServiceAccountJson: undefined, publicApiBaseUrl: "http://localhost:3000", geocodingProvider: "disabled"
 };
 
 const merchant: MerchantDetailRecord = {
@@ -76,3 +76,5 @@ test("returns empty search results for blank queries", async () => {
   const result = await service.search({ q: "   " });
   assert.deepEqual(result, { items: [], total: 0 });
 });
+
+

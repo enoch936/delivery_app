@@ -1,12 +1,15 @@
 import { Module } from "@nestjs/common";
-import { readRuntimeConfig } from "../../config/runtime-config.js";
+import { DatabaseModule } from "../../database/database.module.js";
+import { AuthModule } from "../auth/auth.module.js";
+import { PushModule } from "../push/push.module.js";
 import { NotificationsController } from "./notifications.controller.js";
 import { NotificationsService } from "./notifications.service.js";
-import { RUNTIME_CONFIG } from "./notifications.types.js";
 
 @Module({
+  imports: [AuthModule, DatabaseModule, PushModule],
   controllers: [NotificationsController],
-  providers: [NotificationsService, { provide: RUNTIME_CONFIG, useFactory: readRuntimeConfig }],
+  providers: [NotificationsService],
   exports: [NotificationsService]
 })
 export class NotificationsModule {}
+

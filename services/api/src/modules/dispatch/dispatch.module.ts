@@ -1,12 +1,15 @@
 import { Module } from "@nestjs/common";
-import { readRuntimeConfig } from "../../config/runtime-config.js";
+import { DatabaseModule } from "../../database/database.module.js";
+import { AuthModule } from "../auth/auth.module.js";
+import { NotificationsModule } from "../notifications/notifications.module.js";
 import { DispatchController } from "./dispatch.controller.js";
 import { DispatchService } from "./dispatch.service.js";
-import { RUNTIME_CONFIG } from "./dispatch.types.js";
 
 @Module({
+  imports: [AuthModule, NotificationsModule, DatabaseModule],
   controllers: [DispatchController],
-  providers: [DispatchService, { provide: RUNTIME_CONFIG, useFactory: readRuntimeConfig }],
+  providers: [DispatchService],
   exports: [DispatchService]
 })
 export class DispatchModule {}
+

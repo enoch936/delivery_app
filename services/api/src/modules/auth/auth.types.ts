@@ -1,4 +1,4 @@
-export type UserRole = "customer" | "courier" | "merchant_staff" | "admin" | "support";
+export type UserRole = "customer" | "courier" | "merchant_staff" | "admin" | "support" | "operations" | "finance" | "business_admin";
 
 export type AuthenticatedUser = Readonly<{
   id: string;
@@ -65,3 +65,4 @@ export interface OtpProvider {
 export const IDENTITY_REPOSITORY = Symbol("IDENTITY_REPOSITORY");
 export const OTP_PROVIDER = Symbol("OTP_PROVIDER");
 export const RUNTIME_CONFIG = Symbol("RUNTIME_CONFIG");
+

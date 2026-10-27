@@ -1,25 +1,23 @@
 # Screen inventory and navigation map
 
-## Customer mobile (planned Flutter)
+## Customer mobile (implemented)
 
-`Onboarding → Phone / OTP → Profile → Home → Search or Category → Merchant / Service → Cart → Quote → Checkout → Order tracking → Receipt / Support`
+`Phone / OTP → Explore (categories, search, merchants) → Merchant menu → Cart → Checkout (address, quote, payment) → Order confirmation → Orders → Order detail (delivery code, timeline, cancel) → Profile`
 
-Supporting destinations: addresses, favorites, order history, notification preferences, privacy, accessibility, language, disputes, and account-deletion request.
+Session is held in memory (no persistence yet). Base URL is supplied with `--dart-define=API_BASE_URL`.
 
-## Courier mobile (planned Flutter)
+## Courier mobile (implemented)
 
-`Sign in → Verification status → Availability → Offer → Pickup → In transit → Delivery proof → Earnings`
+`Phone / OTP → Registration / review status → Today (availability, offers) → Accept offer → Arrived at merchant → Pickup → In transit → Delivery proof / notes → Earnings → Profile / documents`
 
-Supporting destinations: vehicle profile, document submission, exceptions, support, payout history, settings, and offline sync status.
+Location heartbeats currently send a demo coordinate; device GPS and background tracking are not integrated.
 
-## Merchant portal
+## Merchant portal (implemented)
 
-`Sign in → Store selector → Orders → Order detail / preparation → Catalogue → Inventory → Staff → Payouts → Reports`
+`Phone / OTP → Overview → Orders (accept/prepare/ready) → Menu & categories → Products / inventory → Locations → Settlements`
 
-The current landing route is an unauthenticated foundation page; it must not be represented as a completed merchant console.
+## Operations portal (implemented)
 
-## Operations portal
+`Phone / OTP → Overview → Orders & reports (filters/CSV) → Merchants → Couriers and document review → Users and roles → Configuration → Audit trail`
 
-`Sign in → Operations overview → Active order / map → Courier / Merchant / Customer detail → Configuration → Audit`
-
-Exact location is restricted to operationally justified roles. The current landing route is only a foundation page.
+Exact customer/courier location remains limited to operationally justified roles; map-based dispatch and live tracking screens are not yet built.
