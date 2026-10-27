@@ -1,0 +1,14 @@
+node_modules
+**/node_modules
+.git
+.local
+**/build
+**/.next
+**/dist-test
+**/.dart_tool
+*.log
+.env
+.env.local
+coverage
+.idea
+.vscode
