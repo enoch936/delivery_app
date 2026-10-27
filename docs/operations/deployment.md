@@ -13,9 +13,20 @@ DATABASE_URL="postgresql://..." npm run db:seed:remote
 
 Use the direct (non-pooled) Neon host for migrations and seeds. Use the pooled host in the API's `DATABASE_URL`.
 
+## Current demo deployment
+
+| Component | URL |
+| --- | --- |
+| API | https://delivery-app-api-v2i0.onrender.com |
+| API health | https://delivery-app-api-v2i0.onrender.com/api/health/ready |
+| Merchant portal | https://delivery-merchant-azure.vercel.app |
+| Admin portal | https://delivery-admin-kappa.vercel.app |
+
+Neon migrations `0001`–`0008` and both demo seeds are applied to the `production` branch. Stripe test checkout was verified end-to-end against this deployment: the hosted checkout completed, the signed webhook was accepted, the payment became `SUCCEEDED`, and the order became `CONFIRMED`/`PAID`.
+
 ## API on Render
 
-- Build command: `npm ci --include=dev && npm run build --workspace @delivery-app/api`
+- Build command: `npm ci --include=dev && npm run build --workspace @delivery-app/domain --workspace @delivery-app/validation --workspace @delivery-app/api-contracts && npm run build --workspace @delivery-app/api`
 - Start command: `npm run start --workspace @delivery-app/api`
 - Health check: `/api/health/ready`
 - Runtime: Node 24

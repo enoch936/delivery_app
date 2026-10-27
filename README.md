@@ -35,7 +35,13 @@ For local OTP, set `OTP_PROVIDER=development` and `OTP_DEVELOPMENT_CODE=123456` 
 
 ## Deployment
 
-The demo deployment uses Neon PostgreSQL, Render for the API, and Vercel for the merchant/admin portals. Run `DATABASE_URL=... npm run db:migrate:remote` and `DATABASE_URL=... npm run db:seed:remote` once against a new Neon branch, then set the API URL as `NEXT_PUBLIC_API_BASE_URL` on both Vercel projects. The Stripe webhook endpoint must point to `https://<api-host>/api/v1/payments/webhooks/stripe`.
+The demo deployment uses Neon PostgreSQL, Render for the API, and Vercel for the merchant/admin portals:
+
+- API: https://delivery-app-api-v2i0.onrender.com
+- Merchant portal: https://delivery-merchant-azure.vercel.app
+- Admin portal: https://delivery-admin-kappa.vercel.app
+
+Run `DATABASE_URL=... npm run db:migrate:remote` and `DATABASE_URL=... npm run db:seed:remote` once against a new Neon branch, then set the API URL as `NEXT_PUBLIC_API_BASE_URL` on both Vercel projects. The Stripe webhook endpoint must point to `https://<api-host>/api/v1/payments/webhooks/stripe`. This demo uses the development OTP code and is not production-ready.
 
 ## Quality commands
 
