@@ -71,6 +71,8 @@ export class PostgresIdentityRepository implements IdentityRepository {
       if (!user) throw new Error("User creation did not return a user.");
       if (user.account_status === "suspended" || user.account_status === "deleted") return await this.rollback(client, { status: "suspended" });
       await client.query("INSERT INTO user_role_assignments (user_id, role) VALUES ($1, 'customer') ON CONFLICT DO NOTHING", [user.id]);
+      const roleResult = await client.query<{ role: UserRole }>("SELECT role FROM user_role_assignments WHERE user_id = $1 ORDER BY role", [user.id]);
+      const roles = roleResult.rows.map((row) => row.role);
       await client.query("UPDATE auth_challenges SET consumed_at = now() WHERE id = $1", [input.challengeId]);
       const sessionResult = await client.query<{ id: string; expires_at: Date }>(
         `INSERT INTO user_sessions (user_id, token_hash, expires_at, user_agent, ip_hash)
@@ -85,7 +87,7 @@ export class PostgresIdentityRepository implements IdentityRepository {
       );
       await this.audit(client, user.id, "identity.phone_verified", "user", user.id, input.requestId, input.ipHash);
       await client.query("COMMIT");
-      return { status: "verified", session: { id: session.id, expiresAt: session.expires_at, user: { id: user.id, phoneE164: user.phone_e164, displayName: user.display_name, accountStatus: user.account_status, roles: ["customer"] } } };
+      return { status: "verified", session: { id: session.id, expiresAt: session.expires_at, user: { id: user.id, phoneE164: user.phone_e164, displayName: user.display_name, accountStatus: user.account_status, roles } } };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
