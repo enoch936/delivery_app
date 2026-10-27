@@ -39,6 +39,7 @@ Required environment variables:
 NODE_ENV=development
 OTP_PROVIDER=development
 OTP_DEVELOPMENT_CODE=123456
+OTP_REQUEST_LIMIT=100
 DATABASE_URL=postgresql://...neon.tech/neondb?sslmode=require
 AUTH_TOKEN_SECRET=<at-least-32-random-characters>
 PAYMENTS_PROVIDER=stripe

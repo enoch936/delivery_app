@@ -11,6 +11,7 @@ export type RuntimeConfig = Readonly<{
   authTokenSecret: string | undefined;
   otpProvider: "disabled" | "development";
   otpDevelopmentCode: string | undefined;
+  otpRequestLimit: number;
   deliveryFeeMinor: bigint;
   serviceFeeMinor: bigint;
   quoteValiditySeconds: number;
@@ -102,6 +103,7 @@ export function readRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     authTokenSecret,
     otpProvider,
     otpDevelopmentCode,
+    otpRequestLimit: positiveInteger(environment.OTP_REQUEST_LIMIT, 3),
     deliveryFeeMinor,
     serviceFeeMinor,
     quoteValiditySeconds,

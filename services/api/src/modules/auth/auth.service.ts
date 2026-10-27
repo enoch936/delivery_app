@@ -5,7 +5,6 @@ import { IDENTITY_REPOSITORY, OTP_PROVIDER, RUNTIME_CONFIG, type AuthSession, ty
 
 const OTP_LIFETIME_MS = 5 * 60 * 1000;
 const OTP_WINDOW_MS = 15 * 60 * 1000;
-const OTP_REQUEST_LIMIT = 3;
 
 @Injectable()
 export class AuthService {
@@ -18,7 +17,7 @@ export class AuthService {
   async requestPhoneOtp(input: Readonly<{ phoneE164: string; requestId: string | null; ipAddress: string | null }>): Promise<{ challengeId: string; expiresAt: string }> {
     const secret = this.requiredSecret();
     const recentRequests = await this.repository.countOtpRequestsSince(input.phoneE164, new Date(Date.now() - OTP_WINDOW_MS));
-    if (recentRequests >= OTP_REQUEST_LIMIT) {
+    if (recentRequests >= this.config.otpRequestLimit) {
       throw new HttpException("Too many verification requests. Please try again later.", HttpStatus.TOO_MANY_REQUESTS);
     }
     const id = randomUUID();
