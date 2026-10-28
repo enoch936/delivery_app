@@ -1606,16 +1606,18 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           {'outcome': 'succeeded'},
         );
       }
-      if (method == 'stripe') {
+      if (method == 'stripe' || method == 'telebirr') {
         final checkoutUrl = payment['checkoutUrl']?.toString();
         if (checkoutUrl == null || checkoutUrl.isEmpty) {
           throw StateError('The payment provider did not return a checkout URL.');
         }
         final launched = await launchUrl(Uri.parse(checkoutUrl), mode: LaunchMode.externalApplication);
-        if (!launched) throw StateError('Could not open the card payment page.');
+        if (!launched) throw StateError('Could not open the payment page.');
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Complete the card payment in your browser, then return and refresh the status.')),
+          SnackBar(content: Text(method == 'telebirr'
+              ? 'Complete the Telebirr payment, then return and refresh the status.'
+              : 'Complete the card payment in your browser, then return and refresh the status.')),
         );
         return;
       }
@@ -1834,11 +1836,18 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               label: const Text('Pay with card (Stripe)'),
             ),
           if (awaitingPayment && provider == 'stripe') const SizedBox(height: 8),
+          if (awaitingPayment && provider == 'telebirr')
+            FilledButton.icon(
+              onPressed: busy ? null : () => _pay('telebirr'),
+              icon: const Icon(Icons.phone_android),
+              label: const Text('Pay with Telebirr'),
+            ),
+          if (awaitingPayment && provider == 'telebirr') const SizedBox(height: 8),
           OutlinedButton(
             onPressed: busy ? null : () => _pay('cash'),
             child: const Text('Pay cash on delivery'),
           ),
-          if (awaitingPayment && provider == 'stripe')
+          if (awaitingPayment && (provider == 'stripe' || provider == 'telebirr'))
             TextButton.icon(
               onPressed: busy ? null : _refreshOrder,
               icon: const Icon(Icons.refresh),

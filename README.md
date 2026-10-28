@@ -11,7 +11,7 @@ delivery_app is a configuration-first, multi-service delivery platform foundatio
 - PostgreSQL/PostGIS migrations `0001`–`0008`, demo catalog/config seeds, Docker Compose for local dependencies, and CI for API, web builds, migrations and Flutter checks.
 - Architecture decisions, domain model, security threat model, screen inventory, runbooks, release gates, and GitHub governance documents.
 
-Stripe card checkout and refunds run against Stripe test mode, and FCM push notifications are active for registered devices. External SMS, Chapa/Telebirr, maps, and object-storage providers are still inactive. This is not a production release; see [release gates](docs/release-checklist.md).
+Stripe card checkout and refunds run against Stripe test mode, and FCM push notifications are active for registered devices. Telebirr H5 checkout, refunds, status reconciliation, and signed webhook verification are implemented but disabled until a registered merchant public key is supplied. External SMS, Chapa, maps, and object-storage providers are still inactive. This is not a production release; see [release gates](docs/release-checklist.md).
 
 ## Requirements
 
@@ -31,7 +31,7 @@ Stripe card checkout and refunds run against Stripe test mode, and FCM push noti
 
 The API exposes `GET /api/health/live`, `GET /api/health/ready`, versioned routes under `/api/v1`, and OpenAPI at `/docs`. Merchant and admin portals run on ports 3001 and 3002.
 
-For local OTP, set `OTP_PROVIDER=development` and `OTP_DEVELOPMENT_CODE=123456` in `.env`. For Stripe test checkout, set `PAYMENTS_PROVIDER=stripe`, `STRIPE_SECRET_KEY`, and `STRIPE_WEBHOOK_SECRET`. The development OTP provider is restricted to `NODE_ENV=development`.
+For local OTP, set `OTP_PROVIDER=development` and `OTP_DEVELOPMENT_CODE=123456` in `.env`. For Stripe test checkout, set `PAYMENTS_PROVIDER=stripe`, `STRIPE_SECRET_KEY`, and `STRIPE_WEBHOOK_SECRET`. For Telebirr, set `PAYMENTS_PROVIDER=telebirr` and the `TELEBIRR_*` variables documented in `.env.example`; `TELEBIRR_PUBLIC_KEY` is required for webhook verification. The development OTP provider is restricted to `NODE_ENV=development`.
 
 ## Deployment
 

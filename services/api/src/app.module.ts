@@ -29,6 +29,9 @@ import { ZonesModule } from "./modules/zones/zones.module.js";
 import { GeocodingModule } from "./modules/geocoding/geocoding.module.js";
 import { DevicesModule } from "./modules/devices/devices.module.js";
 import { SettlementsModule } from "./modules/settlements/settlements.module.js";
+import { PayoutsModule } from "./modules/payouts/payouts.module.js";
+import { CodModule } from "./modules/cod/cod.module.js";
+import { SubscriptionsModule } from "./modules/subscriptions/subscriptions.module.js";
 
 @Module({
   imports: [
@@ -61,7 +64,10 @@ import { SettlementsModule } from "./modules/settlements/settlements.module.js";
     ZonesModule,
     GeocodingModule,
     DevicesModule,
-    SettlementsModule
+    SettlementsModule,
+    PayoutsModule,
+    CodModule,
+    SubscriptionsModule
   ]
 })
 export class AppModule {}

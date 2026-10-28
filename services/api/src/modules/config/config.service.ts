@@ -30,7 +30,11 @@ export class ConfigService {
       features,
       payments: {
         provider: this.config.paymentsProvider,
-        methods: this.config.paymentsProvider === "disabled" ? ["cash"] : this.config.paymentsProvider === "sandbox" ? ["cash", "sandbox"] : ["cash", "chapa"]
+        methods: this.config.paymentsProvider === "disabled" ? ["cash"]
+          : this.config.paymentsProvider === "sandbox" ? ["cash", "sandbox"]
+            : this.config.paymentsProvider === "stripe" ? ["cash", "stripe"]
+              : this.config.paymentsProvider === "telebirr" ? ["cash", "telebirr"]
+                : ["cash", "chapa"]
       },
       tracking: { provider: this.config.mapsProvider, liveTrackingEnabled: features.live_tracking === true },
       support: { email: null, phone: null, inAppChat: true },

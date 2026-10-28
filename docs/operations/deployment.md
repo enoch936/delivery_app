@@ -66,6 +66,8 @@ FIREBASE_SERVICE_ACCOUNT_JSON=<single-line service-account JSON>
 
 Register a Stripe webhook endpoint for `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, and `checkout.session.expired`. Store its signing secret in `STRIPE_WEBHOOK_SECRET`.
 
+To use Telebirr instead, set `PAYMENTS_PROVIDER=telebirr` and configure `TELEBIRR_ENVIRONMENT`, `TELEBIRR_FABRIC_APP_ID`, `TELEBIRR_APP_SECRET`, `TELEBIRR_MERCHANT_APP_ID`, `TELEBIRR_MERCHANT_CODE`, `TELEBIRR_PRIVATE_KEY`, and the merchant/public key in `TELEBIRR_PUBLIC_KEY`. The webhook endpoint is `https://<api-host>/api/v1/payments/webhooks/telebirr`; it must be reachable from the Telebirr gateway. The test gateway is restricted to `NODE_ENV=development` or `test`.
+
 ## Portals on Vercel
 
 Create one project per app with `apps/merchant-web` and `apps/admin-web` as the project root directories. Set `NEXT_PUBLIC_API_BASE_URL=https://<api-host>/api` for the Production environment before building.

@@ -1,5 +1,5 @@
 import { BadGatewayException, BadRequestException, ConflictException, Inject, Injectable, NotFoundException, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readRuntimeConfig, type RuntimeConfig } from "../../config/runtime-config.js";
 import { DatabaseService } from "../../database/database.service.js";
 import { AuditService } from "../../common/audit.service.js";
@@ -7,12 +7,44 @@ import { OrdersService } from "../orders/orders.service.js";
 import { LedgerService } from "../ledger/ledger.service.js";
 import { NotificationsService } from "../notifications/notifications.service.js";
 import { ChapaPaymentProvider, SandboxPaymentProvider, StripePaymentProvider } from "./payments.providers.js";
+import { TelebirrPaymentProvider } from "./payments.telebirr.js";
 import type { PaymentMethod, PaymentProvider, RefundResult } from "./payments.types.js";
 
 type PaymentRow = {
   id: string; order_id: string; user_id: string; provider: string; provider_reference: string | null;
   amount_minor: string; currency: string; status: string; checkout_url: string | null; expires_at: Date | null; paid_at: Date | null;
 };
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function webhookData(payload: Record<string, unknown>): Record<string, unknown> {
+  const data = objectValue(payload["data"]);
+  if (!data) return payload;
+  return objectValue(data["object"]) ?? data;
+}
+
+function firstString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value !== "") return value;
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+  }
+  return "";
+}
+
+function paymentMethodFromProvider(provider: string): PaymentMethod | null {
+  return provider === "chapa" || provider === "stripe" || provider === "sandbox" || provider === "telebirr" ? provider : null;
+}
+
+function webhookReferences(payload: Record<string, unknown>, data: Record<string, unknown>): string[] {
+  const values = [
+    data.chapa_reference, data.merchant_reference, data.merch_order_id, data.merchOrderId,
+    data.out_trade_no, data.outTradeNo, data.tx_ref, data.trx_ref, data.reference, data.id,
+    payload.chapa_reference, payload.merchant_reference, payload.tx_ref
+  ];
+  return [...new Set(values.filter((value): value is string => typeof value === "string" && value !== ""))];
+}
 
 @Injectable()
 export class PaymentsService {
@@ -33,6 +65,7 @@ export class PaymentsService {
     if (method === "chapa" && this.config.paymentsProvider !== "chapa") throw new ServiceUnavailableException("Chapa payments are not enabled.");
     if (method === "stripe" && this.config.paymentsProvider !== "stripe") throw new ServiceUnavailableException("Stripe card payments are not enabled.");
     if (method === "sandbox" && this.config.paymentsProvider !== "sandbox") throw new ServiceUnavailableException("The sandbox payment provider is not enabled.");
+    if (method === "telebirr" && this.config.paymentsProvider !== "telebirr") throw new ServiceUnavailableException("Telebirr payments are not enabled.");
     const provider = this.providerFor(method);
     return this.database.withTransaction(async (client) => {
       const orderResult = await client.query<{ id: string; user_id: string; status: string; payment_status: string; total_minor: string; currency: string; order_number: string }>(
@@ -76,11 +109,13 @@ export class PaymentsService {
         paymentId: paymentRow.id, orderId: order.id, amountMinor: Number(order.total_minor), currency: order.currency,
         customerEmail: user.rows[0]?.email ?? null, customerPhone: user.rows[0]?.phone_e164 ?? "+251000000000",
         returnUrl: this.config.paymentReturnUrl ?? this.config.publicApiBaseUrl,
-        cancelUrl: this.config.paymentCancelUrl ?? this.config.paymentReturnUrl ?? this.config.publicApiBaseUrl
+        cancelUrl: this.config.paymentCancelUrl ?? this.config.paymentReturnUrl ?? this.config.publicApiBaseUrl,
+        idempotencyKey: `checkout-${paymentRow.id}`
       });
       const updated = await client.query<PaymentRow>(
-        "UPDATE payments SET provider_reference = $2, checkout_url = $3, expires_at = $4, updated_at = now() WHERE id = $1 RETURNING *",
-        [paymentRow.id, session.providerReference, session.checkoutUrl, session.expiresAt]
+        `UPDATE payments SET provider_reference = $2, provider_merchant_reference = $3,
+                checkout_url = $4, expires_at = $5, updated_at = now() WHERE id = $1 RETURNING *`,
+        [paymentRow.id, session.providerReference, session.merchantReference ?? null, session.checkoutUrl, session.expiresAt]
       );
       await client.query("UPDATE orders SET payment_status = 'PENDING', payment_method = $2 WHERE id = $1", [order.id, provider.name]);
       await client.query("INSERT INTO payment_attempts (payment_id, status, provider_reference, response_metadata) VALUES ($1,'PENDING',$2,$3)", [paymentRow.id, session.providerReference, JSON.stringify({ checkoutUrl: session.checkoutUrl })]);
@@ -116,20 +151,20 @@ export class PaymentsService {
   }
 
   async handleWebhook(providerName: string, rawBody: string, signature: string | undefined, payload: Record<string, unknown>): Promise<{ received: boolean }> {
-    const provider = this.providerFor(providerName === "chapa" ? "chapa" : providerName === "stripe" ? "stripe" : "sandbox");
-    const valid = provider.verifyWebhook(rawBody, signature);
-    const rawData = payload.data;
-    const data = (
-      rawData && typeof rawData === "object" && "object" in rawData && rawData.object && typeof rawData.object === "object"
-        ? rawData.object
-        : rawData && typeof rawData === "object" ? rawData : payload
-    ) as Record<string, unknown>;
-    const providerReference = String(data.tx_ref ?? data.trx_ref ?? data.reference ?? data.id ?? payload.tx_ref ?? "");
-    const eventId = String(payload.id ?? payload.event_id ?? `${providerReference}:${String(data.status ?? payload.event ?? "unknown")}`);
+    const method = paymentMethodFromProvider(providerName);
+    if (!method) throw new BadRequestException("Unsupported payment provider.");
+    const provider = this.providerFor(method);
+    const valid = provider.verifyWebhook(rawBody, signature, payload);
+    const data = webhookData(payload);
+    const references = webhookReferences(payload, data);
+    const eventStatus = firstString(data.trade_status, data.tradeStatus, data.payment_status, data.status, payload.status, payload.event);
+    const payloadHash = createHash("sha256").update(rawBody).digest("hex");
+    const eventId = firstString(payload.id, payload.event_id) || payloadHash;
     const inserted = await this.database.query<{ id: string }>(
-      `INSERT INTO payment_webhook_events (provider, provider_event_id, payload, signature_valid)
-       VALUES ($1,$2,$3,$4) ON CONFLICT (provider, provider_event_id) DO NOTHING RETURNING id`,
-      [providerName, eventId, JSON.stringify(payload), valid]
+      `INSERT INTO payment_webhook_events (provider, provider_event_id, payload, payload_hash, signature_valid)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (provider, provider_event_id) DO NOTHING RETURNING id`,
+      [providerName, eventId, JSON.stringify(payload), payloadHash, valid]
     );
     const event = inserted.rows[0];
     if (!event) return { received: true };
@@ -138,30 +173,66 @@ export class PaymentsService {
       throw new UnauthorizedException("Invalid webhook signature.");
     }
     try {
-      return await this.applyWebhookPayload(payload, event.id);
+      return await this.applyWebhookPayload(payload, event.id, providerName);
     } catch (error) {
       await this.database.query("UPDATE payment_webhook_events SET processed_at = now(), processing_error = $2 WHERE id = $1", [event.id, error instanceof Error ? error.message : "unknown"]);
       throw error;
     }
   }
 
-  private async applyWebhookPayload(payload: Record<string, unknown>, eventId: string): Promise<{ received: boolean }> {
-    const rawData = payload.data;
-    const data = (
-      rawData && typeof rawData === "object" && "object" in rawData && rawData.object && typeof rawData.object === "object"
-        ? rawData.object
-        : rawData && typeof rawData === "object" ? rawData : payload
-    ) as Record<string, unknown>;
-    const providerReference = String(data.tx_ref ?? data.trx_ref ?? data.reference ?? data.id ?? payload.tx_ref ?? "");
-    if (!providerReference) throw new Error("Webhook does not include a provider reference.");
-    const paymentResult = await this.database.query<PaymentRow>("SELECT * FROM payments WHERE provider_reference = $1", [providerReference]);
+  private async applyWebhookPayload(payload: Record<string, unknown>, eventId: string, providerName: string): Promise<{ received: boolean }> {
+    const data = webhookData(payload);
+    const webhookType = firstString(payload.webhook_type, data.webhook_type, payload.webhookType).toLowerCase();
+    if (webhookType === "refund") {
+      await this.database.query("UPDATE payment_webhook_events SET processed_at = now(), processing_error = NULL WHERE id = $1", [eventId]);
+      return { received: true };
+    }
+    const references = webhookReferences(payload, data);
+    if (references.length === 0) throw new Error("Webhook does not include a provider reference.");
+    const paymentResult = await this.database.query<PaymentRow>(
+      `SELECT * FROM payments
+       WHERE provider = $1 AND (provider_reference = ANY($2::text[]) OR provider_merchant_reference = ANY($2::text[]))
+       ORDER BY created_at DESC LIMIT 1`,
+      [providerName, references]
+    );
     const payment = paymentResult.rows[0];
-    if (!payment) throw new Error(`No payment matches provider reference ${providerReference}.`);
-    const status = String(data.payment_status ?? data.status ?? payload.event ?? "").toLowerCase();
-    const eventType = String(payload.type ?? "").toLowerCase();
-    const paid = ["success", "succeeded", "paid", "charge.success"].includes(status) || eventType === "checkout.session.async_payment_succeeded";
+    if (!payment) throw new Error(`No payment matches provider reference ${references[0]}.`);
+    const status = firstString(data.trade_status, data.tradeStatus, data.payment_status, data.status, payload.status, payload.event).toLowerCase();
+    const eventType = firstString(payload.type, payload.event).toLowerCase();
+    const paid = ["success", "succeeded", "paid", "charge.success", "completed", "pay_success", "payment.success"].includes(status)
+      || eventType === "payment.success" || eventType === "checkout.session.async_payment_succeeded";
+    if (paid && payment.provider === "telebirr") {
+      const amount = Number(data.total_amount ?? data.totalAmount ?? data.amount);
+      if (!Number.isFinite(amount)) throw new Error("Telebirr webhook does not include a valid total amount.");
+      if (Math.round(amount * 100) !== Number(payment.amount_minor)) {
+        throw new Error(`Telebirr amount ${Math.round(amount * 100)} does not match ${payment.amount_minor}.`);
+      }
+      const currency = firstString(data.trans_currency, data.transCurrency);
+      if (currency && currency.toUpperCase() !== payment.currency.toUpperCase()) {
+        throw new Error(`Telebirr currency ${currency} does not match ${payment.currency}.`);
+      }
+    }
+    if (paid && payment.provider === "chapa") {
+      const remote = await this.providerFor("chapa").fetchStatus({
+        providerReference: payment.provider_reference ?? references[0] ?? "",
+        amountMinor: Number(payment.amount_minor),
+        currency: payment.currency
+      });
+      if (remote.status !== "succeeded") {
+        throw new Error(`Chapa verification did not confirm payment ${payment.id}: ${remote.failureReason ?? remote.status}.`);
+      }
+      if (remote.amountMinor !== undefined && remote.amountMinor !== Number(payment.amount_minor)) {
+        throw new Error(`Chapa amount ${remote.amountMinor} does not match ${payment.amount_minor}.`);
+      }
+      if (remote.currency && remote.currency.toUpperCase() !== payment.currency.toUpperCase()) {
+        throw new Error(`Chapa currency ${remote.currency} does not match ${payment.currency}.`);
+      }
+      if (remote.providerFeeMinor !== undefined) {
+        await this.database.query("UPDATE payments SET provider_fee_minor = $2, updated_at = now() WHERE id = $1", [payment.id, remote.providerFeeMinor]);
+      }
+    }
     if (paid) await this.markSucceeded(payment, null);
-    else if (["failed", "cancelled", "canceled", "expired", "unpaid"].includes(status) || eventType === "checkout.session.expired") {
+    else if (["failed", "cancelled", "canceled", "expired", "unpaid", "incomplete", "blocked", "auth_needed", "pay_failed", "pay_cancel", "cancel"].includes(status) || eventType === "checkout.session.expired") {
       await this.database.query("UPDATE payments SET status = 'FAILED', failure_reason = $2, updated_at = now() WHERE id = $1 AND status = 'PENDING'", [payment.id, status]);
       await this.database.query("UPDATE orders SET payment_status = 'FAILED' WHERE id = $1 AND payment_status = 'PENDING'", [payment.order_id]);
     }
@@ -246,7 +317,7 @@ export class PaymentsService {
     if (!event.signature_valid) throw new BadRequestException("Only webhook events with a valid signature can be replayed.");
     if (event.processed_at && !event.processing_error) throw new ConflictException("This webhook event has already been processed.");
     try {
-      await this.applyWebhookPayload(event.payload, event.id);
+      await this.applyWebhookPayload(event.payload, event.id, event.provider);
     } catch (error) {
       await this.database.query("UPDATE payment_webhook_events SET processed_at = now(), processing_error = $2 WHERE id = $1", [event.id, error instanceof Error ? error.message : "unknown"]);
       throw error;
@@ -269,7 +340,7 @@ export class PaymentsService {
     );
     const summary = { checked: result.rows.length, succeeded: 0, failed: 0, pending: 0, errors: 0, issues: [] as Array<{ paymentId: string; reason: string }> };
     for (const payment of result.rows) {
-      const method = payment.provider === "chapa" ? "chapa" : payment.provider === "stripe" ? "stripe" : payment.provider === "sandbox" ? "sandbox" : null;
+      const method = paymentMethodFromProvider(payment.provider);
       if (!method) {
         summary.errors++;
         summary.issues.push({ paymentId: payment.id, reason: `Unsupported payment provider ${payment.provider}.` });
@@ -279,6 +350,9 @@ export class PaymentsService {
         const remote = await this.providerFor(method).fetchStatus({
           providerReference: payment.provider_reference ?? "", amountMinor: Number(payment.amount_minor), currency: payment.currency
         });
+        if (payment.provider === "chapa" && remote.providerFeeMinor !== undefined) {
+          await this.database.query("UPDATE payments SET provider_fee_minor = $2, updated_at = now() WHERE id = $1", [payment.id, remote.providerFeeMinor]);
+        }
         if (remote.status === "succeeded") {
           if (remote.amountMinor !== undefined && remote.amountMinor !== Number(payment.amount_minor)) {
             summary.issues.push({ paymentId: payment.id, reason: `Provider amount ${remote.amountMinor} does not match ${payment.amount_minor}.` });
@@ -346,7 +420,7 @@ export class PaymentsService {
       if (!refund) throw new NotFoundException("Refund not found.");
       if (refund.status !== "PENDING") throw new ConflictException("Only pending refunds can be reviewed.");
       if (input.decision === "reject") {
-        await client.query("UPDATE refunds SET status = 'REJECTED', reviewed_by = $2, reviewed_at = now(), updated_at = now() WHERE id = $1", [refund.id, input.actorUserId]);
+        await client.query("UPDATE refunds SET status = 'REJECTED', reviewed_by = $2, reviewed_at = now(), updated_at = now(), failure_reason = $3 WHERE id = $1", [refund.id, input.actorUserId, input.note ?? null]);
         await client.query("UPDATE orders SET status = 'CANCELLED' WHERE id = $1 AND status = 'REFUND_PENDING'", [refund.order_id]);
         await this.audit.record({ actorUserId: input.actorUserId, action: "refund.rejected", entityType: "refund", entityId: refund.id, requestId: input.requestId, metadata: { note: input.note ?? null } }, client);
         return null;
@@ -360,26 +434,38 @@ export class PaymentsService {
     if (!payment) throw new NotFoundException("The payment for this refund no longer exists.");
     let result: RefundResult = { status: "succeeded", providerReference: payment.provider_reference ?? refund.id };
     if (payment.provider !== "cash") {
-      const provider = this.providerFor(payment.provider === "chapa" ? "chapa" : payment.provider === "stripe" ? "stripe" : "sandbox");
-      result = await provider.refund({ providerReference: payment.provider_reference ?? "", amountMinor: Number(refund.amount_minor), currency: refund.currency, reason: refund.reason });
+      const method = paymentMethodFromProvider(payment.provider);
+      if (!method) throw new BadRequestException(`Unsupported payment provider ${payment.provider}.`);
+      const order = await this.database.query<{ total_minor: string }>("SELECT total_minor FROM orders WHERE id = $1", [refund.order_id]);
+      const fullRefund = Number(refund.amount_minor) >= Number(order.rows[0]?.total_minor ?? "0");
+      result = await this.providerFor(method).refund({
+        providerReference: payment.provider_reference ?? "",
+        amountMinor: Number(refund.amount_minor),
+        currency: refund.currency,
+        reason: refund.reason,
+        idempotencyKey: `refund-${refund.id}`,
+        fullRefund
+      });
     }
     await this.database.withTransaction(async (client) => {
       if (result.status === "failed") {
-        await client.query("UPDATE refunds SET status = 'FAILED', provider_reference = $2, updated_at = now() WHERE id = $1", [refund.id, result.providerReference]);
+        await client.query("UPDATE refunds SET status = 'FAILED', provider_reference = COALESCE($2, provider_reference), failure_reason = $3, updated_at = now() WHERE id = $1", [refund.id, result.providerReference, result.failureReason ?? "Provider refund failed"]);
         await this.audit.record({ actorUserId: input.actorUserId, action: "refund.failed", entityType: "refund", entityId: refund.id, requestId: input.requestId, metadata: { failure: result.failureReason ?? null } }, client);
         return;
       }
-      await client.query("UPDATE refunds SET status = 'SUCCEEDED', provider_reference = $2, completed_at = now(), updated_at = now() WHERE id = $1", [refund.id, result.providerReference]);
-      const order = await client.query<{ id: string; status: string; total_minor: string; discount_minor: string; currency: string; order_number: string }>(
-        "SELECT id, status, total_minor, discount_minor, currency, order_number FROM orders WHERE id = $1 FOR UPDATE", [refund.order_id]
-      );
-      const orderRow = order.rows[0];
-      if (!orderRow) throw new NotFoundException("Order not found.");
-      const fullRefund = Number(refund.amount_minor) >= Number(orderRow.total_minor);
-      await client.query("UPDATE orders SET payment_status = $2, status = $3, version = version + 1 WHERE id = $1", [orderRow.id, fullRefund ? "REFUNDED" : "PARTIALLY_REFUNDED", fullRefund ? "REFUNDED" : orderRow.status]);
-      await this.postRefundLedger(client, refund.id, orderRow, Number(refund.amount_minor), fullRefund);
-      await this.notifications.create({ userId: payment.user_id, type: "refund.succeeded", title: "Refund completed", body: `Your refund for order ${orderRow.order_number} has been processed.`, data: { orderId: orderRow.id, refundId: refund.id } }, client);
-      await this.audit.record({ actorUserId: input.actorUserId, action: "refund.succeeded", entityType: "refund", entityId: refund.id, requestId: input.requestId, metadata: { amountMinor: Number(refund.amount_minor) } }, client);
+      await client.query("UPDATE refunds SET status = $2, provider_reference = COALESCE($3, provider_reference), completed_at = now(), updated_at = now() WHERE id = $1", [refund.id, result.status === "pending" ? "PROCESSING" : "SUCCEEDED", result.providerReference]);
+      if (result.status === "succeeded") {
+        const order = await client.query<{ id: string; status: string; total_minor: string; discount_minor: string; currency: string; order_number: string }>(
+          "SELECT id, status, total_minor, discount_minor, currency, order_number FROM orders WHERE id = $1 FOR UPDATE", [refund.order_id]
+        );
+        const orderRow = order.rows[0];
+        if (!orderRow) throw new NotFoundException("Order not found.");
+        const fullRefund = Number(refund.amount_minor) >= Number(orderRow.total_minor);
+        await client.query("UPDATE orders SET payment_status = $2, status = $3, version = version + 1 WHERE id = $1", [orderRow.id, fullRefund ? "REFUNDED" : "PARTIALLY_REFUNDED", fullRefund ? "REFUNDED" : orderRow.status]);
+        await this.postRefundLedger(client, refund.id, orderRow, Number(refund.amount_minor), fullRefund);
+        await this.notifications.create({ userId: payment.user_id, type: "refund.succeeded", title: "Refund completed", body: `Your refund for order ${orderRow.order_number} has been processed.`, data: { orderId: orderRow.id, refundId: refund.id } }, client);
+        await this.audit.record({ actorUserId: input.actorUserId, action: "refund.succeeded", entityType: "refund", entityId: refund.id, requestId: input.requestId, metadata: { amountMinor: Number(refund.amount_minor) } }, client);
+      }
     });
     return { status: result.status };
   }
@@ -429,11 +515,37 @@ export class PaymentsService {
   private providerFor(method: PaymentMethod): PaymentProvider {
     if (method === "chapa") {
       if (!this.config.chapaSecretKey) throw new ServiceUnavailableException("Chapa is not configured.");
-      return new ChapaPaymentProvider(this.config.chapaSecretKey, this.config.chapaWebhookSecret);
+      return new ChapaPaymentProvider(this.config.chapaSecretKey, this.config.chapaWebhookSecret, {
+        baseUrl: this.config.chapaBaseUrl,
+        callbackUrl: `${this.config.publicApiBaseUrl.replace(/\/$/, "")}/api/v1/payments/webhooks/chapa`
+      });
     }
     if (method === "stripe") {
       if (!this.config.stripeSecretKey) throw new ServiceUnavailableException("Stripe is not configured.");
       return new StripePaymentProvider(this.config.stripeSecretKey, this.config.stripeWebhookSecret);
+    }
+    if (method === "telebirr") {
+      const required = {
+        fabricAppId: this.config.telebirrFabricAppId,
+        appSecret: this.config.telebirrAppSecret,
+        merchantAppId: this.config.telebirrMerchantAppId,
+        merchantCode: this.config.telebirrMerchantCode,
+        privateKey: this.config.telebirrPrivateKey,
+        publicKey: this.config.telebirrPublicKey
+      };
+      if (Object.values(required).some((value) => !value)) throw new ServiceUnavailableException("Telebirr is not configured.");
+      return new TelebirrPaymentProvider({
+        baseUrl: this.config.telebirrBaseUrl,
+        webBaseUrl: this.config.telebirrWebBaseUrl,
+        fabricAppId: required.fabricAppId!,
+        appSecret: required.appSecret!,
+        merchantAppId: required.merchantAppId!,
+        merchantCode: required.merchantCode!,
+        privateKey: required.privateKey!,
+        publicKey: required.publicKey!,
+        notifyUrl: this.config.telebirrNotifyUrl,
+        redirectUrl: this.config.telebirrRedirectUrl ?? this.config.paymentReturnUrl ?? this.config.publicApiBaseUrl
+      });
     }
     if (method === "sandbox") return new SandboxPaymentProvider(this.config.publicApiBaseUrl, this.config.paymentWebhookSecret);
     throw new BadRequestException("Cash payments do not use a payment provider.");

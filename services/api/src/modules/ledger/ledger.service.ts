@@ -9,7 +9,7 @@ export type LedgerLine = Readonly<{ accountCode: string; side: LedgerSide; amoun
 export class LedgerService {
   constructor(private readonly database: DatabaseService) {}
 
-  async post(input: Readonly<{ referenceType: string; referenceId: string; description: string; lines: readonly LedgerLine[] }>, client?: PoolClient): Promise<{ transactionId: string; replayed: boolean }> {
+  async post(input: Readonly<{ referenceType: string; referenceId: string; description: string; lines: readonly LedgerLine[]; metadata?: Record<string, unknown> }>, client?: PoolClient): Promise<{ transactionId: string; replayed: boolean }> {
     const lines = input.lines.filter((line) => line.amountMinor !== 0);
     if (lines.length === 0) throw new Error("A ledger transaction requires at least one non-zero line.");
     let debit = 0;
@@ -29,8 +29,8 @@ export class LedgerService {
       );
       if (existing.rows[0]) return { transactionId: existing.rows[0].id, replayed: true };
       const transaction = await executor.query<{ id: string }>(
-        "INSERT INTO ledger_transactions (reference_type, reference_id, description) VALUES ($1, $2, $3) RETURNING id",
-        [input.referenceType, input.referenceId, input.description]
+        "INSERT INTO ledger_transactions (reference_type, reference_id, description, metadata) VALUES ($1, $2, $3, $4) RETURNING id",
+        [input.referenceType, input.referenceId, input.description, JSON.stringify(input.metadata ?? {})]
       );
       const transactionId = transaction.rows[0]?.id;
       if (!transactionId) throw new Error("Ledger transaction creation failed.");

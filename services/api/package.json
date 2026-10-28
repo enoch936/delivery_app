@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
     "test": "npm run test:unit && npm run test:integration",
-    "test:unit": "tsx --test test/auth.service.test.ts test/discovery.service.test.ts test/runtime-config.test.ts",
+    "test:unit": "tsx --test test/auth.service.test.ts test/discovery.service.test.ts test/runtime-config.test.ts test/payments.telebirr.test.ts",
     "test:integration": "tsc -p tsconfig.test.json && node --test --test-concurrency=1 \"dist-test/test/*.integration.test.js\"",
     "typecheck": "tsc --noEmit"
   },

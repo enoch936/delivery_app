@@ -11,7 +11,7 @@ import { PaymentsService } from "./payments.service.js";
 import type { PaymentMethod } from "./payments.types.js";
 
 class InitiatePaymentDto {
-  @IsIn(["cash", "chapa", "sandbox", "stripe"]) method!: PaymentMethod;
+  @IsIn(["cash", "chapa", "sandbox", "stripe", "telebirr"]) method!: PaymentMethod;
 }
 
 class SandboxCompleteDto {
@@ -127,12 +127,14 @@ export class PaymentWebhookController {
     @Req() request: FastifyRequest & { rawBody?: Buffer },
     @Headers("x-chapa-signature") chapaSignature: string | undefined,
     @Headers("x-webhook-signature") genericSignature: string | undefined,
-    @Headers("stripe-signature") stripeSignature: string | undefined
+    @Headers("stripe-signature") stripeSignature: string | undefined,
+    @Headers("chapa-signature") chapaSignatureLower: string | undefined
   ) {
-    if (!["chapa", "sandbox", "stripe"].includes(provider)) throw new BadRequestException("Unsupported payment provider.");
+    if (!["chapa", "sandbox", "stripe", "telebirr"].includes(provider)) throw new BadRequestException("Unsupported payment provider.");
     const raw = request.rawBody?.toString("utf8") ?? JSON.stringify(request.body ?? {});
-    const signature = provider === "chapa" ? chapaSignature : provider === "stripe" ? stripeSignature : genericSignature;
-    return this.service.handleWebhook(provider, raw, signature, (request.body ?? {}) as Record<string, unknown>);
+    const signature = provider === "chapa" ? (chapaSignature ?? chapaSignatureLower) : provider === "stripe" ? stripeSignature : provider === "telebirr" ? undefined : genericSignature;
+    const result = await this.service.handleWebhook(provider, raw, signature, (request.body ?? {}) as Record<string, unknown>);
+    return provider === "telebirr" ? { success: true, ...result } : result;
   }
 }
 

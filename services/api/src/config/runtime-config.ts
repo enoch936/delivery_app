@@ -1,4 +1,5 @@
-export type PaymentProviderName = "disabled" | "sandbox" | "chapa" | "stripe";
+export type PaymentProviderName = "disabled" | "sandbox" | "chapa" | "stripe" | "telebirr";
+export type TelebirrEnvironment = "test" | "production";
 
 export type RuntimeConfig = Readonly<{
   nodeEnv: "development" | "test" | "staging" | "production";
@@ -21,8 +22,20 @@ export type RuntimeConfig = Readonly<{
   paymentWebhookSecret: string | undefined;
   chapaSecretKey: string | undefined;
   chapaWebhookSecret: string | undefined;
+  chapaBaseUrl: string;
   stripeSecretKey: string | undefined;
   stripeWebhookSecret: string | undefined;
+  telebirrEnvironment: TelebirrEnvironment;
+  telebirrBaseUrl: string;
+  telebirrWebBaseUrl: string;
+  telebirrFabricAppId: string | undefined;
+  telebirrAppSecret: string | undefined;
+  telebirrMerchantAppId: string | undefined;
+  telebirrMerchantCode: string | undefined;
+  telebirrPrivateKey: string | undefined;
+  telebirrPublicKey: string | undefined;
+  telebirrNotifyUrl: string;
+  telebirrRedirectUrl: string | undefined;
   paymentReturnUrl: string | undefined;
   paymentCancelUrl: string | undefined;
   courierOfferTimeoutSeconds: number;
@@ -38,6 +51,16 @@ export type RuntimeConfig = Readonly<{
 }>;
 
 const allowedEnvironments = ["development", "test", "staging", "production"] as const;
+const telebirrUrls = {
+  test: {
+    baseUrl: "https://developerportal.ethiotelebirr.et:38443/apiaccess/payment/gateway",
+    webBaseUrl: "https://developerportal.ethiotelebirr.et:38443/payment/web/paygate?"
+  },
+  production: {
+    baseUrl: "https://superapp.ethiomobilemoney.et:38443/apiaccess/payment/gateway",
+    webBaseUrl: "https://superapp.ethiomobilemoney.et:38443/payment/web/paygate?"
+  }
+} as const;
 
 function positivePort(value: string | undefined): number {
   const port = Number(value ?? "3000");
@@ -72,13 +95,50 @@ export function readRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
   const quoteValiditySeconds = positiveInteger(environment.QUOTE_VALIDITY_SECONDS, 900);
   const accessTokenLifetimeSeconds = positiveInteger(environment.ACCESS_TOKEN_LIFETIME_SECONDS, 900);
   const refreshTokenLifetimeSeconds = positiveInteger(environment.REFRESH_TOKEN_LIFETIME_SECONDS, 2_592_000);
+  const publicApiBaseUrl = environment.PUBLIC_API_BASE_URL ?? "http://localhost:3000";
   const paymentsProvider = environment.PAYMENTS_PROVIDER ?? "disabled";
-  if (paymentsProvider !== "disabled" && paymentsProvider !== "sandbox" && paymentsProvider !== "chapa" && paymentsProvider !== "stripe") {
-    throw new Error("PAYMENTS_PROVIDER must be disabled, sandbox, chapa, or stripe.");
+  if (paymentsProvider !== "disabled" && paymentsProvider !== "sandbox" && paymentsProvider !== "chapa" && paymentsProvider !== "stripe" && paymentsProvider !== "telebirr") {
+    throw new Error("PAYMENTS_PROVIDER must be disabled, sandbox, chapa, stripe, or telebirr.");
+  }
+  const telebirrEnvironmentValue = environment.TELEBIRR_ENVIRONMENT ?? (nodeEnv === "production" ? "production" : "test");
+  if (telebirrEnvironmentValue !== "test" && telebirrEnvironmentValue !== "production") {
+    throw new Error("TELEBIRR_ENVIRONMENT must be test or production.");
+  }
+  const telebirrEnvironment: TelebirrEnvironment = telebirrEnvironmentValue;
+  const telebirrFabricAppId = environment.TELEBIRR_FABRIC_APP_ID?.trim() || undefined;
+  const telebirrAppSecret = environment.TELEBIRR_APP_SECRET?.trim() || undefined;
+  const telebirrMerchantAppId = environment.TELEBIRR_MERCHANT_APP_ID?.trim() || undefined;
+  const telebirrMerchantCode = environment.TELEBIRR_MERCHANT_CODE?.trim() || undefined;
+  const telebirrPrivateKey = environment.TELEBIRR_PRIVATE_KEY?.trim() || undefined;
+  const telebirrPublicKey = environment.TELEBIRR_PUBLIC_KEY?.trim() || undefined;
+  const telebirrNotifyUrl = environment.TELEBIRR_NOTIFY_URL?.trim()
+    || `${publicApiBaseUrl.replace(/\/$/, "")}/api/v1/payments/webhooks/telebirr`;
+  const telebirrRedirectUrl = environment.TELEBIRR_REDIRECT_URL?.trim() || undefined;
+  if (paymentsProvider === "telebirr") {
+    const missing = [
+      ["TELEBIRR_FABRIC_APP_ID", telebirrFabricAppId],
+      ["TELEBIRR_APP_SECRET", telebirrAppSecret],
+      ["TELEBIRR_MERCHANT_APP_ID", telebirrMerchantAppId],
+      ["TELEBIRR_MERCHANT_CODE", telebirrMerchantCode],
+      ["TELEBIRR_PRIVATE_KEY", telebirrPrivateKey],
+      ["TELEBIRR_PUBLIC_KEY", telebirrPublicKey]
+    ].filter(([, value]) => !value).map(([name]) => name);
+    if (missing.length > 0) throw new Error(`${missing.join(", ")} are required when the telebirr provider is enabled.`);
+    if (telebirrEnvironment === "test" && nodeEnv !== "development" && nodeEnv !== "test") {
+      throw new Error("The Telebirr test environment can only run in development or test.");
+    }
   }
   if (paymentsProvider === "sandbox" && nodeEnv !== "development" && nodeEnv !== "test") {
     throw new Error("The sandbox payment provider can only run in development or test.");
   }
+  const chapaBaseUrl = (environment.CHAPA_BASE_URL ?? "https://api.chapa.global").replace(/\/$/, "");
+  let chapaBase: URL;
+  try {
+    chapaBase = new URL(chapaBaseUrl);
+  } catch {
+    throw new Error("CHAPA_BASE_URL must be a valid absolute URL.");
+  }
+  if (chapaBase.protocol !== "https:") throw new Error("CHAPA_BASE_URL must use HTTPS.");
   if (paymentsProvider === "chapa" && (!environment.CHAPA_SECRET_KEY || !environment.CHAPA_WEBHOOK_SECRET)) {
     throw new Error("CHAPA_SECRET_KEY and CHAPA_WEBHOOK_SECRET are required when the chapa provider is enabled.");
   }
@@ -113,8 +173,20 @@ export function readRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     paymentWebhookSecret: environment.PAYMENT_WEBHOOK_SECRET,
     chapaSecretKey: environment.CHAPA_SECRET_KEY,
     chapaWebhookSecret: environment.CHAPA_WEBHOOK_SECRET,
+    chapaBaseUrl,
     stripeSecretKey: environment.STRIPE_SECRET_KEY,
     stripeWebhookSecret: environment.STRIPE_WEBHOOK_SECRET,
+    telebirrEnvironment,
+    telebirrBaseUrl: telebirrUrls[telebirrEnvironment].baseUrl,
+    telebirrWebBaseUrl: telebirrUrls[telebirrEnvironment].webBaseUrl,
+    telebirrFabricAppId,
+    telebirrAppSecret,
+    telebirrMerchantAppId,
+    telebirrMerchantCode,
+    telebirrPrivateKey,
+    telebirrPublicKey,
+    telebirrNotifyUrl,
+    telebirrRedirectUrl,
     paymentReturnUrl: environment.PAYMENT_RETURN_URL,
     paymentCancelUrl: environment.PAYMENT_CANCEL_URL,
     courierOfferTimeoutSeconds: positiveInteger(environment.COURIER_OFFER_TIMEOUT_SECONDS, 45),
@@ -125,7 +197,7 @@ export function readRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     mapsProvider,
     pushProvider,
     firebaseServiceAccountJson,
-    publicApiBaseUrl: environment.PUBLIC_API_BASE_URL ?? "http://localhost:3000",
+    publicApiBaseUrl,
     geocodingProvider
   });
 }

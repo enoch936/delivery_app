@@ -33,83 +33,178 @@ export class SandboxPaymentProvider implements PaymentProvider {
   }
 }
 
-type ChapaInitResponse = { status?: string; message?: string; data?: { checkout_url?: string; tx_ref?: string } };
-type ChapaVerifyResponse = { status?: string; message?: string; data?: { status?: string; amount?: string | number; currency?: string } };
+type ChapaErrorResponse = {
+  status?: string; message?: string; error?: { code?: string; details?: unknown };
+};
+type ChapaHostedResponse = ChapaErrorResponse & {
+  data?: { checkout_url?: string; created_at?: string; expires_at?: string };
+};
+type ChapaVerifyResponse = ChapaErrorResponse & {
+  data?: {
+    chapa_reference?: string; merchant_reference?: string; amount?: string | number;
+    currency?: string; status?: string; service_fee?: string | number; reason?: string;
+  };
+};
+type ChapaRefundResponse = ChapaErrorResponse & {
+  data?: {
+    chapa_reference?: string; payment_reference?: string; amount?: string | number;
+    currency?: string; status?: string; reason?: string;
+  };
+};
+
+export type ChapaProviderOptions = Readonly<{
+  baseUrl?: string;
+  callbackUrl?: string;
+  fetcher?: typeof fetch;
+}>;
+
+function chapaStatus(value: unknown): "succeeded" | "failed" | "pending" | "unknown" {
+  const status = String(value ?? "").toUpperCase();
+  if (status === "SUCCESS" || status === "SUCCEEDED" || status === "PAID") return "succeeded";
+  if (["FAILED", "CANCELLED", "CANCELED", "INCOMPLETE", "BLOCKED"].includes(status)) return "failed";
+  if (["PENDING", "PROCESSING", "AUTH_NEEDED"].includes(status)) return "pending";
+  return "unknown";
+}
+
+function positiveMinorAmount(value: unknown): number | undefined {
+  const amount = Number(value);
+  return Number.isSafeInteger(amount) && amount > 0 ? amount : undefined;
+}
 
 export class ChapaPaymentProvider implements PaymentProvider {
   readonly name = "chapa" as const;
+  private readonly baseUrl: string;
+  private readonly callbackUrl: string | undefined;
+  private readonly fetcher: typeof fetch;
 
-  constructor(private readonly secretKey: string, private readonly webhookSecret: string | undefined) {}
+  constructor(private readonly secretKey: string, private readonly webhookSecret: string | undefined, options: ChapaProviderOptions = {}) {
+    this.baseUrl = (options.baseUrl ?? "https://api.chapa.global").replace(/\/$/, "");
+    this.callbackUrl = options.callbackUrl;
+    this.fetcher = options.fetcher ?? fetch;
+  }
 
-  async createCheckout(input: Readonly<{ paymentId: string; orderId: string; amountMinor: number; currency: string; customerEmail: string | null; customerPhone: string; returnUrl: string }>): Promise<CheckoutSession> {
-    const txRef = `PAY-${input.paymentId}`;
-    const response = await fetch("https://api.chapa.co/v1/transaction/initialize", {
+  async createCheckout(input: Readonly<{
+    paymentId: string; orderId: string; amountMinor: number; currency: string; customerEmail: string | null;
+    customerPhone: string; returnUrl: string; idempotencyKey?: string;
+  }>): Promise<CheckoutSession> {
+    if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor < 100) throw new Error("Chapa payments require at least 100 minor units.");
+    if (!/^[A-Z]{3}$/.test(input.currency)) throw new Error("Chapa currency must be a three-letter ISO code.");
+    const merchantReference = `PAY${input.paymentId.replace(/-/g, "").slice(0, 16)}`;
+    const phone = input.customerPhone.replace(/[^\d]/g, "").replace(/^0/, "251");
+    const customer: Record<string, string> = {};
+    if (input.customerEmail) customer.email = input.customerEmail;
+    if (phone) customer.phone_number = phone;
+    const callbackUrl = this.callbackUrl ?? `${input.returnUrl.replace(/\/$/, "")}/api/v1/payments/webhooks/chapa`;
+    const response = await this.fetcher(`${this.baseUrl}/v2/payments/hosted`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${this.secretKey}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${this.secretKey}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": input.idempotencyKey ?? `checkout-${input.paymentId}`
+      },
       body: JSON.stringify({
-        amount: (input.amountMinor / 100).toFixed(2),
+        amount: input.amountMinor,
         currency: input.currency,
-        email: input.customerEmail ?? "customer@example.com",
-        phone_number: input.customerPhone,
-        tx_ref: txRef,
-        callback_url: `${input.returnUrl.replace(/\/$/, "")}/api/v1/payments/webhooks/chapa`,
+        merchant_reference: merchantReference,
+        ...(Object.keys(customer).length > 0 ? { customer } : {}),
+        callback_url: callbackUrl,
         return_url: input.returnUrl,
+        meta: { payment_id: input.paymentId, order_id: input.orderId },
         customization: { title: "Delivery", description: `Order ${input.orderId}` }
       }),
       signal: AbortSignal.timeout(15_000)
     });
-    const body = (await response.json().catch(() => ({}))) as ChapaInitResponse;
+    const body = (await response.json().catch(() => ({}))) as ChapaHostedResponse;
     const checkoutUrl = body.data?.checkout_url;
-    if (!response.ok || !checkoutUrl) throw new Error(body.message ?? "Chapa checkout initialization failed.");
-    return { providerReference: txRef, checkoutUrl, expiresAt: new Date(Date.now() + 30 * 60 * 1000) };
+    if (!response.ok || body.status === "error" || !checkoutUrl) throw new Error(body.message ?? "Chapa checkout initialization failed.");
+    let providerReference = merchantReference;
+    try {
+      providerReference = new URL(checkoutUrl).pathname.split("/").filter(Boolean).pop() ?? merchantReference;
+    } catch {
+      // Keep the merchant reference when a non-standard checkout host is returned.
+    }
+    const expiresAt = body.data?.expires_at ? new Date(body.data.expires_at) : new Date(Date.now() + 30 * 60 * 1000);
+    return {
+      providerReference,
+      merchantReference,
+      checkoutUrl,
+      expiresAt: Number.isNaN(expiresAt.getTime()) ? new Date(Date.now() + 30 * 60 * 1000) : expiresAt
+    };
   }
 
-  async refund(input: Readonly<{ providerReference: string; amountMinor: number; currency: string; reason: string }>): Promise<RefundResult> {
-    const response = await fetch(`https://api.chapa.co/v1/refund/${encodeURIComponent(input.providerReference)}`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${this.secretKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ amount: (input.amountMinor / 100).toFixed(2), reason: input.reason }),
-      signal: AbortSignal.timeout(15_000)
-    });
-    if (!response.ok) {
-      const body = (await response.json().catch(() => ({}))) as { message?: string };
-      return { providerReference: input.providerReference, status: "failed", failureReason: body.message ?? `Chapa refund failed with HTTP ${response.status}.` };
+  async refund(input: Readonly<{
+    providerReference: string; amountMinor: number; currency: string; reason: string;
+    idempotencyKey?: string; fullRefund?: boolean;
+  }>): Promise<RefundResult> {
+    if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0) {
+      return { providerReference: input.providerReference, status: "failed", failureReason: "Refund amount must be a positive integer in minor units." };
     }
-    return { providerReference: input.providerReference, status: "succeeded" };
+    try {
+      const response = await this.fetcher(`${this.baseUrl}/v2/refunds`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.secretKey}`,
+          "Content-Type": "application/json",
+          "Idempotency-Key": input.idempotencyKey ?? `refund-${input.providerReference}-${input.amountMinor}`
+        },
+        body: JSON.stringify({
+          payment_reference: input.providerReference,
+          ...(input.fullRefund ? {} : { amount: input.amountMinor }),
+          reason: input.reason.slice(0, 400),
+          meta: { source: "delivery_app" }
+        }),
+        signal: AbortSignal.timeout(15_000)
+      });
+      const body = (await response.json().catch(() => ({}))) as ChapaRefundResponse;
+      if (!response.ok || body.status === "error" || !body.data) {
+        return {
+          providerReference: body.data?.chapa_reference ?? input.providerReference,
+          status: "failed",
+          failureReason: body.message ?? `Chapa refund failed with HTTP ${response.status}.`
+        };
+      }
+      return {
+        providerReference: body.data.chapa_reference ?? input.providerReference,
+        status: chapaStatus(body.data.status) === "succeeded" ? "succeeded" : chapaStatus(body.data.status) === "failed" ? "failed" : "pending"
+      };
+    } catch (error) {
+      return {
+        providerReference: input.providerReference,
+        status: "failed",
+        failureReason: error instanceof Error ? error.message : "Chapa refund failed."
+      };
+    }
   }
 
   async fetchStatus(input: Readonly<{ providerReference: string }>): Promise<ProviderPaymentStatus> {
     try {
-      const response = await fetch(`https://api.chapa.co/v1/transaction/verify/${encodeURIComponent(input.providerReference)}`, {
+      const response = await this.fetcher(`${this.baseUrl}/v2/payments/${encodeURIComponent(input.providerReference)}/verify`, {
         headers: { Authorization: `Bearer ${this.secretKey}` },
         signal: AbortSignal.timeout(15_000)
       });
       const body = (await response.json().catch(() => ({}))) as ChapaVerifyResponse;
-      if (!response.ok) {
+      if (!response.ok || body.status === "error") {
         return { status: "unknown", failureReason: body.message ?? `Chapa verification failed with HTTP ${response.status}.` };
       }
-      const status = String(body.data?.status ?? body.status ?? "").toLowerCase();
-      const amount = Number(body.data?.amount);
-      const result: ProviderPaymentStatus = {
-        status: ["success", "succeeded", "paid"].includes(status) ? "succeeded"
-          : ["failed", "cancelled", "canceled"].includes(status) ? "failed"
-            : ["pending", "processing"].includes(status) ? "pending" : "unknown",
-        ...(Number.isFinite(amount) ? { amountMinor: Math.round(amount * 100) } : {}),
-        ...(body.message ? { failureReason: body.message } : {})
+      const amountMinor = positiveMinorAmount(body.data?.amount);
+      const providerFeeMinor = positiveMinorAmount(body.data?.service_fee);
+      return {
+        status: chapaStatus(body.data?.status),
+        ...(amountMinor !== undefined ? { amountMinor } : {}),
+        ...(body.data?.currency ? { currency: body.data.currency.toUpperCase() } : {}),
+        ...(providerFeeMinor !== undefined ? { providerFeeMinor } : {}),
+        ...(body.data?.reason ? { failureReason: body.data.reason } : {})
       };
-      return result;
     } catch (error) {
       return { status: "unknown", failureReason: error instanceof Error ? error.message : "Chapa verification failed." };
     }
   }
 
   verifyWebhook(rawBody: string, signature: string | undefined): boolean {
-    if (!this.webhookSecret) return false;
-    if (!signature) return false;
-    const expected = createHmac("sha256", this.webhookSecret).update(rawBody).digest("hex");
-    const provided = signature.replace(/^sha256=/, "");
-    if (provided.length !== expected.length) return false;
-    return timingSafeEqual(Buffer.from(expected), Buffer.from(provided));
+    if (!this.webhookSecret || !signature || !/^[a-f0-9]{64}$/i.test(signature)) return false;
+    const expected = createHmac("sha256", this.webhookSecret).update(rawBody).digest();
+    const provided = Buffer.from(signature, "hex");
+    return provided.length === expected.length && timingSafeEqual(expected, provided);
   }
 }
 

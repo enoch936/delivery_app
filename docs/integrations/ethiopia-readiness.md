@@ -4,7 +4,7 @@ No external provider is active. The following are explicit blockers, not implied
 
 | Area | Current state | Required before activation |
 | --- | --- | --- |
-| Payments (including Chapa / Telebirr) | Not verified or integrated | Current eligibility, legal entity/account, fees, sandbox, webhook signing, settlement and refund rules |
+| Payments (including Chapa / Telebirr) | Telebirr H5 integration implemented but not verified against a registered merchant | Registered merchant key/public key, current eligibility, legal entity/account, fees, sandbox verification, settlement rules and finance sign-off |
 | OTP / SMS | Not verified or integrated | Ethiopian delivery coverage, sender registration, pricing, consent, abuse limits, delivery evidence |
 | Maps / routing | Not verified or integrated | Ethiopia coverage, pricing, SDK terms, offline behavior, geocoding and location privacy review |
 | Push notification | Not integrated | Firebase project, Android/iOS credentials, permission copy, delivery monitoring |

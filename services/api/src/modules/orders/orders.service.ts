@@ -7,7 +7,7 @@ import {
   Injectable,
   NotFoundException
 } from "@nestjs/common";
-import { createHmac, randomInt } from "node:crypto";
+import { createHmac, randomInt, randomUUID } from "node:crypto";
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
 import { canTransition, decideCancellation, type OrderStatus } from "@delivery-app/domain";
 import { readRuntimeConfig, type RuntimeConfig } from "../../config/runtime-config.js";
@@ -203,12 +203,15 @@ export class OrdersService {
       await this.insertEvent(client, order.id, null, "PENDING_CONFIRMATION", input.userId, "Order created");
       await this.insertEvent(client, order.id, "PENDING_CONFIRMATION", initialStatus, input.userId, paymentRequired ? "Awaiting payment" : "Platform confirmed");
 
-      const commissionMinor = Math.floor((Number(quote.items_subtotal_minor) * merchant.commission_bps) / 10_000);
+      const commissionRateBps = merchant.commission_bps;
+      const commissionBaseMinor = Number(quote.items_subtotal_minor);
+      const commissionMinor = Math.floor((commissionBaseMinor * commissionRateBps) / 10_000);
       await client.query(
-        `INSERT INTO order_financials (order_id, merchant_gross_minor, commission_minor, courier_earning_minor, platform_revenue_minor, tax_minor, tip_minor, currency)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        `INSERT INTO order_financials (order_id, merchant_gross_minor, commission_minor, courier_earning_minor, platform_revenue_minor, tax_minor, tip_minor, currency, commission_rate_bps, commission_base_minor, provider_fee_minor)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
         [order.id, quote.items_subtotal_minor, commissionMinor, quote.delivery_fee_minor,
-          commissionMinor + Number(quote.service_fee_minor), quote.tax_minor, quote.tip_minor, quote.currency]
+          commissionMinor + Number(quote.service_fee_minor), quote.tax_minor, quote.tip_minor, quote.currency,
+          commissionRateBps, commissionBaseMinor, 0]
       );
       if (quote.promotion_id && Number(quote.discount_minor) > 0) {
         await client.query(
@@ -305,9 +308,9 @@ export class OrdersService {
         const payment = await client.query<{ id: string; amount_minor: string }>("SELECT id, amount_minor FROM payments WHERE order_id = $1 AND status = 'SUCCEEDED' ORDER BY created_at DESC LIMIT 1", [order.id]);
         if (payment.rows[0]) {
           const refund = await client.query<{ id: string }>(
-            `INSERT INTO refunds (payment_id, order_id, amount_minor, currency, status, reason, requested_by)
-             VALUES ($1,$2,$3,$4,'PENDING',$5,$6) RETURNING id`,
-            [payment.rows[0].id, order.id, payment.rows[0].amount_minor, order.currency, input.reason, input.userId]
+            `INSERT INTO refunds (payment_id, order_id, amount_minor, currency, status, reason, requested_by, provider_merchant_reference)
+             VALUES ($1,$2,$3,$4,'PENDING',$5,$6,$7) RETURNING id`,
+            [payment.rows[0].id, order.id, payment.rows[0].amount_minor, order.currency, input.reason, input.userId, `RF-${randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase()}`]
           );
           refundId = refund.rows[0]?.id ?? null;
           await client.query("UPDATE orders SET status = 'REFUND_PENDING', version = version + 1 WHERE id = $1", [order.id]);

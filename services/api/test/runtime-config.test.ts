@@ -25,3 +25,38 @@ test("requires Stripe credentials when Stripe is enabled", () => {
   assert.equal(config.paymentsProvider, "stripe");
   assert.equal(config.stripeSecretKey, "rk_test_example");
 });
+
+test("requires Telebirr credentials and derives the notification URL", () => {
+  assert.throws(() => readRuntimeConfig({ NODE_ENV: "development", PAYMENTS_PROVIDER: "telebirr" }));
+  const config = readRuntimeConfig({
+    NODE_ENV: "development",
+    PAYMENTS_PROVIDER: "telebirr",
+    PUBLIC_API_BASE_URL: "https://api.example.test",
+    TELEBIRR_ENVIRONMENT: "test",
+    TELEBIRR_FABRIC_APP_ID: "fabric-id",
+    TELEBIRR_APP_SECRET: "app-secret",
+    TELEBIRR_MERCHANT_APP_ID: "merchant-app-id",
+    TELEBIRR_MERCHANT_CODE: "123456",
+    TELEBIRR_PRIVATE_KEY: "private-key",
+    TELEBIRR_PUBLIC_KEY: "public-key"
+  });
+  assert.equal(config.paymentsProvider, "telebirr");
+  assert.equal(config.telebirrEnvironment, "test");
+  assert.equal(config.telebirrNotifyUrl, "https://api.example.test/api/v1/payments/webhooks/telebirr");
+  assert.equal(config.telebirrBaseUrl, "https://developerportal.ethiotelebirr.et:38443/apiaccess/payment/gateway");
+});
+
+test("rejects the Telebirr test gateway outside development and test", () => {
+  assert.throws(() => readRuntimeConfig({
+    NODE_ENV: "production",
+    PAYMENTS_PROVIDER: "telebirr",
+    AUTH_TOKEN_SECRET: "a-production-secret-that-is-longer-than-thirty-two-characters",
+    TELEBIRR_ENVIRONMENT: "test",
+    TELEBIRR_FABRIC_APP_ID: "fabric-id",
+    TELEBIRR_APP_SECRET: "app-secret",
+    TELEBIRR_MERCHANT_APP_ID: "merchant-app-id",
+    TELEBIRR_MERCHANT_CODE: "123456",
+    TELEBIRR_PRIVATE_KEY: "private-key",
+    TELEBIRR_PUBLIC_KEY: "public-key"
+  }));
+});
