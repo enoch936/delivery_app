@@ -53,10 +53,49 @@ type AuditRow = {
   id: string; actorUserId: string | null; action: string; entityType: string; entityId: string | null;
   requestId: string | null; metadata: unknown; createdAt: string;
 };
+type MerchantSettlementRow = {
+  id: string; merchantId: string; merchantName: string; periodStart: string; periodEnd: string;
+  grossMinor: number; commissionMinor: number; refundsMinor: number; netPayableMinor: number;
+  currency: string; status: string; orderCount: number; paymentReference: string | null;
+  notes: string | null; paidAt: string | null; createdAt: string;
+};
+type CourierPayoutRow = {
+  id: string; courierUserId: string; courierName: string | null; courierPhone: string | null;
+  periodStart: string; periodEnd: string; grossMinor: number; deductionsMinor: number; tipsMinor: number;
+  netPayableMinor: number; currency: string; status: string; orderCount: number;
+  paymentReference: string | null; notes: string | null; paidAt: string | null; createdAt: string;
+};
+type SettlementPreviewItem = {
+  merchantId?: string; merchantName?: string; courierUserId?: string; courierName?: string | null;
+  courierPhone?: string | null; currency: string; orderCount: number; grossMinor: number;
+  commissionMinor?: number; tipsMinor?: number; netPayableMinor: number;
+};
+type SettlementPreview = { kind: string; from: string; to: string; items: SettlementPreviewItem[] };
+type ReconciliationSummary = {
+  counts: {
+    pendingPayments: number; expiredPayments: number; invalidWebhooks: number; failedWebhooks: number;
+    succeededUnreflected: number; paidWithoutPayment: number; pendingMerchantSettlements: number;
+    pendingCourierPayouts: number;
+  };
+  issues: {
+    succeededWithoutOrderPaid: Array<{
+      payment_id: string; provider: string; payment_status: string; order_id: string;
+      order_number: string; order_payment_status: string;
+    }>;
+    paidWithoutSucceededPayment: Array<{
+      order_id: string; order_number: string; payment_status: string; status: string;
+    }>;
+  };
+};
+type WebhookEventRow = {
+  id: string; provider: string; providerEventId: string; signatureValid: boolean;
+  processedAt: string | null; processingError: string | null; createdAt: string; replayable: boolean;
+};
 
 const TABS = [
   ["overview", "Overview"], ["orders", "Orders & reports"], ["merchants", "Merchants"],
-  ["couriers", "Couriers"], ["users", "Users"], ["config", "Configuration"], ["audit", "Audit trail"]
+  ["couriers", "Couriers"], ["users", "Users"], ["settlements", "Settlements"],
+  ["reconciliation", "Reconciliation"], ["config", "Configuration"], ["audit", "Audit trail"]
 ] as const;
 type Tab = (typeof TABS)[number][0];
 
@@ -69,11 +108,16 @@ function inputDate(daysAgo = 0): string {
   return date.toISOString().slice(0, 10);
 }
 
-function queryRange(from: string, to: string): string {
+function dateRange(from: string, to: string): { from: string; to: string } {
   const start = new Date(`${from}T00:00:00`);
   const end = new Date(`${to}T00:00:00`);
   end.setDate(end.getDate() + 1);
-  return `from=${encodeURIComponent(start.toISOString())}&to=${encodeURIComponent(end.toISOString())}`;
+  return { from: start.toISOString(), to: end.toISOString() };
+}
+
+function queryRange(from: string, to: string): string {
+  const range = dateRange(from, to);
+  return `from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}`;
 }
 
 export default function AdminHome() {
@@ -167,6 +211,12 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
   const [flags, setFlags] = useState<FlagRow[]>([]);
   const [zones, setZones] = useState<ZoneRow[]>([]);
   const [audit, setAudit] = useState<AuditRow[]>([]);
+  const [merchantSettlements, setMerchantSettlements] = useState<MerchantSettlementRow[]>([]);
+  const [courierPayouts, setCourierPayouts] = useState<CourierPayoutRow[]>([]);
+  const [merchantPreview, setMerchantPreview] = useState<SettlementPreview | null>(null);
+  const [courierPreview, setCourierPreview] = useState<SettlementPreview | null>(null);
+  const [reconciliation, setReconciliation] = useState<ReconciliationSummary | null>(null);
+  const [webhookEvents, setWebhookEvents] = useState<WebhookEventRow[]>([]);
   const [documents, setDocuments] = useState<{ courier: CourierRow; items: DocumentRow[] } | null>(null);
   const [editingUser, setEditingUser] = useState<UserRow | null>(null);
   const [draftRoles, setDraftRoles] = useState<string[]>([]);
@@ -209,6 +259,23 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
       } else if (tab === "users") {
         const term = search ? `?search=${encodeURIComponent(search)}` : "";
         setUsers((await api<{ items: UserRow[] }>(`/v1/admin/users${term}`)).items);
+      } else if (tab === "settlements") {
+        const range = dateRange(from, to);
+        const status = statusFilter ? `?status=${encodeURIComponent(statusFilter)}` : "";
+        const [merchantsResult, couriersResult, merchantPreviewResult, courierPreviewResult] = await Promise.all([
+          api<{ items: MerchantSettlementRow[] }>(`/v1/admin/settlements/merchants${status}`),
+          api<{ items: CourierPayoutRow[] }>(`/v1/admin/settlements/couriers${status}`),
+          api<SettlementPreview>(`/v1/admin/settlements/preview?kind=merchant&from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}`),
+          api<SettlementPreview>(`/v1/admin/settlements/preview?kind=courier&from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}`)
+        ]);
+        setMerchantSettlements(merchantsResult.items); setCourierPayouts(couriersResult.items);
+        setMerchantPreview(merchantPreviewResult); setCourierPreview(courierPreviewResult);
+      } else if (tab === "reconciliation") {
+        const [summaryResult, eventsResult] = await Promise.all([
+          api<ReconciliationSummary>("/v1/admin/reconciliation/summary"),
+          api<{ items: WebhookEventRow[] }>("/v1/admin/reconciliation/webhooks?status=failed")
+        ]);
+        setReconciliation(summaryResult); setWebhookEvents(eventsResult.items);
       } else if (tab === "config") {
         const [flagResult, zoneResult] = await Promise.all([
           api<{ items: FlagRow[] }>("/v1/admin/feature-flags"),
@@ -296,6 +363,51 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
     try {
       await downloadCsv(`/v1/admin/reports/orders.csv?${queryRange(from, to)}`, "orders.csv");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not export orders."); }
+  }
+
+  async function generateSettlements(kind: "merchant" | "courier") {
+    try {
+      const range = dateRange(from, to);
+      const result = await api<{ generated: unknown[]; skipped: unknown[] }>("/v1/admin/settlements/generate", {
+        method: "POST", body: JSON.stringify({ kind, ...range })
+      });
+      notify(`${result.generated.length} ${kind} settlement${result.generated.length === 1 ? "" : "s"} generated${result.skipped.length ? `, ${result.skipped.length} skipped` : ""}.`);
+      void load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not generate settlements."); }
+  }
+
+  async function transitionSettlement(kind: "merchant" | "courier", id: string, decision: "approve" | "fail" | "pay") {
+    let paymentReference: string | undefined;
+    if (decision === "pay") {
+      const reference = window.prompt("Bank or wallet payment reference");
+      if (!reference) return;
+      paymentReference = reference;
+    }
+    try {
+      await api(`/v1/admin/settlements/${kind === "merchant" ? "merchants" : "couriers"}/${id}/transition`, {
+        method: "POST", body: JSON.stringify({ decision, paymentReference })
+      });
+      notify(`${kind === "merchant" ? "Settlement" : "Payout"} ${decision === "pay" ? "marked paid" : decision === "approve" ? "approved" : "failed"}.`);
+      void load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not update settlement."); }
+  }
+
+  async function runReconciliation() {
+    try {
+      const result = await api<{ checked: number; succeeded: number; failed: number; pending: number; errors: number }>(
+        "/v1/admin/reconciliation/payments/run", { method: "POST", body: JSON.stringify({ limit: 100 }) }
+      );
+      notify(`Rechecked ${result.checked}: ${result.succeeded} succeeded, ${result.failed} failed, ${result.pending} pending, ${result.errors} errors.`);
+      void load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not run reconciliation."); }
+  }
+
+  async function replayWebhook(event: WebhookEventRow) {
+    try {
+      await api(`/v1/admin/reconciliation/webhooks/${event.id}/replay`, { method: "POST" });
+      notify("Webhook replayed.");
+      void load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not replay webhook."); }
   }
 
   async function signOut() {
@@ -437,6 +549,119 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
             </tr>)}</tbody>
           </table>
           {users.length === 0 && <p className="empty">No users found.</p>}
+        </div>
+      </section>}
+
+      {tab === "settlements" && <section className="stack">
+        <div className="panel">
+          <div className="panel-head">
+            <div><p className="eyebrow">SETTLEMENT RUN</p><h2>Close the period, pay the partners</h2></div>
+            <button className="ghost" onClick={() => void load()} disabled={loading}>{loading ? "Loading…" : "Refresh"}</button>
+          </div>
+          <div className="toolbar">
+            <label>From<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
+            <label>To<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
+            <label>Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All statuses</option>{["PENDING", "APPROVED", "PAID", "FAILED"].map((status) => <option key={status} value={status}>{status}</option>)}</select></label>
+          </div>
+          <div className="metric-grid">
+            <Metric label="Merchant payable" value={money(merchantPreview?.items.reduce((sum, item) => sum + item.netPayableMinor, 0) ?? 0)} note={`${merchantPreview?.items.length ?? 0} merchants ready`} accent />
+            <Metric label="Courier payable" value={money(courierPreview?.items.reduce((sum, item) => sum + item.netPayableMinor, 0) ?? 0)} note={`${courierPreview?.items.length ?? 0} couriers ready`} />
+            <Metric label="Merchant settlements" value={String(merchantSettlements.length)} note={`${merchantSettlements.filter((row) => row.status === "PENDING").length} pending`} />
+            <Metric label="Courier payouts" value={String(courierPayouts.length)} note={`${courierPayouts.filter((row) => row.status === "PENDING").length} pending`} />
+          </div>
+          <div className="actions">
+            <button onClick={() => void generateSettlements("merchant")}>Generate merchant settlements</button>
+            <button className="ghost" onClick={() => void generateSettlements("courier")}>Generate courier payouts</button>
+          </div>
+          <p className="fine-print">Only delivered orders paid through the platform are included. Each order can be settled once; pending periods can be topped up before approval.</p>
+        </div>
+
+        <div className="panel table-wrap">
+          <div className="panel-head"><div><p className="eyebrow">MERCHANTS</p><h2>Settlement batches</h2></div></div>
+          <table><thead><tr><th>Period</th><th>Merchant</th><th>Orders</th><th>Gross</th><th>Commission</th><th>Net</th><th>Status</th><th /></tr></thead>
+            <tbody>{merchantSettlements.map((row) => <tr key={row.id}>
+              <td>{new Date(row.periodStart).toLocaleDateString()} → {new Date(row.periodEnd).toLocaleDateString()}</td>
+              <td><strong>{row.merchantName}</strong>{row.paymentReference ? <small className="block">{row.paymentReference}</small> : null}</td>
+              <td>{row.orderCount}</td><td>{money(row.grossMinor, row.currency)}</td><td>{money(row.commissionMinor, row.currency)}</td>
+              <td><strong>{money(row.netPayableMinor, row.currency)}</strong></td>
+              <td><span className={`status-pill ${row.status.toLowerCase()}`}>{row.status}</span></td>
+              <td className="actions">
+                {row.status === "PENDING" && <button className="ghost" onClick={() => void transitionSettlement("merchant", row.id, "approve")}>Approve</button>}
+                {row.status === "APPROVED" && <button onClick={() => void transitionSettlement("merchant", row.id, "pay")}>Mark paid</button>}
+                {(row.status === "PENDING" || row.status === "APPROVED") && <button className="ghost danger" onClick={() => void transitionSettlement("merchant", row.id, "fail")}>Fail</button>}
+              </td>
+            </tr>)}</tbody>
+          </table>
+          {merchantSettlements.length === 0 && <p className="empty">No merchant settlements in this filter.</p>}
+        </div>
+
+        <div className="panel table-wrap">
+          <div className="panel-head"><div><p className="eyebrow">COURIERS</p><h2>Payout batches</h2></div></div>
+          <table><thead><tr><th>Period</th><th>Courier</th><th>Orders</th><th>Earnings</th><th>Tips</th><th>Net</th><th>Status</th><th /></tr></thead>
+            <tbody>{courierPayouts.map((row) => <tr key={row.id}>
+              <td>{new Date(row.periodStart).toLocaleDateString()} → {new Date(row.periodEnd).toLocaleDateString()}</td>
+              <td><strong>{row.courierName ?? "Unnamed courier"}</strong><small className="block">{row.courierPhone ?? ""}{row.paymentReference ? ` · ${row.paymentReference}` : ""}</small></td>
+              <td>{row.orderCount}</td><td>{money(row.grossMinor, row.currency)}</td><td>{money(row.tipsMinor, row.currency)}</td>
+              <td><strong>{money(row.netPayableMinor, row.currency)}</strong></td>
+              <td><span className={`status-pill ${row.status.toLowerCase()}`}>{row.status}</span></td>
+              <td className="actions">
+                {row.status === "PENDING" && <button className="ghost" onClick={() => void transitionSettlement("courier", row.id, "approve")}>Approve</button>}
+                {row.status === "APPROVED" && <button onClick={() => void transitionSettlement("courier", row.id, "pay")}>Mark paid</button>}
+                {(row.status === "PENDING" || row.status === "APPROVED") && <button className="ghost danger" onClick={() => void transitionSettlement("courier", row.id, "fail")}>Fail</button>}
+              </td>
+            </tr>)}</tbody>
+          </table>
+          {courierPayouts.length === 0 && <p className="empty">No courier payouts in this filter.</p>}
+        </div>
+      </section>}
+
+      {tab === "reconciliation" && <section className="stack">
+        <div className="panel">
+          <div className="panel-head">
+            <div><p className="eyebrow">RECONCILIATION</p><h2>Match the ledger to the providers</h2></div>
+            <button onClick={() => void runReconciliation()}>Run payment reconciliation</button>
+          </div>
+          <div className="metric-grid">
+            <Metric label="Pending payments" value={String(reconciliation?.counts.pendingPayments ?? 0)} note={`${reconciliation?.counts.expiredPayments ?? 0} past expiry`} accent />
+            <Metric label="Failed webhooks" value={String(reconciliation?.counts.failedWebhooks ?? 0)} note={`${reconciliation?.counts.invalidWebhooks ?? 0} invalid signatures`} />
+            <Metric label="Payment / order drift" value={String((reconciliation?.counts.succeededUnreflected ?? 0) + (reconciliation?.counts.paidWithoutPayment ?? 0))} note="Needs manual review" />
+            <Metric label="Open settlements" value={String((reconciliation?.counts.pendingMerchantSettlements ?? 0) + (reconciliation?.counts.pendingCourierPayouts ?? 0))} note={`${reconciliation?.counts.pendingMerchantSettlements ?? 0} merchant · ${reconciliation?.counts.pendingCourierPayouts ?? 0} courier`} />
+          </div>
+          <p className="fine-print">Reconciliation asks Chapa and Stripe for the current status of pending payments older than two minutes. Amount mismatches and provider errors are left untouched for manual review.</p>
+        </div>
+
+        <div className="panel table-wrap">
+          <div className="panel-head"><div><p className="eyebrow">WEBHOOKS</p><h2>Failed events</h2></div></div>
+          <table><thead><tr><th>When</th><th>Provider</th><th>Event</th><th>Error</th><th /></tr></thead>
+            <tbody>{webhookEvents.map((event) => <tr key={event.id}>
+              <td>{shortDate(event.createdAt)}</td><td>{event.provider}</td>
+              <td><small>{event.providerEventId}</small></td>
+              <td>{event.processingError ?? "—"}</td>
+              <td className="actions">{event.replayable && <button className="ghost" onClick={() => void replayWebhook(event)}>Replay</button>}</td>
+            </tr>)}</tbody>
+          </table>
+          {webhookEvents.length === 0 && <p className="empty">No failed webhook events. Good.</p>}
+        </div>
+
+        <div className="two-column">
+          <div className="panel table-wrap">
+            <div className="panel-head"><div><p className="eyebrow">PAYMENTS</p><h2>Provider paid, order not marked</h2></div></div>
+            <table><thead><tr><th>Order</th><th>Provider</th><th>Payment</th><th>Order</th></tr></thead>
+              <tbody>{reconciliation?.issues.succeededWithoutOrderPaid.map((issue) => <tr key={issue.payment_id}>
+                <td>{issue.order_number}</td><td>{issue.provider}</td><td>{issue.payment_status}</td><td>{issue.order_payment_status}</td>
+              </tr>)}</tbody>
+            </table>
+            {!reconciliation?.issues.succeededWithoutOrderPaid.length && <p className="empty">No drift found.</p>}
+          </div>
+          <div className="panel table-wrap">
+            <div className="panel-head"><div><p className="eyebrow">ORDERS</p><h2>Paid without a payment</h2></div></div>
+            <table><thead><tr><th>Order</th><th>Status</th><th>Payment</th></tr></thead>
+              <tbody>{reconciliation?.issues.paidWithoutSucceededPayment.map((issue) => <tr key={issue.order_id}>
+                <td>{issue.order_number}</td><td>{issue.status}</td><td>{issue.payment_status}</td>
+              </tr>)}</tbody>
+            </table>
+            {!reconciliation?.issues.paidWithoutSucceededPayment.length && <p className="empty">No drift found.</p>}
+          </div>
         </div>
       </section>}
 

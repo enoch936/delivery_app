@@ -81,4 +81,15 @@ test("authorization isolation: customer sessions cannot use courier or admin ope
 
   const merchantProfile = await api(app, "GET", "/api/v1/merchant/me", { token: customer.accessToken });
   assert.equal(merchantProfile.statusCode, 403, merchantProfile.body);
+
+  const settlements = await api(app, "GET", "/api/v1/admin/settlements/merchants", { token: customer.accessToken });
+  assert.equal(settlements.statusCode, 403, settlements.body);
+
+  const reconciliation = await api(app, "GET", "/api/v1/admin/reconciliation/summary", { token: customer.accessToken });
+  assert.equal(reconciliation.statusCode, 403, reconciliation.body);
+
+  const reconciliationRun = await api(app, "POST", "/api/v1/admin/reconciliation/payments/run", {
+    token: customer.accessToken, payload: { limit: 5 }
+  });
+  assert.equal(reconciliationRun.statusCode, 403, reconciliationRun.body);
 });

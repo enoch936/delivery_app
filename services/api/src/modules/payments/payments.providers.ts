@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import Stripe from "stripe";
-import type { CheckoutSession, PaymentProvider, RefundResult } from "./payments.types.js";
+import type { CheckoutSession, PaymentProvider, ProviderPaymentStatus, RefundResult } from "./payments.types.js";
 
 export class SandboxPaymentProvider implements PaymentProvider {
   readonly name = "sandbox" as const;
@@ -19,6 +19,10 @@ export class SandboxPaymentProvider implements PaymentProvider {
     return { providerReference: `SBX-RF-${input.providerReference}`, status: "succeeded" };
   }
 
+  async fetchStatus(): Promise<ProviderPaymentStatus> {
+    return { status: "unknown", failureReason: "The sandbox provider has no remote payment status." };
+  }
+
   verifyWebhook(rawBody: string, signature: string | undefined): boolean {
     if (!this.webhookSecret) return true;
     if (!signature) return false;
@@ -30,6 +34,7 @@ export class SandboxPaymentProvider implements PaymentProvider {
 }
 
 type ChapaInitResponse = { status?: string; message?: string; data?: { checkout_url?: string; tx_ref?: string } };
+type ChapaVerifyResponse = { status?: string; message?: string; data?: { status?: string; amount?: string | number; currency?: string } };
 
 export class ChapaPaymentProvider implements PaymentProvider {
   readonly name = "chapa" as const;
@@ -71,6 +76,31 @@ export class ChapaPaymentProvider implements PaymentProvider {
       return { providerReference: input.providerReference, status: "failed", failureReason: body.message ?? `Chapa refund failed with HTTP ${response.status}.` };
     }
     return { providerReference: input.providerReference, status: "succeeded" };
+  }
+
+  async fetchStatus(input: Readonly<{ providerReference: string }>): Promise<ProviderPaymentStatus> {
+    try {
+      const response = await fetch(`https://api.chapa.co/v1/transaction/verify/${encodeURIComponent(input.providerReference)}`, {
+        headers: { Authorization: `Bearer ${this.secretKey}` },
+        signal: AbortSignal.timeout(15_000)
+      });
+      const body = (await response.json().catch(() => ({}))) as ChapaVerifyResponse;
+      if (!response.ok) {
+        return { status: "unknown", failureReason: body.message ?? `Chapa verification failed with HTTP ${response.status}.` };
+      }
+      const status = String(body.data?.status ?? body.status ?? "").toLowerCase();
+      const amount = Number(body.data?.amount);
+      const result: ProviderPaymentStatus = {
+        status: ["success", "succeeded", "paid"].includes(status) ? "succeeded"
+          : ["failed", "cancelled", "canceled"].includes(status) ? "failed"
+            : ["pending", "processing"].includes(status) ? "pending" : "unknown",
+        ...(Number.isFinite(amount) ? { amountMinor: Math.round(amount * 100) } : {}),
+        ...(body.message ? { failureReason: body.message } : {})
+      };
+      return result;
+    } catch (error) {
+      return { status: "unknown", failureReason: error instanceof Error ? error.message : "Chapa verification failed." };
+    }
   }
 
   verifyWebhook(rawBody: string, signature: string | undefined): boolean {
@@ -133,6 +163,22 @@ export class StripePaymentProvider implements PaymentProvider {
       return { providerReference: refund.id, status };
     } catch (error) {
       return { providerReference: input.providerReference, status: "failed", failureReason: error instanceof Error ? error.message : "Stripe refund failed." };
+    }
+  }
+
+  async fetchStatus(input: Readonly<{ providerReference: string }>): Promise<ProviderPaymentStatus> {
+    try {
+      const session = await this.stripe.checkout.sessions.retrieve(input.providerReference);
+      const status = session.payment_status === "paid" ? "succeeded"
+        : session.status === "expired" ? "failed"
+          : session.payment_status === "unpaid" || session.payment_status === "no_payment_required" ? "pending" : "unknown";
+      return {
+        status,
+        ...(session.amount_total !== null ? { amountMinor: session.amount_total } : {}),
+        ...(session.status === "expired" ? { failureReason: "Stripe checkout session expired." } : {})
+      };
+    } catch (error) {
+      return { status: "unknown", failureReason: error instanceof Error ? error.message : "Stripe session retrieval failed." };
     }
   }
 

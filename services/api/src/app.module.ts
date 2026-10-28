@@ -28,6 +28,7 @@ import { ReviewsModule } from "./modules/reviews/reviews.module.js";
 import { ZonesModule } from "./modules/zones/zones.module.js";
 import { GeocodingModule } from "./modules/geocoding/geocoding.module.js";
 import { DevicesModule } from "./modules/devices/devices.module.js";
+import { SettlementsModule } from "./modules/settlements/settlements.module.js";
 
 @Module({
   imports: [
@@ -59,7 +60,8 @@ import { DevicesModule } from "./modules/devices/devices.module.js";
     ReviewsModule,
     ZonesModule,
     GeocodingModule,
-    DevicesModule
+    DevicesModule,
+    SettlementsModule
   ]
 })
 export class AppModule {}

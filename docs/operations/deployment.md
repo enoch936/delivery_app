@@ -22,7 +22,16 @@ Use the direct (non-pooled) Neon host for migrations and seeds. Use the pooled h
 | Merchant portal | https://delivery-merchant-azure.vercel.app |
 | Admin portal | https://delivery-admin-kappa.vercel.app |
 
-Neon migrations `0001`–`0008` and both demo seeds are applied to the `production` branch. Stripe test checkout was verified end-to-end against this deployment: the hosted checkout completed, the signed webhook was accepted, the payment became `SUCCEEDED`, and the order became `CONFIRMED`/`PAID`.
+Neon migrations `0001`–`0009` and both demo seeds are applied to the `production` branch. Stripe test checkout was verified end-to-end against this deployment: the hosted checkout completed, the signed webhook was accepted, the payment became `SUCCEEDED`, and the order became `CONFIRMED`/`PAID`.
+
+## Finance operations
+
+- `POST /v1/admin/reconciliation/payments/run` asks Chapa/Stripe for the status of pending payments older than two minutes. Amount mismatches and provider errors are reported, not auto-applied.
+- `GET /v1/admin/reconciliation/summary` reports pending payments, failed/invalid webhooks, payment/order drift and open settlements.
+- Failed, signature-valid webhook events can be replayed from the admin **Reconciliation** tab.
+- Merchant settlements and courier payouts are generated from delivered, paid orders in a date window. Each order can enter at most one batch; a pending batch can be topped up by rerunning the same window.
+- Batches move `PENDING → APPROVED → PAID` (or `FAILED`). Marking paid requires a payment reference and posts the payable release against `platform_bank` in the ledger.
+- Cash orders are excluded until a cash-collection workflow exists, and partial-refund treatment in settlements is still a finance policy decision.
 
 Demo login: phone `+251918184887`, OTP `123456`. This account has customer, merchant-staff and admin roles plus owner membership in both seeded merchants so all three clients can be exercised. OTP requests are rate-limited; use the development code and wait if the limit is reached. Both Vercel portals were loaded in a browser against the deployed API with this session and rendered their live merchant/admin data.
 

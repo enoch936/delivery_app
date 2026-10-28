@@ -138,24 +138,186 @@ export class PaymentsService {
       throw new UnauthorizedException("Invalid webhook signature.");
     }
     try {
-      if (!providerReference) throw new Error("Webhook does not include a provider reference.");
-      const paymentResult = await this.database.query<PaymentRow>("SELECT * FROM payments WHERE provider_reference = $1", [providerReference]);
-      const payment = paymentResult.rows[0];
-      if (!payment) throw new Error(`No payment matches provider reference ${providerReference}.`);
-      const status = String(data.payment_status ?? data.status ?? payload.event ?? "").toLowerCase();
-      const eventType = String(payload.type ?? "").toLowerCase();
-      const paid = ["success", "succeeded", "paid", "charge.success"].includes(status) || eventType === "checkout.session.async_payment_succeeded";
-      if (paid) await this.markSucceeded(payment, null);
-      else if (["failed", "cancelled", "canceled", "expired", "unpaid"].includes(status) || eventType === "checkout.session.expired") {
-        await this.database.query("UPDATE payments SET status = 'FAILED', failure_reason = $2, updated_at = now() WHERE id = $1 AND status = 'PENDING'", [payment.id, status]);
-        await this.database.query("UPDATE orders SET payment_status = 'FAILED' WHERE id = $1 AND payment_status = 'PENDING'", [payment.order_id]);
-      }
-      await this.database.query("UPDATE payment_webhook_events SET processed_at = now() WHERE id = $1", [event.id]);
-      return { received: true };
+      return await this.applyWebhookPayload(payload, event.id);
     } catch (error) {
       await this.database.query("UPDATE payment_webhook_events SET processed_at = now(), processing_error = $2 WHERE id = $1", [event.id, error instanceof Error ? error.message : "unknown"]);
       throw error;
     }
+  }
+
+  private async applyWebhookPayload(payload: Record<string, unknown>, eventId: string): Promise<{ received: boolean }> {
+    const rawData = payload.data;
+    const data = (
+      rawData && typeof rawData === "object" && "object" in rawData && rawData.object && typeof rawData.object === "object"
+        ? rawData.object
+        : rawData && typeof rawData === "object" ? rawData : payload
+    ) as Record<string, unknown>;
+    const providerReference = String(data.tx_ref ?? data.trx_ref ?? data.reference ?? data.id ?? payload.tx_ref ?? "");
+    if (!providerReference) throw new Error("Webhook does not include a provider reference.");
+    const paymentResult = await this.database.query<PaymentRow>("SELECT * FROM payments WHERE provider_reference = $1", [providerReference]);
+    const payment = paymentResult.rows[0];
+    if (!payment) throw new Error(`No payment matches provider reference ${providerReference}.`);
+    const status = String(data.payment_status ?? data.status ?? payload.event ?? "").toLowerCase();
+    const eventType = String(payload.type ?? "").toLowerCase();
+    const paid = ["success", "succeeded", "paid", "charge.success"].includes(status) || eventType === "checkout.session.async_payment_succeeded";
+    if (paid) await this.markSucceeded(payment, null);
+    else if (["failed", "cancelled", "canceled", "expired", "unpaid"].includes(status) || eventType === "checkout.session.expired") {
+      await this.database.query("UPDATE payments SET status = 'FAILED', failure_reason = $2, updated_at = now() WHERE id = $1 AND status = 'PENDING'", [payment.id, status]);
+      await this.database.query("UPDATE orders SET payment_status = 'FAILED' WHERE id = $1 AND payment_status = 'PENDING'", [payment.order_id]);
+    }
+    await this.database.query("UPDATE payment_webhook_events SET processed_at = now(), processing_error = NULL WHERE id = $1", [eventId]);
+    return { received: true };
+  }
+
+  async reconciliationSummary() {
+    const counts = await this.database.query<{
+      pending_payments: number; expired_payments: number; invalid_webhooks: number; failed_webhooks: number;
+      succeeded_unreflected: number; paid_without_payment: number; pending_merchant_settlements: number; pending_courier_payouts: number;
+    }>(
+      `SELECT
+        (SELECT count(*)::int FROM payments WHERE provider <> 'cash' AND status = 'PENDING') AS pending_payments,
+        (SELECT count(*)::int FROM payments WHERE provider <> 'cash' AND status = 'PENDING' AND expires_at < now()) AS expired_payments,
+        (SELECT count(*)::int FROM payment_webhook_events WHERE signature_valid = false) AS invalid_webhooks,
+        (SELECT count(*)::int FROM payment_webhook_events WHERE processing_error IS NOT NULL) AS failed_webhooks,
+        (SELECT count(*)::int FROM payments p JOIN orders o ON o.id = p.order_id
+          WHERE p.status = 'SUCCEEDED' AND o.payment_status NOT IN ('PAID','PARTIALLY_REFUNDED','REFUNDED')) AS succeeded_unreflected,
+        (SELECT count(*)::int FROM orders o WHERE o.payment_status IN ('PAID','PARTIALLY_REFUNDED')
+          AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.order_id = o.id AND p.status IN ('SUCCEEDED','REFUNDED','PARTIALLY_REFUNDED'))) AS paid_without_payment,
+        (SELECT count(*)::int FROM merchant_settlements WHERE status = 'PENDING') AS pending_merchant_settlements,
+        (SELECT count(*)::int FROM courier_payouts WHERE status = 'PENDING') AS pending_courier_payouts`
+    );
+    const row = counts.rows[0];
+    const succeededWithoutOrderPaid = await this.database.query(
+      `SELECT p.id AS payment_id, p.provider, p.status AS payment_status, o.id AS order_id, o.order_number, o.payment_status AS order_payment_status
+       FROM payments p JOIN orders o ON o.id = p.order_id
+       WHERE p.status = 'SUCCEEDED' AND o.payment_status NOT IN ('PAID','PARTIALLY_REFUNDED','REFUNDED')
+       ORDER BY p.updated_at DESC LIMIT 20`
+    );
+    const paidWithoutSucceededPayment = await this.database.query(
+      `SELECT o.id AS order_id, o.order_number, o.payment_status, o.status
+       FROM orders o WHERE o.payment_status IN ('PAID','PARTIALLY_REFUNDED')
+         AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.order_id = o.id AND p.status IN ('SUCCEEDED','REFUNDED','PARTIALLY_REFUNDED'))
+       ORDER BY o.created_at DESC LIMIT 20`
+    );
+    return {
+      counts: {
+        pendingPayments: row?.pending_payments ?? 0, expiredPayments: row?.expired_payments ?? 0,
+        invalidWebhooks: row?.invalid_webhooks ?? 0, failedWebhooks: row?.failed_webhooks ?? 0,
+        succeededUnreflected: row?.succeeded_unreflected ?? 0, paidWithoutPayment: row?.paid_without_payment ?? 0,
+        pendingMerchantSettlements: row?.pending_merchant_settlements ?? 0, pendingCourierPayouts: row?.pending_courier_payouts ?? 0
+      },
+      issues: {
+        succeededWithoutOrderPaid: succeededWithoutOrderPaid.rows,
+        paidWithoutSucceededPayment: paidWithoutSucceededPayment.rows
+      }
+    };
+  }
+
+  async listWebhookEvents(filter: string | undefined, limit: number, offset: number) {
+    const result = await this.database.query<{
+      id: string; provider: string; provider_event_id: string; signature_valid: boolean;
+      processed_at: Date | null; processing_error: string | null; created_at: Date;
+    }>(
+      `SELECT id, provider, provider_event_id, signature_valid, processed_at, processing_error, created_at
+       FROM payment_webhook_events
+       WHERE ($1::text IS NULL
+         OR ($1 = 'failed' AND processing_error IS NOT NULL)
+         OR ($1 = 'invalid' AND signature_valid = false)
+         OR ($1 = 'unprocessed' AND processed_at IS NULL))
+       ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+      [filter ?? null, limit, offset]
+    );
+    return {
+      items: result.rows.map((row) => ({
+        id: row.id, provider: row.provider, providerEventId: row.provider_event_id, signatureValid: row.signature_valid,
+        processedAt: row.processed_at?.toISOString() ?? null, processingError: row.processing_error,
+        createdAt: row.created_at.toISOString(), replayable: row.signature_valid && (row.processing_error !== null || row.processed_at === null)
+      }))
+    };
+  }
+
+  async replayWebhookEvent(input: Readonly<{ eventId: string; actorUserId: string; requestId: string | null }>) {
+    const result = await this.database.query<{ id: string; provider: string; payload: Record<string, unknown>; signature_valid: boolean; processed_at: Date | null; processing_error: string | null }>(
+      "SELECT id, provider, payload, signature_valid, processed_at, processing_error FROM payment_webhook_events WHERE id = $1",
+      [input.eventId]
+    );
+    const event = result.rows[0];
+    if (!event) throw new NotFoundException("Webhook event not found.");
+    if (!event.signature_valid) throw new BadRequestException("Only webhook events with a valid signature can be replayed.");
+    if (event.processed_at && !event.processing_error) throw new ConflictException("This webhook event has already been processed.");
+    try {
+      await this.applyWebhookPayload(event.payload, event.id);
+    } catch (error) {
+      await this.database.query("UPDATE payment_webhook_events SET processed_at = now(), processing_error = $2 WHERE id = $1", [event.id, error instanceof Error ? error.message : "unknown"]);
+      throw error;
+    }
+    await this.audit.record({
+      actorUserId: input.actorUserId, action: "payment.webhook_replayed", entityType: "payment_webhook_event",
+      entityId: event.id, requestId: input.requestId, metadata: { provider: event.provider, previousError: event.processing_error }
+    });
+    return { replayed: true };
+  }
+
+  async reconcilePayments(input: Readonly<{ actorUserId: string; requestId: string | null; paymentId?: string | undefined; limit: number }>) {
+    const result = await this.database.query<PaymentRow>(
+      `SELECT * FROM payments
+       WHERE provider <> 'cash' AND status = 'PENDING' AND provider_reference IS NOT NULL
+         AND created_at < now() - interval '2 minutes'
+         AND ($1::uuid IS NULL OR id = $1)
+       ORDER BY created_at ASC LIMIT $2`,
+      [input.paymentId ?? null, input.limit]
+    );
+    const summary = { checked: result.rows.length, succeeded: 0, failed: 0, pending: 0, errors: 0, issues: [] as Array<{ paymentId: string; reason: string }> };
+    for (const payment of result.rows) {
+      const method = payment.provider === "chapa" ? "chapa" : payment.provider === "stripe" ? "stripe" : payment.provider === "sandbox" ? "sandbox" : null;
+      if (!method) {
+        summary.errors++;
+        summary.issues.push({ paymentId: payment.id, reason: `Unsupported payment provider ${payment.provider}.` });
+        continue;
+      }
+      try {
+        const remote = await this.providerFor(method).fetchStatus({
+          providerReference: payment.provider_reference ?? "", amountMinor: Number(payment.amount_minor), currency: payment.currency
+        });
+        if (remote.status === "succeeded") {
+          if (remote.amountMinor !== undefined && remote.amountMinor !== Number(payment.amount_minor)) {
+            summary.issues.push({ paymentId: payment.id, reason: `Provider amount ${remote.amountMinor} does not match ${payment.amount_minor}.` });
+            continue;
+          }
+          await this.markSucceeded(payment, input.requestId);
+          summary.succeeded++;
+          await this.audit.record({
+            actorUserId: input.actorUserId, action: "payment.reconciled_succeeded", entityType: "payment",
+            entityId: payment.id, requestId: input.requestId, metadata: { provider: payment.provider }
+          });
+        } else if (remote.status === "failed") {
+          await this.database.withTransaction(async (client) => {
+            const failureReason = remote.failureReason ?? `Provider reported ${remote.status}`;
+            await client.query("UPDATE payments SET status = 'FAILED', failure_reason = $2, updated_at = now() WHERE id = $1 AND status = 'PENDING'", [payment.id, failureReason]);
+            await client.query("INSERT INTO payment_attempts (payment_id, status, provider_reference) VALUES ($1,'FAILED',$2)", [payment.id, payment.provider_reference]);
+            await client.query("UPDATE orders SET payment_status = 'FAILED' WHERE id = $1 AND payment_status = 'PENDING'", [payment.order_id]);
+            await this.audit.record({
+              actorUserId: input.actorUserId, action: "payment.reconciled_failed", entityType: "payment",
+              entityId: payment.id, requestId: input.requestId, metadata: { provider: payment.provider, failureReason }
+            }, client);
+          });
+          summary.failed++;
+        } else {
+          summary.pending++;
+          if (remote.status === "unknown" || remote.failureReason) {
+            summary.issues.push({ paymentId: payment.id, reason: remote.failureReason ?? "Provider returned an unknown status." });
+          }
+        }
+      } catch (error) {
+        summary.errors++;
+        summary.issues.push({ paymentId: payment.id, reason: error instanceof Error ? error.message : "Reconciliation failed." });
+      }
+    }
+    await this.audit.record({
+      actorUserId: input.actorUserId, action: "payment.reconciliation_run", entityType: "payment", entityId: null, requestId: input.requestId,
+      metadata: { checked: summary.checked, succeeded: summary.succeeded, failed: summary.failed, pending: summary.pending, errors: summary.errors }
+    });
+    return summary;
   }
 
   async listRefunds(status: string | undefined, limit: number, offset: number) {

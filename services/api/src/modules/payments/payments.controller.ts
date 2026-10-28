@@ -2,7 +2,7 @@ import { BadRequestException, Body, Controller, Get, Headers, Param, ParseUUIDPi
 import { ApiBearerAuth, ApiHeader, ApiTags } from "@nestjs/swagger";
 import type { FastifyRequest } from "fastify";
 import { Type } from "class-transformer";
-import { IsIn, IsInt, IsOptional, IsString, Length, Max, Min } from "class-validator";
+import { IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Max, Min } from "class-validator";
 import { requireUser, requestId } from "../../common/auth-context.js";
 import { Roles } from "../auth/roles.decorator.js";
 import { RolesGuard } from "../auth/roles.guard.js";
@@ -27,6 +27,17 @@ class RefundListQuery {
   @IsOptional() @IsIn(["PENDING", "APPROVED", "REJECTED", "PROCESSING", "SUCCEEDED", "FAILED"]) status?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) offset?: number;
+}
+
+class WebhookEventListQuery {
+  @IsOptional() @IsIn(["failed", "invalid", "unprocessed"]) status?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) offset?: number;
+}
+
+class RunReconciliationDto {
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
+  @IsOptional() @IsUUID() paymentId?: string;
 }
 
 @ApiTags("payments")
@@ -75,6 +86,33 @@ export class PaymentsController {
   review(@Req() request: AuthenticatedRequest, @Param("refundId", ParseUUIDPipe) refundId: string, @Body() body: ReviewRefundDto) {
     const user = requireUser(request);
     return this.service.reviewRefund({ refundId, actorUserId: user.id, decision: body.decision, note: body.note ?? undefined, requestId: requestId(request) });
+  }
+
+  @Get("admin/reconciliation/summary")
+  @Roles("admin", "finance")
+  reconciliationSummary() {
+    return this.service.reconciliationSummary();
+  }
+
+  @Get("admin/reconciliation/webhooks")
+  @Roles("admin", "finance")
+  webhookEvents(@Query() query: WebhookEventListQuery) {
+    return this.service.listWebhookEvents(query.status, query.limit ?? 50, query.offset ?? 0);
+  }
+
+  @Post("admin/reconciliation/webhooks/:eventId/replay")
+  @Roles("admin", "finance")
+  replayWebhook(@Req() request: AuthenticatedRequest, @Param("eventId", ParseUUIDPipe) eventId: string) {
+    return this.service.replayWebhookEvent({ eventId, actorUserId: requireUser(request).id, requestId: requestId(request) });
+  }
+
+  @Post("admin/reconciliation/payments/run")
+  @Roles("admin", "finance")
+  reconcilePayments(@Req() request: AuthenticatedRequest, @Body() body: RunReconciliationDto) {
+    return this.service.reconcilePayments({
+      actorUserId: requireUser(request).id, requestId: requestId(request),
+      paymentId: body.paymentId, limit: body.limit ?? 25
+    });
   }
 }
 
