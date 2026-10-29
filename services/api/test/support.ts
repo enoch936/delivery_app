@@ -141,6 +141,21 @@ export async function openTracking(baseUrl: string, orderId: string, token: stri
   });
 }
 
+export async function closeTracking(socket: WebSocket): Promise<void> {
+  if (socket.readyState === WebSocket.CLOSED) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      socket.terminate();
+      resolve();
+    }, 1_000);
+    socket.once("close", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    socket.close();
+  });
+}
+
 export async function trackingUpgradeStatus(baseUrl: string, orderId: string, token?: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(trackingUrl(baseUrl, orderId), token ? { headers: { authorization: `Bearer ${token}` } } : undefined);
@@ -163,8 +178,8 @@ export async function trackingUpgradeStatus(baseUrl: string, orderId: string, to
       finish(response.statusCode ?? 0);
     });
     socket.once("open", () => {
+      socket.once("close", () => finish(101));
       socket.close();
-      finish(101);
     });
     socket.once("error", (error) => {
       if (settled) return;

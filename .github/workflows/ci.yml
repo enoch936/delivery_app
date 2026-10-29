@@ -8,7 +8,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: npm }
       - run: npm ci
-      - run: npm run build
+      - run: NODE_ENV=production npm run build
       - run: npm run typecheck
       - run: npm test
 
@@ -40,7 +40,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: npm }
       - run: npm ci
-      - run: npm run build
+      - run: NODE_ENV=production npm run build
       - name: Apply migrations and demo seed
         run: |
           sudo apt-get update && sudo apt-get install -y postgresql-client

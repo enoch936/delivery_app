@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { api, createSession, createTestApp, databaseUrl, openTracking, placeOrder, randomPhone } from "./support.js";
+import { api, closeTracking, createSession, createTestApp, databaseUrl, openTracking, placeOrder, randomPhone } from "./support.js";
 
 test("customer E2E: catalog, cart, quote, order creation and live tracking", { skip: !databaseUrl }, async (t) => {
   const { app, baseUrl } = await createTestApp();
@@ -34,7 +34,7 @@ test("customer E2E: catalog, cart, quote, order creation and live tracking", { s
   assert.ok(Array.isArray(tracking.json().timeline));
 
   const { socket, message } = await openTracking(baseUrl, placed.orderId, session.accessToken);
-  socket.terminate();
+  await closeTracking(socket);
   assert.equal(message.type, "snapshot");
   const snapshot = message.data as { orderId: string; status: string };
   assert.equal(snapshot.orderId, placed.orderId);

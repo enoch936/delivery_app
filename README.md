@@ -8,7 +8,7 @@ delivery_app is a configuration-first, multi-service delivery platform foundatio
 - A tested money and order-lifecycle domain package using integer minor units and explicit status transitions.
 - Customer and courier Flutter apps (customer checkout, orders and support; courier onboarding, offers, delivery transitions and earnings).
 - Merchant and operations Next.js portals for store operations, catalog/inventory, settlements, payments, dispatch, courier review, configuration and reports.
-- PostgreSQL/PostGIS migrations `0001`–`0008`, demo catalog/config seeds, Docker Compose for local dependencies, and CI for API, web builds, migrations and Flutter checks.
+- PostgreSQL/PostGIS migrations `0001`–`0010`, demo catalog/config seeds, Docker Compose for local dependencies, and CI for API, web builds, migrations and Flutter checks.
 - Architecture decisions, domain model, security threat model, screen inventory, runbooks, release gates, and GitHub governance documents.
 
 Stripe card checkout and refunds run against Stripe test mode, and FCM push notifications are active for registered devices. Telebirr H5 checkout, refunds, status reconciliation, and signed webhook verification are implemented but disabled until a registered merchant public key is supplied. External SMS, Chapa, maps, and object-storage providers are still inactive. This is not a production release; see [release gates](docs/release-checklist.md).
@@ -41,7 +41,7 @@ The demo deployment uses Neon PostgreSQL, Render for the API, and Vercel for the
 - Merchant portal: https://delivery-merchant-azure.vercel.app
 - Admin portal: https://delivery-admin-kappa.vercel.app
 
-Run `DATABASE_URL=... npm run db:migrate:remote` and `DATABASE_URL=... npm run db:seed:remote` once against a new Neon branch, then set the API URL as `NEXT_PUBLIC_API_BASE_URL` on both Vercel projects. The Stripe webhook endpoint must point to `https://<api-host>/api/v1/payments/webhooks/stripe`. This demo uses the development OTP code and is not production-ready.
+Run `DATABASE_URL=... npm run db:migrate:remote` and `DATABASE_URL=... npm run db:seed:remote` once against a new Neon branch, then set the API URL as `NEXT_PUBLIC_API_BASE_URL` on both Vercel projects. Existing environments must apply every migration through `0010_multi_party_finance.sql` before deploying source that uses the multi-party finance features. The Stripe webhook endpoint must point to `https://<api-host>/api/v1/payments/webhooks/stripe`. This demo uses the development OTP code and is not production-ready.
 
 ## Quality commands
 

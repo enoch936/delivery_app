@@ -3,12 +3,13 @@ import 'dart:io';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 const firebaseApiKey = String.fromEnvironment('FIREBASE_API_KEY');
 const firebaseAppId = String.fromEnvironment('FIREBASE_APP_ID');
-const firebaseMessagingSenderId = String.fromEnvironment('FIREBASE_MESSAGING_SENDER_ID');
+const firebaseMessagingSenderId = String.fromEnvironment(
+  'FIREBASE_MESSAGING_SENDER_ID',
+);
 const firebaseProjectId = String.fromEnvironment('FIREBASE_PROJECT_ID');
 const firebaseStorageBucket = String.fromEnvironment('FIREBASE_STORAGE_BUCKET');
 const firebaseIosBundleId = String.fromEnvironment('FIREBASE_IOS_BUNDLE_ID');
@@ -20,13 +21,13 @@ bool get firebaseConfigured =>
     firebaseProjectId.isNotEmpty;
 
 FirebaseOptions get firebaseOptions => FirebaseOptions(
-      apiKey: firebaseApiKey,
-      appId: firebaseAppId,
-      messagingSenderId: firebaseMessagingSenderId,
-      projectId: firebaseProjectId,
-      storageBucket: firebaseStorageBucket.isEmpty ? null : firebaseStorageBucket,
-      iosBundleId: firebaseIosBundleId.isEmpty ? null : firebaseIosBundleId,
-    );
+  apiKey: firebaseApiKey,
+  appId: firebaseAppId,
+  messagingSenderId: firebaseMessagingSenderId,
+  projectId: firebaseProjectId,
+  storageBucket: firebaseStorageBucket.isEmpty ? null : firebaseStorageBucket,
+  iosBundleId: firebaseIosBundleId.isEmpty ? null : firebaseIosBundleId,
+);
 
 @pragma('vm:entry-point')
 Future<void> firebaseBackgroundHandler(RemoteMessage message) async {
@@ -39,19 +40,17 @@ Future<void> firebaseBackgroundHandler(RemoteMessage message) async {
 class PushService {
   PushService({
     required this.app,
-    required Future<dynamic> Function(String path, Object? body) post,
-    required Future<dynamic> Function(String path) delete,
-    required bool Function() hasSession,
+    required this.post,
+    required this.delete,
+    required this.hasSession,
     this.messengerKey,
-  })  : _post = post,
-        _delete = delete,
-        _hasSession = hasSession;
+  });
 
   final String app;
   final GlobalKey<ScaffoldMessengerState>? messengerKey;
-  final Future<dynamic> Function(String path, Object? body) _post;
-  final Future<dynamic> Function(String path) _delete;
-  final bool Function() _hasSession;
+  final Future<dynamic> Function(String path, Object? body) post;
+  final Future<dynamic> Function(String path) delete;
+  final bool Function() hasSession;
 
   String? _token;
   StreamSubscription<String>? _tokenRefresh;
@@ -74,16 +73,20 @@ class PushService {
         sound: true,
         provisional: false,
       );
-      _permissionDenied = settings.authorizationStatus == AuthorizationStatus.denied;
+      _permissionDenied =
+          settings.authorizationStatus == AuthorizationStatus.denied;
       if (_permissionDenied || !Platform.isAndroid && !Platform.isIOS) return;
-      _token = await FirebaseMessaging.instance.getToken();
-      _tokenRefresh = FirebaseMessaging.instance.onTokenRefresh.listen((token) {
+      _tokenRefresh = FirebaseMessaging.instance.onRegistered.listen((token) {
         _token = token;
         unawaited(registerForSession());
       });
-      _foregroundMessages = FirebaseMessaging.onMessage.listen(_showForegroundMessage);
       _initialized = true;
+      await FirebaseMessaging.instance.register();
+      _foregroundMessages = FirebaseMessaging.onMessage.listen(
+        _showForegroundMessage,
+      );
     } catch (error) {
+      _initialized = false;
       debugPrint('Push notifications are unavailable: $error');
     }
   }
@@ -91,13 +94,20 @@ class PushService {
   Future<void> registerForSession() async {
     await initialize();
     final token = _token;
-    if (token == null || !_hasSession()) return;
+    if (token == null || !hasSession()) return;
     try {
-      await _post('/v1/devices', {
+      await post('/v1/devices', {
         'token': token,
-        'platform': Platform.isAndroid ? 'android' : Platform.isIOS ? 'ios' : 'other',
+        'platform': Platform.isAndroid
+            ? 'android'
+            : Platform.isIOS
+            ? 'ios'
+            : 'other',
         'app': app,
-        'appVersion': String.fromEnvironment('APP_VERSION', defaultValue: '1.0.0'),
+        'appVersion': String.fromEnvironment(
+          'APP_VERSION',
+          defaultValue: '1.0.0',
+        ),
       });
     } catch (error) {
       debugPrint('Device push registration failed: $error');
@@ -108,7 +118,7 @@ class PushService {
     final token = _token;
     if (token == null) return;
     try {
-      await _delete('/v1/devices/${Uri.encodeComponent(token)}');
+      await delete('/v1/devices/${Uri.encodeComponent(token)}');
     } catch (_) {
       // Device cleanup is best effort; backend revokes the token on next login.
     }

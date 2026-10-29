@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { api, createSession, createTestApp, databaseUrl, openTracking, placeOrder, randomPhone, trackingUpgradeStatus } from "./support.js";
+import { api, closeTracking, createSession, createTestApp, databaseUrl, openTracking, placeOrder, randomPhone, trackingUpgradeStatus } from "./support.js";
 
 test("authorization isolation: customers cannot read, cancel, track, or modify another customer's order", { skip: !databaseUrl }, async (t) => {
   const { app, baseUrl } = await createTestApp();
@@ -55,7 +55,7 @@ test("authorization isolation: customers cannot read, cancel, track, or modify a
   assert.equal(await trackingUpgradeStatus(baseUrl, placed.orderId, owner.accessToken), 101);
 
   const { socket, message } = await openTracking(baseUrl, placed.orderId, owner.accessToken);
-  socket.terminate();
+  await closeTracking(socket);
   assert.equal((message.data as { orderId: string }).orderId, placed.orderId);
 });
 
