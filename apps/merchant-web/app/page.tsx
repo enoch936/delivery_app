@@ -12,7 +12,7 @@ import {
   type Session
 } from "../lib/api";
 
-type Tab = "overview" | "orders" | "menu" | "settlements";
+type Tab = "overview" | "orders" | "menu" | "settlements" | "finance";
 
 type MerchantLocation = {
   id: string; name: string; addressLine: string; latitude: number | null; longitude: number | null;
@@ -158,7 +158,8 @@ function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => 
           ["overview", "Overview"],
           ["orders", "Orders"],
           ["menu", "Menu & stock"],
-          ["settlements", "Settlements"]
+          ["settlements", "Settlements"],
+          ["finance", "Finance"]
         ] as const).map(([value, label]) => <button key={value} className={tab === value ? "active" : ""} onClick={() => setTab(value)}>{label}</button>)}
       </nav>
       <div className="sidebar-foot">
@@ -188,6 +189,7 @@ function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => 
       {me && tab === "orders" ? <Orders notify={setToast} /> : null}
       {me && tab === "menu" ? <Menu me={me} reload={refresh} notify={setToast} /> : null}
       {me && tab === "settlements" ? <Settlements /> : null}
+      {me && tab === "finance" ? <Finance /> : null}
     </main>
     {toast ? <div className="toast">{toast}</div> : null}
   </div>;
@@ -489,6 +491,86 @@ function Settlements() {
         <td><span className={`status-text ${settlement.status.toLowerCase()}`}>{settlement.status}</span></td>
       </tr>)}</tbody>
     </table></div>}
+  </section>;
+}
+
+function Finance() {
+  const [settlements, setSettlements] = useState<Settlement[]>([]);
+  const [ledger, setLedger] = useState<Array<{ id: string; accountCode: string; debitMinor: number; creditMinor: number; currency: string; description: string | null; occurredAt: string }>>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const s = await api<{ items: Settlement[] }>("/v1/merchant/settlements");
+      setSettlements(s.items);
+      try {
+        const l = await api<{ items: Array<{ id: string; accountCode: string; debitMinor: number; creditMinor: number; currency: string; description: string | null; occurredAt: string }> }>("/v1/merchant/ledger?limit=50");
+        setLedger(l.items ?? []);
+      } catch {
+        setLedger([]);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not load finance data.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const totalNet = useMemo(() => settlements.reduce((sum, item) => sum + item.netPayableMinor, 0), [settlements]);
+
+  return <section className="stack">
+    <div className="panel">
+      <div className="panel-head">
+        <div><p className="eyebrow">FINANCE</p><h2>Earnings & payouts</h2></div>
+        <button className="ghost" onClick={() => void load()} disabled={loading}>{loading ? "Loading…" : "Refresh"}</button>
+      </div>
+      <div className="metric-grid">
+        <article className="metric accent"><span>Total net payable</span><strong>{money(totalNet)}</strong><p>{settlements.length} settlements</p></article>
+        <article className="metric"><span>Paid</span><strong>{money(settlements.filter((item) => item.status === "PAID").reduce((sum, item) => sum + item.netPayableMinor, 0))}</strong><p>Completed settlements</p></article>
+        <article className="metric"><span>Pending</span><strong>{money(settlements.filter((item) => item.status !== "PAID").reduce((sum, item) => sum + item.netPayableMinor, 0))}</strong><p>Awaiting payment</p></article>
+      </div>
+      {error ? <p className="form-error">{error}</p> : null}
+    </div>
+    <div className="panel table-wrap">
+      <div className="panel-head"><div><p className="eyebrow">SETTLEMENTS</p><h2>Settlement history</h2></div></div>
+      <table>
+        <thead><tr><th>Period</th><th>Gross</th><th>Commission</th><th>Net</th><th>Status</th><th>Paid</th></tr></thead>
+        <tbody>
+          {settlements.map((item) => (
+            <tr key={item.id}>
+              <td>{new Date(item.periodStart).toLocaleDateString()} – {new Date(item.periodEnd).toLocaleDateString()}</td>
+              <td>{money(item.grossMinor, item.currency)}</td>
+              <td>−{money(item.commissionMinor, item.currency)}</td>
+              <td><strong>{money(item.netPayableMinor, item.currency)}</strong></td>
+              <td><span className={`status-text ${item.status.toLowerCase()}`}>{item.status}</span></td>
+              <td>{item.paidAt ? new Date(item.paidAt).toLocaleDateString() : "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {settlements.length === 0 ? <p className="empty">No settlements recorded yet.</p> : null}
+    </div>
+    {ledger.length > 0 ? <div className="panel table-wrap">
+      <div className="panel-head"><div><p className="eyebrow">LEDGER</p><h2>Recent activity</h2></div></div>
+      <table>
+        <thead><tr><th>When</th><th>Account</th><th>Description</th><th>Debit</th><th>Credit</th></tr></thead>
+        <tbody>
+          {ledger.map((entry) => (
+            <tr key={entry.id}>
+              <td>{new Date(entry.occurredAt).toLocaleString()}</td>
+              <td>{entry.accountCode}</td>
+              <td>{entry.description ?? "—"}</td>
+              <td>{entry.debitMinor ? money(entry.debitMinor, entry.currency) : "—"}</td>
+              <td>{entry.creditMinor ? money(entry.creditMinor, entry.currency) : "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div> : null}
   </section>;
 }
 

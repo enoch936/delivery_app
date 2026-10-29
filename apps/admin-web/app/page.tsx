@@ -71,6 +71,14 @@ type SettlementPreviewItem = {
   commissionMinor?: number; tipsMinor?: number; netPayableMinor: number;
 };
 type SettlementPreview = { kind: string; from: string; to: string; items: SettlementPreviewItem[] };
+type PayoutAccountRow = { id: string; ownerType: string; ownerId: string; provider: string; accountName: string; accountNumberLast4: string | null; currency: string; status: string; verifiedAt: string | null; createdAt: string };
+type PayoutBatchItemRow = { id: string; settlementKind: string; settlementId: string; payoutAccountId: string; amountMinor: number; currency: string; status: string; providerReference: string | null; failureReason: string | null; completedAt: string | null };
+type PayoutBatchRow = { id: string; provider: string; currency: string; status: string; totalAmountMinor: number; itemCount: number; submittedAt: string | null; completedAt: string | null; createdAt: string; items?: PayoutBatchItemRow[] };
+type CodRow = { id: string; orderId: string; amountMinor: number; currency: string; status: string; collectedBy: string | null; collectedAt: string | null; remittedAt: string | null; remittanceReference: string | null; reconciledAt: string | null; createdAt: string };
+type SubscriptionPlanRow = { id: string; slug: string; name: string; amountMinor: number; currency: string; billingInterval: string; isActive: boolean };
+type SubscriptionRow = { id: string; userId: string; planId: string; status: string; startsAt: string; endsAt: string | null; canceledAt: string | null; autoRenew: boolean; createdAt: string };
+type LedgerEntryRow = { id: string; ledgerId: string; accountCode: string; accountType: string; debitMinor: number; creditMinor: number; currency: string; description: string | null; referenceType: string | null; referenceId: string | null; metadata: unknown; occurredAt: string; postedAt: string };
+type LedgerBalance = { accountCode: string; accountType: string; debitMinor: number; creditMinor: number; netMinor: number };
 type ReconciliationSummary = {
   counts: {
     pendingPayments: number; expiredPayments: number; invalidWebhooks: number; failedWebhooks: number;
@@ -95,7 +103,8 @@ type WebhookEventRow = {
 const TABS = [
   ["overview", "Overview"], ["orders", "Orders & reports"], ["merchants", "Merchants"],
   ["couriers", "Couriers"], ["users", "Users"], ["settlements", "Settlements"],
-  ["reconciliation", "Reconciliation"], ["config", "Configuration"], ["audit", "Audit trail"]
+  ["payout-batches", "Payout Batches"], ["cod", "COD"], ["subscriptions", "Subscriptions"],
+  ["ledger", "Ledger"], ["reconciliation", "Reconciliation"], ["config", "Configuration"], ["audit", "Audit trail"]
 ] as const;
 type Tab = (typeof TABS)[number][0];
 
@@ -225,6 +234,14 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
     maximumDeliveryFeeMinor: 0, serviceFeeMinor: 0, nightSurchargeMinor: 0,
     commissionBps: 1500, currency: "ETB"
   });
+  const [payoutAccounts, setPayoutAccounts] = useState<PayoutAccountRow[]>([]);
+  const [payoutBatches, setPayoutBatches] = useState<PayoutBatchRow[]>([]);
+  const [payoutBatchDetail, setPayoutBatchDetail] = useState<PayoutBatchRow | null>(null);
+  const [codRows, setCodRows] = useState<CodRow[]>([]);
+  const [subscriptionPlans, setSubscriptionPlans] = useState<SubscriptionPlanRow[]>([]);
+  const [subscriptions, setSubscriptions] = useState<SubscriptionRow[]>([]);
+  const [ledgerEntries, setLedgerEntries] = useState<LedgerEntryRow[]>([]);
+  const [ledgerBalances, setLedgerBalances] = useState<LedgerBalance[]>([]);
 
   function notify(message: string) {
     setToast(message);
@@ -270,6 +287,29 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
         ]);
         setMerchantSettlements(merchantsResult.items); setCourierPayouts(couriersResult.items);
         setMerchantPreview(merchantPreviewResult); setCourierPreview(courierPreviewResult);
+      } else if (tab === "payout-batches") {
+        const [accounts, batches] = await Promise.all([
+          api<{ items: PayoutAccountRow[] }>(`/v1/admin/payouts/accounts?ownerType=merchant&ownerId=all`),
+          api<{ items: PayoutBatchRow[] }>("/v1/admin/payouts/batches")
+        ]);
+        setPayoutAccounts(accounts.items ?? []);
+        setPayoutBatches(batches.items ?? []);
+      } else if (tab === "cod") {
+        setCodRows((await api<{ items: CodRow[] }>("/v1/admin/cod")).items ?? []);
+      } else if (tab === "subscriptions") {
+        const [plans, subs] = await Promise.all([
+          api<{ items: SubscriptionPlanRow[] }>("/v1/admin/subscriptions/plans"),
+          api<{ items: SubscriptionRow[] }>("/v1/admin/subscriptions")
+        ]);
+        setSubscriptionPlans(plans.items ?? []);
+        setSubscriptions(subs.items ?? []);
+      } else if (tab === "ledger") {
+        const [balances, entries] = await Promise.all([
+          api<{ items: LedgerBalance[] }>("/v1/admin/ledger/balances"),
+          api<{ items: LedgerEntryRow[] }>("/v1/admin/ledger/entries?limit=100")
+        ]);
+        setLedgerBalances(balances.items ?? []);
+        setLedgerEntries(entries.items ?? []);
       } else if (tab === "reconciliation") {
         const [summaryResult, eventsResult] = await Promise.all([
           api<ReconciliationSummary>("/v1/admin/reconciliation/summary"),
@@ -408,6 +448,41 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
       notify("Webhook replayed.");
       void load();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not replay webhook."); }
+  }
+
+  async function submitPayoutBatch(batchId: string) {
+    try {
+      await api(`/v1/admin/payouts/batches/${batchId}/submit`, { method: "POST" });
+      notify("Payout batch submitted.");
+      void load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not submit batch."); }
+  }
+
+  async function completePayoutItem(batchId: string, itemId: string, status: "succeeded" | "failed") {
+    try {
+      const providerReference = status === "succeeded" ? window.prompt("Provider reference") ?? undefined : undefined;
+      const failureReason = status === "failed" ? window.prompt("Failure reason") ?? undefined : undefined;
+      await api(`/v1/admin/payouts/batches/${batchId}/items/${itemId}/complete`, { method: "POST", body: JSON.stringify({ status, providerReference, failureReason }) });
+      notify(`Item ${status}.`);
+      void load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not complete item."); }
+  }
+
+  async function viewPayoutBatch(batchId: string) {
+    try {
+      const batch = await api<PayoutBatchRow>(`/v1/admin/payouts/batches/${batchId}`);
+      setPayoutBatchDetail(batch);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load batch."); }
+  }
+
+  async function codAction(orderId: string, action: "collect" | "reconcile", remittanceReference?: string) {
+    try {
+      if (action === "collect") await api(`/v1/admin/cod/${orderId}/collect`, { method: "POST" });
+      if (action === "reconcile") await api(`/v1/admin/cod/${orderId}/reconcile`, { method: "POST" });
+      if (remittanceReference) await api(`/v1/admin/cod/${orderId}/remit`, { method: "POST", body: JSON.stringify({ remittanceReference }) });
+      notify("COD updated.");
+      void load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not update COD."); }
   }
 
   async function signOut() {
@@ -697,6 +772,166 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
             <button className={zone.isActive ? "toggle on" : "toggle"} onClick={() => void toggleZone(zone)}>{zone.isActive ? "Active" : "Paused"}</button>
           </div>)}</div>
           {zones.length === 0 && <p className="muted">No service zones configured.</p>}
+        </div>
+      </section>}
+
+      {tab === "payout-batches" && <section className="stack">
+        <div className="panel">
+          <div className="panel-head"><div><p className="eyebrow">PAYOUTS</p><h2>Payout accounts & batches</h2></div><button className="ghost" onClick={() => void load()}>Refresh</button></div>
+          <div className="metric-grid">
+            <Metric label="Accounts" value={String(payoutAccounts.length)} note="Configured payout accounts" />
+            <Metric label="Batches" value={String(payoutBatches.length)} note={`${payoutBatches.filter((b) => b.status === "PENDING").length} pending`} />
+          </div>
+        </div>
+        <div className="panel table-wrap">
+          <div className="panel-head"><div><p className="eyebrow">ACCOUNTS</p><h2>Payout accounts</h2></div></div>
+          <table><thead><tr><th>Owner</th><th>Provider</th><th>Account</th><th>Currency</th><th>Status</th><th>Verified</th></tr></thead>
+            <tbody>{payoutAccounts.map((account) => <tr key={account.id}>
+              <td><strong>{account.ownerType}</strong><small className="block">{account.ownerId}</small></td>
+              <td>{account.provider}</td>
+              <td>{account.accountName}{account.accountNumberLast4 ? <small className="block">****{account.accountNumberLast4}</small> : null}</td>
+              <td>{account.currency}</td>
+              <td><span className={`status-pill ${account.status.toLowerCase()}`}>{account.status}</span></td>
+              <td>{account.verifiedAt ? shortDate(account.verifiedAt) : "—"}</td>
+            </tr>)}</tbody>
+          </table>
+          {payoutAccounts.length === 0 && <p className="empty">No payout accounts configured.</p>}
+        </div>
+        <div className="panel table-wrap">
+          <div className="panel-head"><div><p className="eyebrow">BATCHES</p><h2>Payout batches</h2></div></div>
+          <table><thead><tr><th>Batch</th><th>Provider</th><th>Items</th><th>Total</th><th>Status</th><th>Created</th><th /></tr></thead>
+            <tbody>{payoutBatches.map((batch) => <tr key={batch.id}>
+              <td><small>{batch.id.slice(0, 8)}…</small></td>
+              <td>{batch.provider}</td>
+              <td>{batch.itemCount}</td>
+              <td><strong>{money(batch.totalAmountMinor, batch.currency)}</strong></td>
+              <td><span className={`status-pill ${batch.status.toLowerCase()}`}>{batch.status}</span></td>
+              <td>{shortDate(batch.createdAt)}</td>
+              <td className="actions">
+                <button className="ghost" onClick={() => void viewPayoutBatch(batch.id)}>View</button>
+                {batch.status === "PENDING" && <button onClick={() => void submitPayoutBatch(batch.id)}>Submit</button>}
+              </td>
+            </tr>)}</tbody>
+          </table>
+          {payoutBatches.length === 0 && <p className="empty">No payout batches.</p>}
+        </div>
+        {payoutBatchDetail && <div className="panel table-wrap">
+          <div className="panel-head"><div><p className="eyebrow">BATCH ITEMS</p><h2>{payoutBatchDetail.id.slice(0, 8)}… · {payoutBatchDetail.status}</h2></div><button className="ghost" onClick={() => setPayoutBatchDetail(null)}>Close</button></div>
+          <table><thead><tr><th>Kind</th><th>Settlement</th><th>Account</th><th>Amount</th><th>Status</th><th>Reference</th><th /></tr></thead>
+            <tbody>{(payoutBatchDetail.items ?? []).map((item) => <tr key={item.id}>
+              <td>{item.settlementKind}</td>
+              <td><small>{item.settlementId.slice(0, 8)}…</small></td>
+              <td><small>{item.payoutAccountId.slice(0, 8)}…</small></td>
+              <td>{money(item.amountMinor, item.currency)}</td>
+              <td><span className={`status-pill ${item.status.toLowerCase()}`}>{item.status}</span></td>
+              <td>{item.providerReference ?? item.failureReason ?? "—"}</td>
+              <td className="actions">
+                {item.status === "QUEUED" && <><button className="ghost" onClick={() => void completePayoutItem(payoutBatchDetail.id, item.id, "succeeded")}>Mark succeeded</button><button className="ghost danger" onClick={() => void completePayoutItem(payoutBatchDetail.id, item.id, "failed")}>Mark failed</button></>}
+              </td>
+            </tr>)}</tbody>
+          </table>
+        </div>}
+      </section>}
+
+      {tab === "cod" && <section className="stack">
+        <div className="panel">
+          <div className="panel-head"><div><p className="eyebrow">COD</p><h2>Cash on delivery</h2></div><button className="ghost" onClick={() => void load()}>Refresh</button></div>
+          <div className="metric-grid">
+            <Metric label="Entries" value={String(codRows.length)} note={`${codRows.filter((c) => c.status === "PENDING").length} pending`} />
+            <Metric label="Collected" value={String(codRows.filter((c) => c.status === "COLLECTED" || c.status === "REMITTED" || c.status === "RECONCILED").length)} note="Cash collected" />
+            <Metric label="Remitted" value={String(codRows.filter((c) => c.status === "REMITTED" || c.status === "RECONCILED").length)} note="Cash remitted" />
+          </div>
+        </div>
+        <div className="panel table-wrap">
+          <table><thead><tr><th>Order</th><th>Amount</th><th>Status</th><th>Collected</th><th>Remitted</th><th>Ref</th><th /></tr></thead>
+            <tbody>{codRows.map((row) => <tr key={row.id}>
+              <td><small>{row.orderId.slice(0, 8)}…</small></td>
+              <td><strong>{money(row.amountMinor, row.currency)}</strong></td>
+              <td><span className={`status-pill ${row.status.toLowerCase()}`}>{row.status}</span></td>
+              <td>{row.collectedAt ? shortDate(row.collectedAt) : "—"}</td>
+              <td>{row.remittedAt ? shortDate(row.remittedAt) : "—"}</td>
+              <td>{row.remittanceReference ?? "—"}</td>
+              <td className="actions">
+                {row.status === "PENDING" && <button className="ghost" onClick={() => void codAction(row.orderId, "collect")}>Collect</button>}
+                {row.status === "COLLECTED" && <button onClick={() => { const ref = window.prompt("Remittance reference"); if (ref) void codAction(row.orderId, "collect", ref); }}>Remit</button>}
+                {(row.status === "REMITTED") && <button className="ghost" onClick={() => void codAction(row.orderId, "reconcile")}>Reconcile</button>}
+              </td>
+            </tr>)}</tbody>
+          </table>
+          {codRows.length === 0 && <p className="empty">No COD entries.</p>}
+        </div>
+      </section>}
+
+      {tab === "subscriptions" && <section className="stack">
+        <div className="panel">
+          <div className="panel-head"><div><p className="eyebrow">SUBSCRIPTIONS</p><h2>Plans & subscriptions</h2></div><button className="ghost" onClick={() => void load()}>Refresh</button></div>
+          <div className="metric-grid">
+            <Metric label="Plans" value={String(subscriptionPlans.length)} note="Configured plans" />
+            <Metric label="Subscriptions" value={String(subscriptions.length)} note={`${subscriptions.filter((s) => s.status === "ACTIVE").length} active`} />
+          </div>
+        </div>
+        <div className="two-column">
+          <div className="panel table-wrap">
+            <div className="panel-head"><div><p className="eyebrow">PLANS</p><h2>Subscription plans</h2></div></div>
+            <table><thead><tr><th>Plan</th><th>Amount</th><th>Interval</th><th>Active</th></tr></thead>
+              <tbody>{subscriptionPlans.map((plan) => <tr key={plan.id}>
+                <td><strong>{plan.name}</strong><small className="block">{plan.slug}</small></td>
+                <td>{money(plan.amountMinor, plan.currency)}</td>
+                <td>{plan.billingInterval}</td>
+                <td>{plan.isActive ? "Yes" : "No"}</td>
+              </tr>)}</tbody>
+            </table>
+            {subscriptionPlans.length === 0 && <p className="empty">No plans.</p>}
+          </div>
+          <div className="panel table-wrap">
+            <div className="panel-head"><div><p className="eyebrow">SUBSCRIPTIONS</p><h2>User subscriptions</h2></div></div>
+            <table><thead><tr><th>User</th><th>Plan</th><th>Status</th><th>Starts</th><th>Ends</th></tr></thead>
+              <tbody>{subscriptions.map((sub) => <tr key={sub.id}>
+                <td><small>{sub.userId.slice(0, 8)}…</small></td>
+                <td><small>{sub.planId.slice(0, 8)}…</small></td>
+                <td><span className={`status-pill ${sub.status.toLowerCase()}`}>{sub.status}</span></td>
+                <td>{shortDate(sub.startsAt)}</td>
+                <td>{sub.endsAt ? shortDate(sub.endsAt) : "—"}</td>
+              </tr>)}</tbody>
+            </table>
+            {subscriptions.length === 0 && <p className="empty">No subscriptions.</p>}
+          </div>
+        </div>
+      </section>}
+
+      {tab === "ledger" && <section className="stack">
+        <div className="panel">
+          <div className="panel-head"><div><p className="eyebrow">LEDGER</p><h2>Double-entry ledger</h2></div><button className="ghost" onClick={() => void load()}>Refresh</button></div>
+          <div className="metric-grid">
+            <Metric label="Accounts" value={String(ledgerBalances.length)} note="Ledger accounts" />
+          </div>
+        </div>
+        <div className="panel table-wrap">
+          <div className="panel-head"><div><p className="eyebrow">BALANCES</p><h2>Account balances</h2></div></div>
+          <table><thead><tr><th>Account</th><th>Type</th><th>Debit</th><th>Credit</th><th>Net</th></tr></thead>
+            <tbody>{ledgerBalances.map((bal) => <tr key={bal.accountCode}>
+              <td><strong>{bal.accountCode}</strong></td>
+              <td>{bal.accountType}</td>
+              <td>{money(bal.debitMinor)}</td>
+              <td>{money(bal.creditMinor)}</td>
+              <td><strong>{money(bal.netMinor)}</strong></td>
+            </tr>)}</tbody>
+          </table>
+          {ledgerBalances.length === 0 && <p className="empty">No balances.</p>}
+        </div>
+        <div className="panel table-wrap">
+          <div className="panel-head"><div><p className="eyebrow">ENTRIES</p><h2>Recent ledger entries</h2></div></div>
+          <table><thead><tr><th>When</th><th>Account</th><th>Description</th><th>Debit</th><th>Credit</th><th>Ref</th></tr></thead>
+            <tbody>{ledgerEntries.map((entry) => <tr key={entry.id}>
+              <td>{shortDate(entry.occurredAt)}</td>
+              <td><strong>{entry.accountCode}</strong><small className="block">{entry.accountType}</small></td>
+              <td>{entry.description ?? "—"}</td>
+              <td>{entry.debitMinor ? money(entry.debitMinor, entry.currency) : "—"}</td>
+              <td>{entry.creditMinor ? money(entry.creditMinor, entry.currency) : "—"}</td>
+              <td>{entry.referenceType ? <small>{entry.referenceType}/{entry.referenceId?.slice(0, 8)}</small> : "—"}</td>
+            </tr>)}</tbody>
+          </table>
+          {ledgerEntries.length === 0 && <p className="empty">No ledger entries.</p>}
         </div>
       </section>}
 
