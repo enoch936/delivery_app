@@ -540,13 +540,33 @@ class _LoginScreenState extends State<LoginScreen> {
   final codeController = TextEditingController();
   String? challengeId;
   bool busy = false;
+  int resendSeconds = 0;
+  Timer? resendTimer;
   String? error;
 
   @override
   void dispose() {
     phoneController.dispose();
     codeController.dispose();
+    resendTimer?.cancel();
     super.dispose();
+  }
+
+  void _startResendCooldown() {
+    resendTimer?.cancel();
+    setState(() => resendSeconds = 30);
+    resendTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (resendSeconds <= 1) {
+        timer.cancel();
+        setState(() => resendSeconds = 0);
+      } else {
+        setState(() => resendSeconds -= 1);
+      }
+    });
   }
 
   Future<void> sendCode() async {
@@ -557,6 +577,7 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final challenge = await widget.client.requestOtp(phoneController.text.trim());
       setState(() => challengeId = challenge['challengeId'] as String?);
+      _startResendCooldown();
     } catch (cause) {
       setState(() => error = cause.toString());
     } finally {
@@ -687,6 +708,14 @@ class _LoginScreenState extends State<LoginScreen> {
                           error = null;
                         }),
                 child: Text(l10n.differentNumber),
+              ),
+              TextButton(
+                onPressed: busy || resendSeconds > 0 ? null : sendCode,
+                child: Text(
+                  resendSeconds > 0
+                      ? '${l10n.resendCode} ${resendSeconds}s'
+                      : l10n.resendCode,
+                ),
               ),
             ],
             const SizedBox(height: 40),
@@ -2349,6 +2378,116 @@ class ProfileScreen extends StatelessWidget {
   final ApiClient client;
   final ValueChanged<String> onLocaleChanged;
 
+  Future<void> _editProfile(BuildContext context) async {
+    final displayName = TextEditingController(text: user['displayName']?.toString() ?? '');
+    final email = TextEditingController(text: user['email']?.toString() ?? '');
+    final values = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Edit profile'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: displayName, decoration: const InputDecoration(labelText: 'Name')),
+            const SizedBox(height: 12),
+            TextField(controller: email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'Email (optional)')),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, {'displayName': displayName.text.trim(), 'email': email.text.trim()}),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    displayName.dispose();
+    email.dispose();
+    if (values == null || !context.mounted) return;
+    try {
+      final updated = asMap(await client.post('/v1/users/me/preferences', values));
+      user['displayName'] = updated['displayName'];
+      user['email'] = updated['email'];
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Profile updated.')));
+    } catch (cause) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(cause.toString())));
+    }
+  }
+
+  Future<void> _editPrivacy(BuildContext context) async {
+    try {
+      final profile = asMap(await client.get('/v1/users/me'));
+      var marketing = profile['marketingConsent'] == true;
+      var analytics = profile['analyticsConsent'] == true;
+      if (!context.mounted) return;
+      final values = await showDialog<Map<String, bool>>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            title: const Text('Privacy choices'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SwitchListTile(value: marketing, onChanged: (value) => setDialogState(() => marketing = value), title: const Text('Offers and promotions')),
+                SwitchListTile(value: analytics, onChanged: (value) => setDialogState(() => analytics = value), title: const Text('Product analytics')),
+              ],
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+              FilledButton(onPressed: () => Navigator.pop(dialogContext, {'marketingConsent': marketing, 'analyticsConsent': analytics}), child: const Text('Save choices')),
+            ],
+          ),
+        ),
+      );
+      if (values == null || !context.mounted) return;
+      await client.post('/v1/users/me/preferences', values);
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Privacy choices updated.')));
+    } catch (cause) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(cause.toString())));
+    }
+  }
+
+  Future<void> _exportData(BuildContext context) async {
+    try {
+      final result = asMap(await client.get('/v1/users/me/export'));
+      if (!context.mounted) return;
+      final orders = asList(result['orders']).length;
+      final addresses = asList(result['addresses']).length;
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Your data export'),
+          content: Text('Export generated at ${shortDate(result['exportedAt']?.toString())}.\n\n$orders orders and $addresses saved addresses are included.'),
+          actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close'))],
+        ),
+      );
+    } catch (cause) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(cause.toString())));
+    }
+  }
+
+  Future<void> _deleteAccount(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Request account deletion?'),
+        content: const Text('Your account will be marked for deletion and active sessions will be revoked. This cannot be undone from the app.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Request deletion')),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    try {
+      await client.post('/v1/users/me/deletion-request');
+      await onSignOut();
+    } catch (cause) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(cause.toString())));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -2401,6 +2540,13 @@ class ProfileScreen extends StatelessWidget {
           child: Column(
             children: [
               ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: const Text('Edit profile'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _editProfile(context),
+              ),
+              const Divider(height: 1),
+              ListTile(
                 leading: const Icon(Icons.shopping_bag_outlined),
                 title: Text(l10n.yourCart),
                 trailing: const Icon(Icons.chevron_right),
@@ -2421,6 +2567,26 @@ class ProfileScreen extends StatelessWidget {
                     if (value != null) onLocaleChanged(value);
                   },
                 ),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.privacy_tip_outlined),
+                title: const Text('Privacy choices'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _editPrivacy(context),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.download_outlined),
+                title: const Text('Export my data'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _exportData(context),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.delete_outline, color: Color(0xFFA63A32)),
+                title: const Text('Request account deletion'),
+                onTap: () => _deleteAccount(context),
               ),
               const Divider(height: 1),
               ListTile(

@@ -51,6 +51,7 @@ class AppLocalizations {
   String get verifying => _t('Verifying…', 'በማረጋገጥ ላይ…');
   String get continueLabel => _t('Continue', 'ቀጥል');
   String get differentNumber => _t('Use a different number', 'ሌላ ቁጥር ተጠቀም');
+  String get resendCode => _t('Resend code', 'ኮዱን እንደገና ላክ');
   String get terms => _t(
         'By continuing you agree to the delivery_app terms and privacy policy.',
         'በመቀጠል የdelivery_app ውሎችን እና የግላዊነት መመሪያን ተቀብለዋል።',
