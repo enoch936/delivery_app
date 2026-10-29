@@ -93,3 +93,53 @@ test("authorization isolation: customer sessions cannot use courier or admin ope
   });
   assert.equal(reconciliationRun.statusCode, 403, reconciliationRun.body);
 });
+
+test("authorization isolation: business accounts are tenant-scoped", { skip: !databaseUrl }, async (t) => {
+  const { app } = await createTestApp();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const firstOwner = await createSession(app, randomPhone());
+  const secondOwner = await createSession(app, randomPhone());
+
+  const firstRegistration = await api(app, "POST", "/api/v1/business/accounts", {
+    token: firstOwner.accessToken,
+    payload: { name: "First Test Organization", currency: "ETB" }
+  });
+  assert.equal(firstRegistration.statusCode, 201, firstRegistration.body);
+  const firstAccountId = firstRegistration.json().id as string;
+
+  const secondRegistration = await api(app, "POST", "/api/v1/business/accounts", {
+    token: secondOwner.accessToken,
+    payload: { name: "Second Test Organization", currency: "ETB" }
+  });
+  assert.equal(secondRegistration.statusCode, 201, secondRegistration.body);
+  const secondAccountId = secondRegistration.json().id as string;
+  assert.notEqual(firstAccountId, secondAccountId);
+
+  const ownerDetail = await api(app, "GET", `/api/v1/business/accounts/${firstAccountId}`, {
+    token: firstOwner.accessToken
+  });
+  assert.equal(ownerDetail.statusCode, 200, ownerDetail.body);
+  assert.equal(ownerDetail.json().id, firstAccountId);
+
+  const intruderDetail = await api(app, "GET", `/api/v1/business/accounts/${firstAccountId}`, {
+    token: secondOwner.accessToken
+  });
+  assert.equal(intruderDetail.statusCode, 403, intruderDetail.body);
+
+  const intruderLocation = await api(app, "POST", `/api/v1/business/accounts/${firstAccountId}/locations`, {
+    token: secondOwner.accessToken,
+    payload: { label: "Unauthorized location", addressLine: "Should not be stored" }
+  });
+  assert.equal(intruderLocation.statusCode, 403, intruderLocation.body);
+
+  const firstAccounts = await api(app, "GET", "/api/v1/business/accounts", { token: firstOwner.accessToken });
+  assert.equal(firstAccounts.statusCode, 200, firstAccounts.body);
+  assert.deepEqual(firstAccounts.json().items.map((item: { id: string }) => item.id), [firstAccountId]);
+
+  const secondAccounts = await api(app, "GET", "/api/v1/business/accounts", { token: secondOwner.accessToken });
+  assert.equal(secondAccounts.statusCode, 200, secondAccounts.body);
+  assert.deepEqual(secondAccounts.json().items.map((item: { id: string }) => item.id), [secondAccountId]);
+});

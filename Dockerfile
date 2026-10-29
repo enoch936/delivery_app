@@ -14,11 +14,12 @@ RUN npm run build --workspace @delivery-app/domain --workspace @delivery-app/val
 
 FROM node:24-bookworm-slim
 WORKDIR /app
-ENV NODE_ENV=development
+ENV NODE_ENV=production
 COPY --from=build /app/package.json /app/package-lock.json ./
 COPY --from=build /app/node_modules node_modules
 COPY --from=build /app/services/api/package.json services/api/package.json
 COPY --from=build /app/services/api/dist services/api/dist
 COPY --from=build /app/packages packages
 EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD node -e "fetch('http://127.0.0.1:3000/api/health/live').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
 CMD ["node", "services/api/dist/main.js"]
