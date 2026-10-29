@@ -12,6 +12,7 @@ export type RuntimeConfig = Readonly<{
   authTokenSecret: string | undefined;
   otpProvider: "disabled" | "development";
   otpDevelopmentCode: string | undefined;
+  emailProvider: "disabled" | "development";
   otpRequestLimit: number;
   deliveryFeeMinor: bigint;
   serviceFeeMinor: bigint;
@@ -86,6 +87,9 @@ export function readRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     if (nodeEnv !== "development") throw new Error("The development OTP provider can only run in development.");
     if (!/^\d{6}$/.test(otpDevelopmentCode ?? "")) throw new Error("OTP_DEVELOPMENT_CODE must be six digits when the development provider is enabled.");
   }
+  const emailProvider = environment.EMAIL_PROVIDER ?? "disabled";
+  if (emailProvider !== "disabled" && emailProvider !== "development") throw new Error("EMAIL_PROVIDER must be disabled or development until a verified provider is configured.");
+  if (emailProvider === "development" && nodeEnv !== "development" && nodeEnv !== "test") throw new Error("The development email provider can only run in development or test.");
   const authTokenSecret = environment.AUTH_TOKEN_SECRET;
   if ((nodeEnv === "staging" || nodeEnv === "production") && (!authTokenSecret || authTokenSecret.length < 32)) {
     throw new Error("AUTH_TOKEN_SECRET must be at least 32 characters outside local development.");
@@ -163,6 +167,7 @@ export function readRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     authTokenSecret,
     otpProvider,
     otpDevelopmentCode,
+    emailProvider,
     otpRequestLimit: positiveInteger(environment.OTP_REQUEST_LIMIT, 3),
     deliveryFeeMinor,
     serviceFeeMinor,

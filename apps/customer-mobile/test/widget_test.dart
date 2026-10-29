@@ -7,7 +7,7 @@ import 'package:customer_mobile/main.dart';
 import 'package:customer_mobile/push_service.dart';
 
 void main() {
-  testWidgets('shows the customer sign-in screen', (WidgetTester tester) async {
+  testWidgets('completes welcome onboarding and shows the customer sign-in screen', (WidgetTester tester) async {
     SharedPreferences.setMockInitialValues({});
     final storage = AppStorage(await SharedPreferences.getInstance(), const FlutterSecureStorage());
     final client = ApiClient(storage);
@@ -19,6 +19,14 @@ void main() {
     );
 
     await tester.pumpWidget(DeliveryApp(client: client, storage: storage, push: push));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Delivery that fits your day.'), findsOneWidget);
+    await tester.tap(find.text('Next'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Next'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Get started'));
     await tester.pumpAndSettle();
 
     expect(find.text('Good food,\nright now.'), findsOneWidget);

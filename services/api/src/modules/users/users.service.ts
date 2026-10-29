@@ -1,5 +1,7 @@
-import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { ConflictException, Injectable, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
+import { createHmac, randomUUID } from "node:crypto";
 import { DatabaseService } from "../../database/database.service.js";
+import { readRuntimeConfig } from "../../config/runtime-config.js";
 
 @Injectable()
 export class UsersService {
@@ -117,6 +119,57 @@ export class UsersService {
       exportedAt: new Date().toISOString(), profile, addresses: addresses.rows,
       orders: orders.rows, favorites: favorites.rows, reviews: reviews.rows
     };
+  }
+
+  async requestEmailVerification(userId: string, email: string, requestId: string | null) {
+    const config = readRuntimeConfig();
+    if (config.emailProvider === "disabled") throw new ServiceUnavailableException("Email verification is not configured yet.");
+    const secret = config.authTokenSecret;
+    if (!secret) throw new ServiceUnavailableException("Email verification is not configured yet.");
+    const challengeId = randomUUID();
+    const code = config.otpDevelopmentCode;
+    if (!code) throw new ServiceUnavailableException("Email verification is not configured yet.");
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    await this.database.query(
+      `INSERT INTO email_challenges (id, user_id, email, purpose, code_hash, provider, expires_at, request_id)
+       VALUES ($1, $2, $3, 'verification', $4, $5, $6, $7)`,
+      [challengeId, userId, email.toLowerCase(), this.hashEmailCode(secret, challengeId, email, code), config.emailProvider, expiresAt, requestId]
+    );
+    return { challengeId, expiresAt: expiresAt.toISOString(), ...(config.emailProvider === "development" ? { developmentCode: code } : {}) };
+  }
+
+  async verifyEmail(userId: string, email: string, challengeId: string, code: string) {
+    const config = readRuntimeConfig();
+    const secret = config.authTokenSecret;
+    if (!secret) throw new ServiceUnavailableException("Email verification is not configured yet.");
+    const result = await this.database.query<{ id: string; code_hash: string; expires_at: Date; attempts: number; consumed_at: Date | null }>(
+      `SELECT id, code_hash, expires_at, attempts, consumed_at FROM email_challenges
+       WHERE id = $1 AND user_id = $2 AND email = $3 AND purpose = 'verification' FOR UPDATE`,
+      [challengeId, userId, email.toLowerCase()]
+    );
+    const challenge = result.rows[0];
+    if (!challenge || challenge.consumed_at || challenge.expires_at <= new Date() || challenge.attempts >= 5) {
+      throw new ConflictException("The email verification code is invalid or expired.");
+    }
+    if (challenge.code_hash !== this.hashEmailCode(secret, challengeId, email, code)) {
+      await this.database.query("UPDATE email_challenges SET attempts = attempts + 1 WHERE id = $1", [challengeId]);
+      throw new ConflictException("The email verification code is invalid or expired.");
+    }
+    await this.database.withTransaction(async (client) => {
+      await client.query("UPDATE email_challenges SET consumed_at = now() WHERE id = $1", [challengeId]);
+      await client.query("UPDATE users SET email = $2, email_verified_at = now(), updated_at = now() WHERE id = $1", [userId, email.toLowerCase()]);
+    });
+    return this.profile(userId);
+  }
+
+  async requestEmailRecovery(email: string) {
+    const config = readRuntimeConfig();
+    if (config.emailProvider === "disabled") throw new ServiceUnavailableException("Email recovery is not configured yet.");
+    throw new ServiceUnavailableException("Email recovery requires a password/reset provider configuration.");
+  }
+
+  private hashEmailCode(secret: string, challengeId: string, email: string, code: string): string {
+    return createHmac("sha256", secret).update(`${challengeId}:${email.toLowerCase()}:${code}`).digest("hex");
   }
 }
 

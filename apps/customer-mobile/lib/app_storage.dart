@@ -51,6 +51,7 @@ class AppStorage {
   static const _queueKey = 'delivery.offline_queue.v1';
   static const _cachePrefix = 'delivery.cache.';
   static const _localeKey = 'delivery.locale.v1';
+  static const _welcomeKey = 'delivery.welcome.completed.v1';
 
   static Future<AppStorage> open() async {
     final preferences = await SharedPreferences.getInstance();
@@ -151,4 +152,8 @@ class AppStorage {
       await _preferences.setString(_localeKey, code);
     }
   }
+
+  bool get welcomeCompleted => _preferences.getBool(_welcomeKey) ?? false;
+
+  Future<void> setWelcomeCompleted() => _preferences.setBool(_welcomeKey, true);
 }

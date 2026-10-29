@@ -52,6 +52,20 @@ class AppLocalizations {
   String get continueLabel => _t('Continue', 'ቀጥል');
   String get differentNumber => _t('Use a different number', 'ሌላ ቁጥር ተጠቀም');
   String get resendCode => _t('Resend code', 'ኮዱን እንደገና ላክ');
+  String get welcomeTitle => _t('Delivery that fits your day.', 'ከቀንዎ ጋር የሚስማማ ማድረስ።');
+  String get welcomeBody => _t('Shop trusted local merchants, follow every order, and get help when you need it.', 'ከታመኑ የአካባቢ ነጋዴዎች ይግዙ፣ ትዕዛዝዎን ይከታተሉ እና እገዛ ሲያስፈልግዎ ያግኙ።');
+  String get welcomeDiscoveryTitle => _t('Everything nearby.', 'በአቅራቢያዎ ያለው ሁሉ።');
+  String get welcomeDiscoveryBody => _t('Find meals, groceries, and everyday essentials with clear prices and delivery estimates.', 'ምግብ፣ ግሮሰሪ እና የዕለት ተዕለት እቃዎችን በግልጽ ዋጋ እና የማድረሻ ግምት ያግኙ።');
+  String get welcomeTrustTitle => _t('Always in the loop.', 'ሁልጊዜ መረጃ ይኑርዎት።');
+  String get welcomeTrustBody => _t('See order progress, courier updates, and support in one place.', 'የትዕዛዝ ሂደትን፣ የማድረሻ ዝመናዎችን እና እገዛን በአንድ ቦታ ይመልከቱ።');
+  String get getStarted => _t('Get started', 'ጀምር');
+  String get next => _t('Next', 'ቀጣይ');
+  String get notificationPreferences => _t('Notification preferences', 'የማሳወቂያ ምርጫዎች');
+  String get orderUpdates => _t('Order updates', 'የትዕዛዝ ዝመናዎች');
+  String get promotions => _t('Promotions', 'ማስታወቂያዎች');
+  String get pushNotifications => _t('Push notifications', 'የpush ማሳወቂያዎች');
+  String get smsNotifications => _t('SMS notifications', 'የSMS ማሳወቂያዎች');
+  String get emailNotifications => _t('Email notifications', 'የኢሜይል ማሳወቂያዎች');
   String get terms => _t(
         'By continuing you agree to the delivery_app terms and privacy policy.',
         'በመቀጠል የdelivery_app ውሎችን እና የግላዊነት መመሪያን ተቀብለዋል።',

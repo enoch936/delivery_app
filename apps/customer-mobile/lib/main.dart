@@ -144,6 +144,7 @@ class _DeliveryAppState extends State<DeliveryApp> {
       ),
       home: AuthGate(
         client: widget.client,
+        storage: widget.storage,
         push: widget.push,
         onLocaleChanged: _changeLocale,
       ),
@@ -475,11 +476,13 @@ class AuthGate extends StatefulWidget {
   const AuthGate({
     super.key,
     required this.client,
+    required this.storage,
     required this.push,
     required this.onLocaleChanged,
   });
 
   final ApiClient client;
+  final AppStorage storage;
   final PushService push;
   final ValueChanged<String> onLocaleChanged;
 
@@ -512,6 +515,12 @@ class _AuthGateState extends State<AuthGate> {
   @override
   Widget build(BuildContext context) {
     if (widget.client.session == null) {
+      if (!widget.storage.welcomeCompleted) {
+        return WelcomeScreen(
+          storage: widget.storage,
+          onComplete: () => setState(() {}),
+        );
+      }
       return LoginScreen(
         client: widget.client,
         onSignedIn: _signedIn,
@@ -521,6 +530,91 @@ class _AuthGateState extends State<AuthGate> {
       client: widget.client,
       onSignedOut: _signedOut,
       onLocaleChanged: widget.onLocaleChanged,
+    );
+  }
+}
+
+class WelcomeScreen extends StatefulWidget {
+  const WelcomeScreen({super.key, required this.storage, required this.onComplete});
+
+  final AppStorage storage;
+  final VoidCallback onComplete;
+
+  @override
+  State<WelcomeScreen> createState() => _WelcomeScreenState();
+}
+
+class _WelcomeScreenState extends State<WelcomeScreen> {
+  final controller = PageController();
+  int page = 0;
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _complete() async {
+    await widget.storage.setWelcomeCompleted();
+    if (mounted) widget.onComplete();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final slides = [
+      (l10n.welcomeTitle, l10n.welcomeBody, Icons.delivery_dining_outlined, const Color(0xFFE8613D)),
+      (l10n.welcomeDiscoveryTitle, l10n.welcomeDiscoveryBody, Icons.storefront_outlined, const Color(0xFF2F6B4F)),
+      (l10n.welcomeTrustTitle, l10n.welcomeTrustBody, Icons.track_changes_outlined, const Color(0xFF1E2A24)),
+    ];
+    return Scaffold(
+      body: SafeArea(
+        child: Column(
+          children: [
+            Expanded(
+              child: PageView.builder(
+                controller: controller,
+                itemCount: slides.length,
+                onPageChanged: (value) => setState(() => page = value),
+                itemBuilder: (context, index) {
+                  final slide = slides[index];
+                  return Padding(
+                    padding: const EdgeInsets.fromLTRB(28, 70, 28, 24),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          height: 230,
+                          width: double.infinity,
+                          decoration: BoxDecoration(color: slide.$4, borderRadius: BorderRadius.circular(28)),
+                          child: Icon(slide.$3, size: 96, color: Colors.white),
+                        ),
+                        const SizedBox(height: 34),
+                        Text(slide.$1, style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -1.5)),
+                        const SizedBox(height: 14),
+                        Text(slide.$2, style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: const Color(0xFF6B7468), height: 1.5)),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(28, 8, 28, 28),
+              child: Row(
+                children: [
+                  Row(children: List.generate(slides.length, (index) => Container(width: 8, height: 8, margin: const EdgeInsets.only(right: 6), decoration: BoxDecoration(color: index == page ? const Color(0xFFE8613D) : const Color(0xFFD9D5C7), shape: BoxShape.circle)))),
+                  const Spacer(),
+                  FilledButton(
+                    onPressed: page == slides.length - 1 ? _complete : () => controller.nextPage(duration: const Duration(milliseconds: 260), curve: Curves.easeOut),
+                    child: Text(page == slides.length - 1 ? l10n.getStarted : l10n.next),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -2448,6 +2542,55 @@ class ProfileScreen extends StatelessWidget {
     }
   }
 
+  Future<void> _editNotifications(BuildContext context) async {
+    try {
+      final preferences = asMap(await client.get('/v1/notifications/preferences'));
+      var pushEnabled = preferences['pushEnabled'] == true;
+      var smsEnabled = preferences['smsEnabled'] == true;
+      var emailEnabled = preferences['emailEnabled'] == true;
+      var orderUpdates = preferences['orderUpdates'] == true;
+      var promotions = preferences['promotions'] == true;
+      var securityAlerts = preferences['securityAlerts'] == true;
+      if (!context.mounted) return;
+      final values = await showDialog<Map<String, bool>>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            title: Text(AppLocalizations.of(context).notificationPreferences),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SwitchListTile(value: pushEnabled, onChanged: (value) => setDialogState(() => pushEnabled = value), title: Text(AppLocalizations.of(context).pushNotifications)),
+                  SwitchListTile(value: smsEnabled, onChanged: (value) => setDialogState(() => smsEnabled = value), title: Text(AppLocalizations.of(context).smsNotifications)),
+                  SwitchListTile(value: emailEnabled, onChanged: (value) => setDialogState(() => emailEnabled = value), title: Text(AppLocalizations.of(context).emailNotifications)),
+                  SwitchListTile(value: orderUpdates, onChanged: (value) => setDialogState(() => orderUpdates = value), title: Text(AppLocalizations.of(context).orderUpdates)),
+                  SwitchListTile(value: promotions, onChanged: (value) => setDialogState(() => promotions = value), title: Text(AppLocalizations.of(context).promotions)),
+                  SwitchListTile(value: securityAlerts, onChanged: (value) => setDialogState(() => securityAlerts = value), title: const Text('Security alerts')),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, {
+                  'pushEnabled': pushEnabled, 'smsEnabled': smsEnabled, 'emailEnabled': emailEnabled,
+                  'orderUpdates': orderUpdates, 'promotions': promotions, 'securityAlerts': securityAlerts,
+                }),
+                child: const Text('Save'),
+              ),
+            ],
+          ),
+        ),
+      );
+      if (values == null || !context.mounted) return;
+      await client.patch('/v1/notifications/preferences', values);
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Notification preferences updated.')));
+    } catch (cause) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(cause.toString())));
+    }
+  }
+
   Future<void> _exportData(BuildContext context) async {
     try {
       final result = asMap(await client.get('/v1/users/me/export'));
@@ -2574,6 +2717,13 @@ class ProfileScreen extends StatelessWidget {
                 title: const Text('Privacy choices'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _editPrivacy(context),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.notifications_none_outlined),
+                title: Text(l10n.notificationPreferences),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _editNotifications(context),
               ),
               const Divider(height: 1),
               ListTile(
