@@ -1,4 +1,4 @@
-import { Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
 import type { RuntimeConfig } from "../../config/runtime-config.js";
 import {
   DISCOVERY_REPOSITORY,
@@ -49,6 +49,8 @@ export class DiscoveryService {
   }
 
   async listMerchants(input: MerchantQueryInput) {
+    validateLocation(input.latitude, input.longitude);
+    if (input.favoritesOnly && !input.userId) throw new UnauthorizedException("Sign in to view favorites.");
     return this.repository.listMerchants({
       citySlug: this.config.launchCitySlug,
       categorySlug: normalizeSlug(input.categorySlug),
@@ -59,12 +61,14 @@ export class DiscoveryService {
       openNow: input.openNow === true,
       featuredOnly: false,
       favoritesUserId: input.favoritesOnly === true ? input.userId ?? null : null,
+      recommendationUserId: input.userId ?? null,
       latitude: parseCoordinate(input.latitude, 90),
       longitude: parseCoordinate(input.longitude, 180)
     });
   }
 
   async getMerchant(merchantId: string, latitude?: number | undefined, longitude?: number | undefined) {
+    validateLocation(latitude, longitude);
     const merchant = await this.repository.getMerchantById(
       merchantId,
       this.config.launchCitySlug,
@@ -85,6 +89,7 @@ export class DiscoveryService {
   }
 
   async search(input: SearchQueryInput) {
+    validateLocation(input.latitude, input.longitude);
     const query = normalizeQuery(input.q);
     if (!query) {
       return {
@@ -114,7 +119,30 @@ export class DiscoveryService {
     });
   }
 
+  async suggestions(input: SearchQueryInput & Readonly<{ userId?: string | undefined }>) {
+    const query = normalizeQuery(input.q);
+    const userId = input.userId ?? null;
+    const recent = userId ? await this.repository.listRecentSearches(userId, 8) : [];
+    if (!query || query.length < 2) {
+      return {
+        query: query ?? "",
+        items: [],
+        recent: recent.map((item) => item.term).slice(0, 5)
+      };
+    }
+    const items = await this.repository.searchSuggestions({
+      citySlug: this.config.launchCitySlug,
+      query,
+      limit: clampLimit(input.limit ?? 8)
+    });
+    const matchingRecent = recent
+      .map((item) => item.term)
+      .filter((term) => term.toLowerCase().includes(query.toLowerCase()));
+    return { query, items, recent: [...new Set([...matchingRecent, ...recent.map((item) => item.term)])].slice(0, 5) };
+  }
+
   home(input: Readonly<{ userId: string | null; latitude?: number | undefined; longitude?: number | undefined }>) {
+    validateLocation(input.latitude, input.longitude);
     return this.repository.getHome({
       citySlug: this.config.launchCitySlug,
       userId: input.userId,
@@ -124,6 +152,7 @@ export class DiscoveryService {
   }
 
   listFavorites(userId: string, latitude?: number | undefined, longitude?: number | undefined) {
+    validateLocation(latitude, longitude);
     return this.repository.listFavorites(
       userId,
       this.config.launchCitySlug,
@@ -160,13 +189,13 @@ export class DiscoveryService {
 }
 
 function clampLimit(value: number | undefined): number {
-  if (!value || value < 1) return 20;
-  return Math.min(value, MAX_PAGE_SIZE);
+  if (!value || !Number.isFinite(value) || value < 1) return 20;
+  return Math.min(Math.floor(value), MAX_PAGE_SIZE);
 }
 
 function clampOffset(value: number | undefined): number {
-  if (!value || value < 0) return 0;
-  return value;
+  if (!value || !Number.isFinite(value) || value < 0) return 0;
+  return Math.floor(value);
 }
 
 function normalizeQuery(value: string | undefined): string | null {
@@ -186,4 +215,12 @@ function parseSort(value: string | undefined): MerchantSort {
 function parseCoordinate(value: number | undefined, limit: number): number | null {
   if (value === undefined || !Number.isFinite(value) || Math.abs(value) > limit) return null;
   return value;
+}
+
+function validateLocation(latitude: number | undefined, longitude: number | undefined): void {
+  if ((latitude === undefined) !== (longitude === undefined)
+    || (latitude !== undefined && parseCoordinate(latitude, 90) === null)
+    || (longitude !== undefined && parseCoordinate(longitude, 180) === null)) {
+    throw new BadRequestException("Provide both lat and lng as valid coordinates.");
+  }
 }

@@ -12,6 +12,16 @@ export type ServiceCategoryRecord = Readonly<{
   merchantCount: number;
 }>;
 
+export type MerchantDayHours = Readonly<{ closed: boolean; open: string | null; close: string | null }>;
+
+export type MerchantWeeklyHours = Readonly<{
+  day: string;
+  label: string;
+  open: string | null;
+  close: string | null;
+  closed: boolean;
+}>;
+
 export type MerchantSummaryRecord = Readonly<{
   id: string;
   slug: string;
@@ -26,22 +36,26 @@ export type MerchantSummaryRecord = Readonly<{
   priceLevel: number;
   deliveryFeeMinor: number;
   minOrderMinor: number;
+  deliveryRadiusKm: number;
   etaMinMinutes: number;
   etaMaxMinutes: number;
   isFeatured: boolean;
   tags: readonly string[];
   isOpen: boolean;
+  isDeliverable: boolean;
   distanceKm: number | null;
+  todayHours: MerchantDayHours | null;
+  nextOpenAt: string | null;
 }>;
 
 export type MerchantDetailRecord = MerchantSummaryRecord &
   Readonly<{
     openingHours: Record<string, unknown>;
+    weeklyHours: readonly MerchantWeeklyHours[];
     addressLine: string | null;
-    deliveryFeeMinor: number;
-    minOrderMinor: number;
     latitude: number | null;
     longitude: number | null;
+    deliveryUnavailableReason: string | null;
   }>;
 
 export type ProductRecord = Readonly<{
@@ -76,6 +90,8 @@ export type DiscoveryBannerRecord = Readonly<{
   ctaLabel: string;
   imageUrl: string | null;
   accentColor: string;
+  targetCategorySlug: string | null;
+  targetMerchantId: string | null;
 }>;
 
 export type RecentlyOrderedRecord = Readonly<{
@@ -87,13 +103,27 @@ export type RecentlyOrderedRecord = Readonly<{
   items: readonly Readonly<{ displayName: string; quantity: number }>[];
 }>;
 
+export type DiscoveryOfferRecord = Readonly<{
+  id: string;
+  code: string;
+  displayName: string;
+  kind: string;
+  value: number;
+  currency: string;
+  minimumOrderMinor: number;
+  maximumDiscountMinor: number | null;
+  merchantId: string | null;
+}>;
+
 export type DiscoveryHomeRecord = Readonly<{
   banners: readonly DiscoveryBannerRecord[];
+  offers: readonly DiscoveryOfferRecord[];
   categories: readonly ServiceCategoryRecord[];
   featured: readonly MerchantSummaryRecord[];
   recommendations: readonly MerchantSummaryRecord[];
   popularProducts: readonly SearchProductRecord[];
   recentlyOrdered: readonly RecentlyOrderedRecord[];
+  recentlyOrderedProducts: readonly SearchProductRecord[];
   stats: Readonly<{ merchantCount: number; openNowCount: number }>;
 }>;
 
@@ -107,6 +137,7 @@ export type MerchantListInput = Readonly<{
   openNow: boolean;
   featuredOnly: boolean;
   favoritesUserId: string | null;
+  recommendationUserId: string | null;
   latitude: number | null;
   longitude: number | null;
 }>;
@@ -136,12 +167,27 @@ export type SearchResultRecord = Readonly<{
 
 export type RecentSearchRecord = Readonly<{ term: string; lastSearchedAt: string }>;
 
+export type SearchSuggestionRecord = Readonly<{
+  type: "merchant" | "product" | "service";
+  label: string;
+  subtitle: string;
+  categorySlug: string | null;
+  targetId: string;
+}>;
+
+export type SearchSuggestionResultRecord = Readonly<{
+  query: string;
+  items: readonly SearchSuggestionRecord[];
+  recent: readonly string[];
+}>;
+
 export interface DiscoveryRepository {
   listActiveServiceCategories(): Promise<readonly ServiceCategoryRecord[]>;
   listMerchants(input: MerchantListInput): Promise<{ items: readonly MerchantSummaryRecord[]; total: number }>;
   getMerchantById(merchantId: string, citySlug: string, latitude: number | null, longitude: number | null): Promise<MerchantDetailRecord | null>;
   listProducts(input: Readonly<{ merchantId: string; query: string | null; limit: number; offset: number }>): Promise<{ items: readonly ProductRecord[]; total: number }>;
   search(input: SearchInput): Promise<SearchResultRecord>;
+  searchSuggestions(input: Readonly<{ citySlug: string; query: string; limit: number }>): Promise<readonly SearchSuggestionRecord[]>;
   getHome(input: Readonly<{ citySlug: string; userId: string | null; latitude: number | null; longitude: number | null }>): Promise<DiscoveryHomeRecord>;
   listFavorites(userId: string, citySlug: string, latitude: number | null, longitude: number | null): Promise<readonly MerchantSummaryRecord[]>;
   addFavorite(userId: string, merchantId: string): Promise<boolean>;

@@ -192,6 +192,15 @@ class AppStorage {
 
   Future<void> setSelectedLocation(String location) => _preferences.setString(_locationKey, location);
 
+  double? get selectedLatitude => _preferences.getDouble('delivery.location.latitude');
+  double? get selectedLongitude => _preferences.getDouble('delivery.location.longitude');
+
+  Future<void> saveDeliveryLocation(String label, double latitude, double longitude) async {
+    await _preferences.setString(_locationKey, label);
+    await _preferences.setDouble('delivery.location.latitude', latitude);
+    await _preferences.setDouble('delivery.location.longitude', longitude);
+  }
+
   static const _textScaleKey = 'delivery.a11y.text_scale.v1';
   static const _reduceMotionKey = 'delivery.a11y.reduce_motion.v1';
   static const _highContrastKey = 'delivery.a11y.high_contrast.v1';

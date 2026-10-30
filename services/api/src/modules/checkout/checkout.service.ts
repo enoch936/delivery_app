@@ -58,23 +58,43 @@ export class CheckoutService {
     if (!addressResult.rows[0]) throw new NotFoundException("Delivery address not found.");
     if (!addressResult.rows[0].has_location) throw new UnprocessableEntityException("Add a map location to this delivery address before checkout.");
 
-    const merchantResult = await this.database.query<{ id: string; display_name: string; status: string; category_slug: string | null; city_id: string; distance_meters: number | null }>(
+    const merchantResult = await this.database.query<{
+      id: string;
+      display_name: string;
+      status: string;
+      category_slug: string | null;
+      city_id: string;
+      distance_meters: number | null;
+      is_open: boolean;
+      is_available: boolean;
+      eta_min_minutes: number;
+      eta_max_minutes: number;
+    }>(
       `SELECT m.id, m.display_name, m.status,
               (SELECT sc.slug FROM merchant_service_categories msc JOIN service_categories sc ON sc.id = msc.service_category_id
                WHERE msc.merchant_id = m.id AND sc.is_active = true ORDER BY sc.sort_order LIMIT 1) AS category_slug,
               ml.city_id,
-              ST_DistanceSphere(ml.location::geometry, ca.location::geometry)::float8 AS distance_meters
+              ST_DistanceSphere(ml.location::geometry, ca.location::geometry)::float8 AS distance_meters,
+              discovery_is_open(ml.opening_hours) AS is_open,
+              discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km,
+                ST_Y(ca.location), ST_X(ca.location)) AS is_available,
+              (discovery_eta(ST_DistanceSphere(ml.location::geometry, ca.location::geometry)::float8 / 1000.0,
+                m.eta_min_minutes, m.eta_max_minutes))[1] AS eta_min_minutes,
+              (discovery_eta(ST_DistanceSphere(ml.location::geometry, ca.location::geometry)::float8 / 1000.0,
+                m.eta_min_minutes, m.eta_max_minutes))[2] AS eta_max_minutes
        FROM carts c
        JOIN merchants m ON m.id = c.merchant_id
        JOIN merchant_locations ml ON ml.merchant_id = m.id AND ml.is_active = true
        JOIN customer_addresses ca ON ca.id = $2
-       WHERE c.id = $1 AND m.status = 'active' AND ml.location IS NOT NULL
+       WHERE c.id = $1 AND m.status = 'active' AND ml.location IS NOT NULL AND ca.location IS NOT NULL
        ORDER BY ml.created_at ASC LIMIT 1`,
       [cart.id, input.deliveryAddressId]
     );
     const merchant = merchantResult.rows[0];
     if (!merchant) throw new ConflictException("This merchant is not available for delivery right now.");
     if (merchant.distance_meters === null) throw new UnprocessableEntityException("Unable to calculate delivery distance for this address.");
+    if (!merchant.is_available) throw new UnprocessableEntityException("This merchant does not deliver to the selected address yet. Choose another address or merchant.");
+    if (!merchant.is_open) throw new ConflictException("This merchant is closed right now. Try again during opening hours.");
 
     const itemsResult = await this.database.query<CartItemRow>(
       `SELECT ci.product_id, p.display_name, ci.quantity, p.base_price_minor, p.currency, p.is_available, i.quantity_available
@@ -137,7 +157,7 @@ export class CheckoutService {
     if (totalMinor < 0) throw new BadRequestException("The order total cannot be negative.");
 
     const expiresAt = new Date(Date.now() + this.config.quoteValiditySeconds * 1000);
-    const estimateMinutes = Math.max(15, Math.round(15 + merchant.distance_meters / 250));
+    const estimateMinutes = Math.max(15, Math.round((Number(merchant.eta_min_minutes) + Number(merchant.eta_max_minutes)) / 2));
     const lineItemsJson = lines.map((line) => ({ ...line }));
     const result = await this.database.query<{ id: string; created_at: Date }>(
       `INSERT INTO checkout_quotes (

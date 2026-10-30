@@ -6,16 +6,19 @@ import type {
   DiscoveryHomeRecord,
   DiscoveryOfferRecord,
   DiscoveryRepository,
+  MerchantDayHours,
   MerchantDetailRecord,
   MerchantListInput,
   MerchantSort,
   MerchantSummaryRecord,
+  MerchantWeeklyHours,
   ProductRecord,
   RecentlyOrderedRecord,
   RecentSearchRecord,
   SearchInput,
   SearchProductRecord,
   SearchResultRecord,
+  SearchSuggestionRecord,
   ServiceCategoryRecord
 } from "./discovery.types.js";
 
@@ -57,6 +60,8 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
         WHERE msc.merchant_id = m.id AND sc.slug = $${params.length} AND sc.is_active = true
       )`);
     }
+    let rankExpression: string | null = null;
+    let affinityExpression: string | null = null;
     if (input.query) {
       params.push(`%${escapeLike(input.query)}%`);
       const index = params.length;
@@ -75,11 +80,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     }
     if (input.latitude !== null && input.longitude !== null) {
       params.push(input.longitude, input.latitude);
-      filters.push(`ST_DWithin(
-        ml.location::geography,
-        ST_SetSRID(ST_MakePoint($${params.length - 1}, $${params.length}), 4326)::geography,
-        m.delivery_radius_km * 1000
-      )`);
+      filters.push(`discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km, $${params.length}, $${params.length - 1})`);
     }
 
     const from = `FROM merchants m
@@ -87,24 +88,45 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
         SELECT ml.* FROM merchant_locations ml
         JOIN cities c ON c.id = ml.city_id
         WHERE ml.merchant_id = m.id AND ml.is_active = true AND c.slug = $1 AND c.is_active = true
-        ORDER BY ml.name ASC LIMIT 1
+        ORDER BY ${this.branchOrder(input.latitude, input.longitude)} LIMIT 1
       ) ml ON true
       WHERE ${filters.join(" AND ")}`;
     const count = await this.getPool().query<{ count: string }>(`SELECT count(*)::text AS count ${from}`, params);
 
+    // Ranking and personalisation parameters are only referenced by the page
+    // query, so they are bound after the count query has run.
+    if (input.query) {
+      params.push(input.query);
+      rankExpression = `GREATEST(similarity(m.display_name, $${params.length}), similarity(COALESCE(m.description, ''), $${params.length}) * 0.6)`;
+    }
+    if (input.recommendationUserId) {
+      params.push(input.recommendationUserId);
+      affinityExpression = `(SELECT count(*) FROM orders o
+        WHERE o.user_id = $${params.length} AND o.merchant_id = m.id
+          AND o.status NOT IN ('CANCELLED', 'REFUNDED') AND o.created_at > now() - interval '180 days')`;
+    }
+
     const distance = this.distanceExpression(params, input.latitude, input.longitude, "ml");
+    const eta = `discovery_eta(${distance}, m.eta_min_minutes, m.eta_max_minutes)`;
+    const boost = input.sort === "recommended"
+      ? `${affinityExpression ? `(${affinityExpression}) DESC, ` : ""}${rankExpression ? `${rankExpression} DESC, ` : ""}`
+      : "";
     const limitIndex = params.push(input.limit);
     const offsetIndex = params.push(input.offset);
     const result = await this.getPool().query<MerchantRow>(
       `SELECT m.id, m.slug, m.display_name, m.description, m.logo_url, m.cover_image_url,
               m.rating, m.rating_count, m.price_level, m.delivery_fee_minor, m.min_order_minor,
-              m.delivery_radius_km, m.eta_min_minutes, m.eta_max_minutes, m.is_featured, m.tags,
+              m.delivery_radius_km, (${eta})[1] AS eta_min_minutes, (${eta})[2] AS eta_max_minutes,
+              m.is_featured, m.tags,
               ml.name AS location_name, ml.address_line, ml.opening_hours,
               ST_Y(ml.location) AS latitude, ST_X(ml.location) AS longitude,
               discovery_is_open(ml.opening_hours) AS is_open,
+              discovery_today_hours(ml.opening_hours) AS today_hours,
+              CASE WHEN discovery_is_open(ml.opening_hours) THEN NULL ELSE discovery_next_open(ml.opening_hours) END AS next_open_at,
+              true AS is_deliverable,
               ${distance} AS distance_km
        ${from}
-       ORDER BY ${orderBy(input.sort)}
+       ORDER BY ${boost}${orderBy(input.sort)}
        LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
       params
     );
@@ -115,22 +137,30 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
   async getMerchantById(merchantId: string, citySlug: string, latitude: number | null, longitude: number | null): Promise<MerchantDetailRecord | null> {
     const params: unknown[] = [merchantId, citySlug];
     const distance = this.distanceExpression(params, latitude, longitude, "ml");
+    const deliverable = latitude !== null && longitude !== null
+      ? "discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km, $3, $4)"
+      : "true";
+    const eta = `discovery_eta(${distance}, m.eta_min_minutes, m.eta_max_minutes)`;
     const result = await this.getPool().query<MerchantRow>(
       `SELECT m.id, m.slug, m.display_name, m.description, m.logo_url, m.cover_image_url,
               m.rating, m.rating_count, m.price_level, m.delivery_fee_minor, m.min_order_minor,
-              m.delivery_radius_km, m.eta_min_minutes, m.eta_max_minutes, m.is_featured, m.tags,
+              m.delivery_radius_km, (${eta})[1] AS eta_min_minutes, (${eta})[2] AS eta_max_minutes,
+              m.is_featured, m.tags,
               ml.name AS location_name, ml.address_line, ml.opening_hours,
               ST_Y(ml.location) AS latitude, ST_X(ml.location) AS longitude,
               discovery_is_open(ml.opening_hours) AS is_open,
+              discovery_today_hours(ml.opening_hours) AS today_hours,
+              CASE WHEN discovery_is_open(ml.opening_hours) THEN NULL ELSE discovery_next_open(ml.opening_hours) END AS next_open_at,
+              ${deliverable} AS is_deliverable,
               ${distance} AS distance_km
        FROM merchants m
        JOIN LATERAL (
          SELECT ml.* FROM merchant_locations ml
          JOIN cities c ON c.id = ml.city_id
          WHERE ml.merchant_id = m.id AND ml.is_active = true AND c.slug = $2 AND c.is_active = true
-         ORDER BY ml.name ASC LIMIT 1
+          ORDER BY ${this.branchOrder(latitude, longitude)} LIMIT 1
        ) ml ON true
-       WHERE m.id = $1 AND m.status = 'active'
+        WHERE m.id = $1 AND m.status = 'active'
        LIMIT 1`,
       params
     );
@@ -141,9 +171,11 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     return {
       ...summary,
       openingHours: row.opening_hours ?? {},
+      weeklyHours: weeklyHours(row.opening_hours ?? {}),
       addressLine: row.address_line ?? null,
       latitude: row.latitude === null ? null : Number(row.latitude),
-      longitude: row.longitude === null ? null : Number(row.longitude)
+      longitude: row.longitude === null ? null : Number(row.longitude),
+      deliveryUnavailableReason: summary.isDeliverable ? null : "Your delivery address is outside this merchant's delivery area."
     };
   }
 
@@ -175,46 +207,106 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     const includeMerchants = input.type === "all" || input.type === "merchant";
     const includeProducts = input.type === "all" || input.type === "product";
     const includeServices = input.type === "all" || input.type === "service";
+    // Mixed search returns the top hits of every section; paging therefore only
+    // applies to a single typed section, which keeps totals honest.
+    const paged = input.type !== "all";
 
-    const merchants = includeMerchants
-      ? (await this.listMerchants({
+    const merchantResult = includeMerchants
+      ? await this.listMerchants({
           citySlug: input.citySlug,
           categorySlug: input.categorySlug,
           query: input.query,
           limit: input.limit,
-          offset: input.offset,
+          offset: paged ? input.offset : 0,
           sort: input.sort,
           openNow: input.openNow,
           featuredOnly: false,
           favoritesUserId: null,
+          recommendationUserId: null,
           latitude: input.latitude,
           longitude: input.longitude
-        })).items
-      : [];
-    const products = includeProducts ? (await this.searchProducts(input)).items : [];
-    const allCategories = includeServices ? await this.listActiveServiceCategories() : [];
-    const services = allCategories.filter((category) => {
-      if (input.type === "service") return true;
+        })
+      : { items: [], total: 0 };
+    const productResult = includeProducts
+      ? await this.searchProducts({ ...input, offset: paged ? input.offset : 0 })
+      : { items: [], total: 0 };
+    const merchants = merchantResult.items;
+    const products = productResult.items;
+    const allCategories = includeServices ? await this.availableCategories(input.citySlug, input.latitude, input.longitude) : [];
+    const matchedServices = allCategories.filter((category) => {
+      if (category.merchantCount === 0) return false;
+      if (input.categorySlug && category.slug !== input.categorySlug) return false;
       const haystack = `${category.displayName} ${category.description ?? ""} ${category.slug}`.toLowerCase();
       return haystack.includes(input.query.toLowerCase());
-    }).slice(0, 6);
+    });
+    const services = paged ? matchedServices.slice(input.offset, input.offset + input.limit) : matchedServices.slice(0, input.limit);
 
-    const suggestions = await this.buildSuggestions(input.query);
     const items = [
       ...merchants.map((merchant) => ({ type: "merchant" as const, merchant })),
       ...products.map((product) => ({ type: "product" as const, product, merchant: product.merchant })),
       ...services.map((service) => ({ type: "service" as const, service }))
     ].slice(0, input.limit);
+    const suggestions = [...new Set((await this.searchSuggestions({
+      citySlug: input.citySlug,
+      query: input.query,
+      limit: 6
+    })).map((suggestion) => suggestion.label))].slice(0, 6);
 
     return {
       query: input.query,
       items,
-      total: merchants.length + products.length + services.length,
-      merchants,
-      products,
-      services,
+      total: merchantResult.total + productResult.total + matchedServices.length,
+      merchants: items.flatMap((item) => item.type === "merchant" ? [item.merchant] : []),
+      products: items.flatMap((item) => item.type === "product" ? [item.product] : []),
+      services: items.flatMap((item) => item.type === "service" ? [item.service] : []),
       suggestions
     };
+  }
+
+  async searchSuggestions(input: Readonly<{ citySlug: string; query: string; limit: number }>): Promise<readonly SearchSuggestionRecord[]> {
+    const result = await this.getPool().query<SuggestionRow>(
+      `WITH matches AS (
+         SELECT 'merchant'::text AS kind, m.display_name AS label,
+                COALESCE((SELECT sc.display_name FROM merchant_service_categories msc
+                          JOIN service_categories sc ON sc.id = msc.service_category_id
+                          WHERE msc.merchant_id = m.id ORDER BY sc.sort_order LIMIT 1), 'Store') AS subtitle,
+                (SELECT sc.slug FROM merchant_service_categories msc
+                 JOIN service_categories sc ON sc.id = msc.service_category_id
+                 WHERE msc.merchant_id = m.id ORDER BY sc.sort_order LIMIT 1) AS category_slug,
+                m.id::text AS target_id, similarity(m.display_name, $2) AS score
+         FROM merchants m
+         WHERE m.status = 'active' AND (m.display_name ILIKE $3 OR m.tags::text ILIKE $3)
+           AND EXISTS (SELECT 1 FROM merchant_locations ml JOIN cities c ON c.id = ml.city_id
+                       WHERE ml.merchant_id = m.id AND ml.is_active = true AND c.slug = $1 AND c.is_active = true)
+         UNION ALL
+         SELECT 'product', p.display_name, m.display_name,
+                (SELECT sc.slug FROM merchant_service_categories msc
+                 JOIN service_categories sc ON sc.id = msc.service_category_id
+                 WHERE msc.merchant_id = m.id ORDER BY sc.sort_order LIMIT 1),
+                p.id::text, similarity(p.display_name, $2)
+         FROM products p
+         JOIN merchants m ON m.id = p.merchant_id AND m.status = 'active'
+         WHERE p.is_available = true AND (p.display_name ILIKE $3 OR p.sku ILIKE $3)
+         UNION ALL
+         SELECT 'service', sc.display_name, COALESCE(sc.description, 'Service'), sc.slug, sc.id::text,
+                similarity(sc.display_name, $2)
+         FROM service_categories sc
+         WHERE sc.is_active = true AND (sc.display_name ILIKE $3 OR sc.slug ILIKE $3)
+       )
+       SELECT kind, label, subtitle, category_slug, target_id
+       FROM matches
+       WHERE label IS NOT NULL
+       ORDER BY (label ILIKE $4) DESC, score DESC, label ASC
+       LIMIT $5`,
+      [input.citySlug, input.query, `%${escapeLike(input.query)}%`, `${escapeLike(input.query)}%`, input.limit]
+    );
+    return result.rows.map((row) => ({
+      type: row.kind,
+      label: row.label,
+      subtitle: row.subtitle ?? "",
+      categorySlug: row.category_slug,
+      targetId: row.target_id
+    }));
   }
 
   private async searchProducts(input: SearchInput): Promise<{ items: readonly SearchProductRecord[]; total: number }> {
@@ -231,11 +323,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     if (input.openNow) filters.push("discovery_is_open(ml.opening_hours) = true");
     if (input.latitude !== null && input.longitude !== null) {
       params.push(input.longitude, input.latitude);
-      filters.push(`ST_DWithin(
-        ml.location::geography,
-        ST_SetSRID(ST_MakePoint($${params.length - 1}, $${params.length}), 4326)::geography,
-        m.delivery_radius_km * 1000
-      )`);
+      filters.push(`discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km, $${params.length}, $${params.length - 1})`);
     }
     const from = `FROM products p
       JOIN merchants m ON m.id = p.merchant_id
@@ -243,11 +331,15 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
         SELECT ml.* FROM merchant_locations ml
         JOIN cities c ON c.id = ml.city_id
         WHERE ml.merchant_id = m.id AND ml.is_active = true AND c.slug = $1 AND c.is_active = true
-        ORDER BY ml.name ASC LIMIT 1
+        ORDER BY ${this.branchOrder(input.latitude, input.longitude)} LIMIT 1
       ) ml ON true
       LEFT JOIN inventory i ON i.product_id = p.id
-      WHERE ${filters.join(" AND ")}`;
+      WHERE ${filters.join(" AND ")} AND (i.quantity_available IS NULL OR i.quantity_available > 0)`;
     const count = await this.getPool().query<{ count: string }>(`SELECT count(*)::text AS count ${from}`, params);
+    params.push(input.query);
+    const rawIndex = params.length;
+    params.push(`${escapeLike(input.query)}%`);
+    const prefixIndex = params.length;
     const limitIndex = params.push(input.limit);
     const offsetIndex = params.push(input.offset);
     const result = await this.getPool().query<SearchProductRow>(
@@ -255,7 +347,14 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
               m.slug AS merchant_slug, m.display_name AS merchant_name, m.logo_url AS merchant_logo_url,
               m.cover_image_url AS merchant_cover_image_url, m.rating AS merchant_rating
        ${from}
-       ORDER BY (p.display_name ILIKE $2) DESC, m.rating DESC, p.display_name ASC
+       ORDER BY ${
+         input.sort === "eta" ? "m.eta_max_minutes ASC, "
+           : input.sort === "name" ? "p.display_name ASC, "
+             : input.sort === "distance" && input.latitude !== null && input.longitude !== null
+               ? `ST_Distance(ml.location::geography, ST_SetSRID(ST_MakePoint(${input.longitude}, ${input.latitude}), 4326)::geography) ASC, `
+               : ""
+       }GREATEST(similarity(p.display_name, $${rawIndex}), similarity(COALESCE(p.description, ''), $${rawIndex}) * 0.7, similarity(m.display_name, $${rawIndex}) * 0.5) DESC,
+       (p.display_name ILIKE $${prefixIndex}) DESC, m.rating DESC, p.id ASC
        LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
       params
     );
@@ -263,9 +362,9 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
   }
 
   async getHome(input: Readonly<{ citySlug: string; userId: string | null; latitude: number | null; longitude: number | null }>): Promise<DiscoveryHomeRecord> {
-    const categories = await this.listActiveServiceCategories();
+    const categories = await this.availableCategories(input.citySlug, input.latitude, input.longitude);
     const banners = await this.listBanners();
-    const offers = await this.listOffers();
+    const offers = await this.listOffers(input);
     const featuredResult = await this.listMerchants({
       citySlug: input.citySlug,
       categorySlug: null,
@@ -276,6 +375,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
       openNow: false,
       featuredOnly: true,
       favoritesUserId: null,
+      recommendationUserId: null,
       latitude: input.latitude,
       longitude: input.longitude
     });
@@ -285,18 +385,20 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
       query: null,
       limit: 12,
       offset: 0,
-      sort: "rating",
+      sort: "recommended",
       openNow: false,
       featuredOnly: false,
       favoritesUserId: null,
+      recommendationUserId: input.userId,
       latitude: input.latitude,
       longitude: input.longitude
     });
     const featuredIds = new Set(featuredResult.items.map((merchant) => merchant.id));
     const recommendations = recommendationResult.items.filter((merchant) => !featuredIds.has(merchant.id)).slice(0, 8);
-    const [popularProducts, recentlyOrdered, stats] = await Promise.all([
+    const [popularProducts, recentlyOrdered, recentlyOrderedProducts, stats] = await Promise.all([
       this.listPopularProducts(input.citySlug, input.latitude, input.longitude),
       input.userId ? this.listRecentlyOrdered(input.userId) : Promise.resolve([]),
+      input.userId ? this.listRecentlyOrderedProducts(input.userId) : Promise.resolve([]),
       this.homeStats(input.citySlug, input.latitude, input.longitude)
     ]);
     return {
@@ -307,13 +409,14 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
       recommendations,
       popularProducts,
       recentlyOrdered,
+      recentlyOrderedProducts,
       stats
     };
   }
 
   private async listBanners(): Promise<readonly DiscoveryBannerRecord[]> {
     const result = await this.getPool().query<BannerRow>(
-      `SELECT id, title, subtitle, code, cta_label, image_url, accent_color
+      `SELECT id, title, subtitle, code, cta_label, image_url, accent_color, target_category_slug, target_merchant_id
        FROM discovery_banners
        WHERE is_active = true AND starts_at <= now() AND (ends_at IS NULL OR ends_at > now())
        ORDER BY sort_order ASC, created_at ASC`
@@ -325,17 +428,49 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
       code: row.code,
       ctaLabel: row.cta_label,
       imageUrl: row.image_url,
-      accentColor: row.accent_color
+      accentColor: row.accent_color,
+      targetCategorySlug: row.target_category_slug,
+      targetMerchantId: row.target_merchant_id
     }));
   }
 
-  private async listOffers(): Promise<readonly DiscoveryOfferRecord[]> {
+  private async listRecentlyOrderedProducts(userId: string): Promise<readonly SearchProductRecord[]> {
+    const result = await this.getPool().query<SearchProductRow>(
+      `SELECT p.id, p.merchant_id, p.sku, p.display_name, p.description, p.image_url, p.base_price_minor, p.currency, p.is_available, i.quantity_available,
+              m.slug AS merchant_slug, m.display_name AS merchant_name, m.logo_url AS merchant_logo_url,
+              m.cover_image_url AS merchant_cover_image_url, m.rating AS merchant_rating
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id AND o.user_id = $1 AND o.status NOT IN ('CANCELLED', 'REFUNDED')
+       JOIN products p ON p.id = oi.product_id AND p.is_available = true
+       JOIN merchants m ON m.id = p.merchant_id AND m.status = 'active'
+       LEFT JOIN inventory i ON i.product_id = p.id
+       WHERE i.quantity_available IS NULL OR i.quantity_available > 0
+       GROUP BY p.id, p.merchant_id, p.sku, p.display_name, p.description, p.image_url, p.base_price_minor, p.currency, p.is_available,
+                i.quantity_available, m.slug, m.display_name, m.logo_url, m.cover_image_url, m.rating
+       ORDER BY max(o.created_at) DESC
+       LIMIT 8`,
+      [userId]
+    );
+    return result.rows.map(mapSearchProduct);
+  }
+
+  private async listOffers(input: Readonly<{ citySlug: string; userId: string | null; latitude: number | null; longitude: number | null }>): Promise<readonly DiscoveryOfferRecord[]> {
     const result = await this.getPool().query<OfferRow>(
       `SELECT id, code, display_name, kind, value, currency, minimum_order_minor, maximum_discount_minor, merchant_id
-       FROM promotions
+       FROM promotions promotion
        WHERE is_active = true AND starts_at <= now() AND (ends_at IS NULL OR ends_at > now())
+         AND (usage_limit IS NULL OR (SELECT count(*) FROM promotion_redemptions r WHERE r.promotion_id = promotion.id) < usage_limit)
+         AND ($2::uuid IS NULL OR (SELECT count(*) FROM promotion_redemptions r WHERE r.promotion_id = promotion.id AND r.user_id = $2) < per_user_limit)
+         AND (merchant_id IS NULL OR EXISTS (
+           SELECT 1 FROM merchants m JOIN merchant_locations ml ON ml.merchant_id = m.id
+           JOIN cities c ON c.id = ml.city_id
+           WHERE m.id = promotion.merchant_id AND m.status = 'active' AND ml.is_active = true
+             AND c.slug = $1 AND c.is_active = true
+             AND discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km, $3, $4)
+         ))
        ORDER BY created_at DESC
-       LIMIT 6`
+       LIMIT 6`,
+      [input.citySlug, input.userId, input.latitude, input.longitude]
     );
     return result.rows.map((row) => ({
       id: row.id,
@@ -355,11 +490,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     let availability = "";
     if (latitude !== null && longitude !== null) {
       params.push(longitude, latitude);
-      availability = `AND ST_DWithin(
-        ml.location::geography,
-        ST_SetSRID(ST_MakePoint($${params.length - 1}, $${params.length}), 4326)::geography,
-        m.delivery_radius_km * 1000
-      )`;
+      availability = `AND discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km, $${params.length}, $${params.length - 1})`;
     }
     const result = await this.getPool().query<SearchProductRow>(
       `SELECT p.id, p.merchant_id, p.sku, p.display_name, p.description, p.image_url, p.base_price_minor, p.currency, p.is_available, i.quantity_available,
@@ -367,8 +498,11 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
               m.cover_image_url AS merchant_cover_image_url, m.rating AS merchant_rating
        FROM products p
        JOIN merchants m ON m.id = p.merchant_id AND m.status = 'active'
-       JOIN merchant_locations ml ON ml.merchant_id = m.id AND ml.is_active = true
-       JOIN cities c ON c.id = ml.city_id AND c.slug = $1 AND c.is_active = true
+       JOIN LATERAL (
+         SELECT ml.* FROM merchant_locations ml JOIN cities c ON c.id = ml.city_id
+         WHERE ml.merchant_id = m.id AND ml.is_active = true AND c.slug = $1 AND c.is_active = true
+         ORDER BY ${this.branchOrder(latitude, longitude)} LIMIT 1
+       ) ml ON true
        LEFT JOIN inventory i ON i.product_id = p.id
        LEFT JOIN (
          SELECT oi.product_id, sum(oi.quantity)::int AS ordered
@@ -376,7 +510,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
          WHERE o.created_at > now() - interval '30 days' AND o.status NOT IN ('CANCELLED', 'REFUNDED')
          GROUP BY oi.product_id
        ) sales ON sales.product_id = p.id
-       WHERE p.is_available = true ${availability}
+       WHERE p.is_available = true AND (i.quantity_available IS NULL OR i.quantity_available > 0) ${availability}
        ORDER BY COALESCE(sales.ordered, 0) DESC, m.rating DESC, p.display_name ASC
        LIMIT 8`,
       params
@@ -422,11 +556,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     let availability = "";
     if (latitude !== null && longitude !== null) {
       params.push(longitude, latitude);
-      availability = `AND ST_DWithin(
-        ml.location::geography,
-        ST_SetSRID(ST_MakePoint($${params.length - 1}, $${params.length}), 4326)::geography,
-        m.delivery_radius_km * 1000
-      )`;
+      availability = `AND discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km, $${params.length}, $${params.length - 1})`;
     }
     const result = await this.getPool().query<{ merchant_count: string; open_now_count: string }>(
       `SELECT count(DISTINCT m.id)::text AS merchant_count,
@@ -454,6 +584,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
       openNow: false,
       featuredOnly: false,
       favoritesUserId: userId,
+      recommendationUserId: null,
       latitude,
       longitude
     });
@@ -508,19 +639,27 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     await this.getPool().query("DELETE FROM user_recent_searches WHERE user_id = $1", [userId]);
   }
 
-  private async buildSuggestions(query: string): Promise<readonly string[]> {
-    const result = await this.getPool().query<{ term: string }>(
-      `SELECT term FROM (
-         SELECT display_name AS term FROM merchants WHERE status = 'active' AND display_name ILIKE $1
-         UNION
-         SELECT display_name AS term FROM products WHERE is_available = true AND display_name ILIKE $1
-       ) matches
-       GROUP BY term
-       ORDER BY term ASC
-       LIMIT 6`,
-      [`%${escapeLike(query)}%`]
+  private branchOrder(latitude: number | null, longitude: number | null): string {
+    if (latitude === null || longitude === null) return "ml.name ASC, ml.id ASC";
+    // Coordinates are validated by the service; only finite numbers enter SQL.
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) throw new Error("Invalid coordinates");
+    return `discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km, ${latitude}, ${longitude}) DESC NULLS LAST,
+      ST_Distance(ml.location::geography, ST_SetSRID(ST_MakePoint(${longitude}, ${latitude}), 4326)::geography) ASC NULLS LAST, ml.id ASC`;
+  }
+
+  private async availableCategories(citySlug: string, latitude: number | null, longitude: number | null): Promise<readonly ServiceCategoryRecord[]> {
+    const result = await this.getPool().query<CategoryRow>(
+      `SELECT sc.id, sc.slug, sc.display_name, sc.description, sc.sort_order,
+        (SELECT count(DISTINCT m.id)::int FROM merchant_service_categories msc
+         JOIN merchants m ON m.id = msc.merchant_id AND m.status = 'active'
+         JOIN merchant_locations ml ON ml.merchant_id = m.id AND ml.is_active = true
+         JOIN cities c ON c.id = ml.city_id AND c.slug = $1 AND c.is_active = true
+         WHERE msc.service_category_id = sc.id
+           AND discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km, $2, $3)) AS merchant_count
+       FROM service_categories sc WHERE sc.is_active = true ORDER BY sc.sort_order, sc.id`,
+      [citySlug, latitude, longitude]
     );
-    return result.rows.map((row) => row.term);
+    return result.rows.map(mapCategory);
   }
 
   private distanceExpression(params: unknown[], latitude: number | null, longitude: number | null, alias: string): string {
@@ -576,6 +715,7 @@ type MerchantRow = {
   price_level: number;
   delivery_fee_minor: string;
   min_order_minor: string;
+  delivery_radius_km: string;
   eta_min_minutes: number;
   eta_max_minutes: number;
   is_featured: boolean;
@@ -586,6 +726,9 @@ type MerchantRow = {
   latitude: number | string | null;
   longitude: number | string | null;
   is_open: boolean;
+  is_deliverable: boolean;
+  today_hours: Record<string, unknown> | null;
+  next_open_at: Date | string | null;
   distance_km: number | string | null;
 };
 
@@ -610,7 +753,19 @@ type SearchProductRow = ProductRow & {
   merchant_rating: string;
 };
 
-type OfferRow = {`n  id: string;`n  code: string;`n  display_name: string;`n  kind: string;`n  value: string;`n  currency: string;`n  minimum_order_minor: string;`n  maximum_discount_minor: string | null;`n  merchant_id: string | null;`n};`n`ntype BannerRow = {
+type OfferRow = {
+  id: string;
+  code: string;
+  display_name: string;
+  kind: string;
+  value: string;
+  currency: string;
+  minimum_order_minor: string;
+  maximum_discount_minor: string | null;
+  merchant_id: string | null;
+};
+
+type BannerRow = {
   id: string;
   title: string;
   subtitle: string;
@@ -618,6 +773,16 @@ type OfferRow = {`n  id: string;`n  code: string;`n  display_name: string;`n  ki
   cta_label: string;
   image_url: string | null;
   accent_color: string;
+  target_category_slug: string | null;
+  target_merchant_id: string | null;
+};
+
+type SuggestionRow = {
+  kind: "merchant" | "product" | "service";
+  label: string;
+  subtitle: string | null;
+  category_slug: string | null;
+  target_id: string;
 };
 
 type RecentOrderRow = {
@@ -659,13 +824,48 @@ function mapMerchant(row: MerchantRow, serviceCategorySlugs: readonly string[]):
     priceLevel: row.price_level,
     deliveryFeeMinor: Number(row.delivery_fee_minor),
     minOrderMinor: Number(row.min_order_minor),
-    deliveryRadiusKm: Number(row.delivery_radius_km),`n    etaMinMinutes: row.eta_min_minutes,
+    deliveryRadiusKm: Number(row.delivery_radius_km),
+    etaMinMinutes: row.eta_min_minutes,
     etaMaxMinutes: row.eta_max_minutes,
     isFeatured: row.is_featured,
     tags: row.tags ?? [],
     isOpen: row.is_open,
-    distanceKm: row.distance_km === null ? null : Math.round(Number(row.distance_km) * 10) / 10
+    isDeliverable: row.is_deliverable !== false,
+    distanceKm: row.distance_km === null ? null : Math.round(Number(row.distance_km) * 10) / 10,
+    todayHours: mapTodayHours(row.today_hours),
+    nextOpenAt: row.next_open_at === null || row.next_open_at === undefined
+      ? null
+      : new Date(row.next_open_at).toISOString()
   };
+}
+
+function mapTodayHours(value: Record<string, unknown> | null): MerchantDayHours | null {
+  if (!value || typeof value !== "object") return null;
+  if (value.closed === true) return { closed: true, open: null, close: null };
+  if (typeof value.open !== "string" || typeof value.close !== "string") return null;
+  return { closed: false, open: value.open, close: value.close };
+}
+
+const WEEK_DAYS: readonly (readonly [string, string])[] = [
+  ["mon", "Monday"],
+  ["tue", "Tuesday"],
+  ["wed", "Wednesday"],
+  ["thu", "Thursday"],
+  ["fri", "Friday"],
+  ["sat", "Saturday"],
+  ["sun", "Sunday"]
+];
+
+function weeklyHours(hours: Record<string, unknown>): readonly MerchantWeeklyHours[] {
+  return WEEK_DAYS.map(([day, label]) => {
+    const raw = (hours[day] ?? hours.default) as Record<string, unknown> | undefined;
+    if (!raw || typeof raw !== "object") return { day, label, open: null, close: null, closed: false };
+    if (raw.closed === true) return { day, label, open: null, close: null, closed: true };
+    if (typeof raw.open !== "string" || typeof raw.close !== "string") {
+      return { day, label, open: null, close: null, closed: false };
+    }
+    return { day, label, open: raw.open.slice(0, 5), close: raw.close.slice(0, 5), closed: false };
+  });
 }
 
 function mapProduct(row: ProductRow): ProductRecord {
@@ -678,7 +878,7 @@ function mapProduct(row: ProductRow): ProductRecord {
     imageUrl: row.image_url,
     basePriceMinor: Number(row.base_price_minor),
     currency: row.currency,
-    isAvailable: row.is_available,
+    isAvailable: row.is_available && (row.quantity_available === null || row.quantity_available > 0),
     quantityAvailable: row.quantity_available
   };
 }

@@ -486,6 +486,27 @@ String label(String? value) {
       .join(' ');
 }
 
+String formatClockTime(DateTime value) {
+  final local = value.toLocal();
+  final hour = local.hour.toString().padLeft(2, '0');
+  final minute = local.minute.toString().padLeft(2, '0');
+  return '$hour:$minute';
+}
+
+/// Human opening-hours state for a merchant payload: "Open · closes 22:00",
+/// "Closed · opens 07:00" or "Unavailable in your area".
+String merchantHoursLabel(Map<String, dynamic> merchant) {
+  if (merchant['isDeliverable'] == false) return 'Unavailable';
+  final today = asMap(merchant['todayHours']);
+  final isOpen = merchant['isOpen'] == true;
+  if (today.isEmpty) return isOpen ? 'Open now' : 'Closed';
+  if (today['closed'] == true) return 'Closed today';
+  final open = today['open']?.toString();
+  final close = today['close']?.toString();
+  if (isOpen) return close == null ? 'Open now' : 'Open · closes $close';
+  return open == null ? 'Closed' : 'Closed · opens $open';
+}
+
 String shortDate(String? value) {
   if (value == null) return '—';
   final date = DateTime.tryParse(value)?.toLocal();
@@ -1521,6 +1542,7 @@ class MerchantCard extends StatelessWidget {
         .take(2)
         .join(' · ');
     final isOpen = merchant['isOpen'] == true || merchant['status'] == 'active';
+    final deliverable = merchant['isDeliverable'] != false;
     final rating = merchant['rating']?.toString() ?? '4.8';
     final etaMin = merchant['etaMinMinutes'];
     final etaMax = merchant['etaMaxMinutes'];
@@ -1614,18 +1636,26 @@ class MerchantCard extends StatelessWidget {
                                 borderRadius: BorderRadius.circular(6),
                               ),
                               child: Text(
-                                isOpen ? 'OPEN' : 'CLOSED',
+                                !deliverable ? 'UNAVAILABLE' : isOpen ? 'OPEN' : 'CLOSED',
                                 style: TextStyle(
                                   fontSize: 10,
                                   fontWeight: FontWeight.w800,
-                                  color: isOpen ? const Color(0xFF2E7D32) : const Color(0xFFC62828),
+                                  color: !deliverable
+                                      ? const Color(0xFF6B7468)
+                                      : isOpen
+                                          ? const Color(0xFF2E7D32)
+                                          : const Color(0xFFC62828),
                                 ),
                               ),
                             ),
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(
-                                [if (categoryList.isNotEmpty) categoryList, if (merchant['primaryLocationName'] != null) merchant['primaryLocationName'].toString()].join(' · '),
+                                [
+                                  if (categoryList.isNotEmpty) categoryList,
+                                  if (merchant['primaryLocationName'] != null) merchant['primaryLocationName'].toString(),
+                                  merchantHoursLabel(merchant),
+                                ].join(' · '),
                                 style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFF6B7468)),
                                 overflow: TextOverflow.ellipsis,
                               ),
@@ -1680,10 +1710,12 @@ class MerchantCard extends StatelessWidget {
 }
 
 class MerchantScreen extends StatefulWidget {
-  const MerchantScreen({super.key, required this.client, required this.merchantId});
+  const MerchantScreen({super.key, required this.client, required this.merchantId, this.latitude, this.longitude});
 
   final ApiClient client;
   final String merchantId;
+  final double? latitude;
+  final double? longitude;
 
   @override
   State<MerchantScreen> createState() => _MerchantScreenState();
@@ -1708,9 +1740,11 @@ class _MerchantScreenState extends State<MerchantScreen> {
       error = null;
     });
     try {
+      final locationQuery = widget.latitude != null && widget.longitude != null
+          ? 'lat=${widget.latitude}&lng=${widget.longitude}' : '';
       final results = await Future.wait([
-        widget.client.get('/v1/merchants/${widget.merchantId}'),
-        widget.client.get('/v1/merchants/${widget.merchantId}/products?limit=50'),
+        widget.client.get('/v1/merchants/${widget.merchantId}?$locationQuery'),
+        widget.client.get('/v1/merchants/${widget.merchantId}/products?limit=50&$locationQuery'),
       ]);
       if (!mounted) return;
       setState(() {
@@ -1745,17 +1779,151 @@ class _MerchantScreenState extends State<MerchantScreen> {
     }
   }
 
+  Widget _availabilityCard(ThemeData theme) {
+    final data = merchant ?? const <String, dynamic>{};
+    final isOpen = data['isOpen'] == true;
+    final deliverable = data['isDeliverable'] != false;
+    final weekly = asList(data['weeklyHours']);
+    final distance = data['distanceKm'];
+    final fee = data['deliveryFeeMinor'] is num ? money(data['deliveryFeeMinor'] as num, 'ETB') : '—';
+    final minOrder = data['minOrderMinor'] is num ? money(data['minOrderMinor'] as num, 'ETB') : '—';
+    final nextOpen = DateTime.tryParse(data['nextOpenAt']?.toString() ?? '');
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: !deliverable
+                        ? const Color(0xFFEFEAE0)
+                        : isOpen
+                            ? const Color(0xFFE8F5E9)
+                            : const Color(0xFFFFEBEE),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    !deliverable ? 'NOT DELIVERABLE' : isOpen ? 'OPEN NOW' : 'CLOSED',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                      color: !deliverable
+                          ? const Color(0xFF6B7468)
+                          : isOpen
+                              ? const Color(0xFF2E7D32)
+                              : const Color(0xFFC62828),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(merchantHoursLabel(data), style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600)),
+                ),
+              ],
+            ),
+            if (!deliverable) ...[
+              const SizedBox(height: 8),
+              Text(
+                data['deliveryUnavailableReason']?.toString() ??
+                    'Your delivery location is outside this merchant\'s service area.',
+                style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFFC62828)),
+              ),
+            ],
+            if (!isOpen && nextOpen != null) ...[
+              const SizedBox(height: 6),
+              Text('Opens ${formatClockTime(nextOpen)}', style: theme.textTheme.bodySmall),
+            ],
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 16,
+              runSpacing: 6,
+              children: [
+                _availabilityStat(Icons.delivery_dining_rounded, 'Delivery',
+                    '${data['etaMinMinutes'] ?? '—'}–${data['etaMaxMinutes'] ?? '—'} min'),
+                _availabilityStat(Icons.near_me_outlined, 'Distance',
+                    distance is num ? '${distance.toStringAsFixed(1)} km' : '—'),
+                _availabilityStat(Icons.payments_outlined, 'Fee', fee),
+                _availabilityStat(Icons.shopping_basket_outlined, 'Min order', minOrder),
+              ],
+            ),
+            if (weekly.isNotEmpty)
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: const EdgeInsets.only(bottom: 8),
+                title: const Text('Opening hours', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                children: [
+                  for (final day in weekly)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        children: [
+                          Expanded(child: Text(day['label']?.toString() ?? '', style: theme.textTheme.bodySmall)),
+                          Text(
+                            day['closed'] == true
+                                ? 'Closed'
+                                : day['open'] == null || day['close'] == null
+                                    ? 'Open all day'
+                                    : '${day['open']} – ${day['close']}',
+                            style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _availabilityStat(IconData icon, String label, String value) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 15, color: const Color(0xFF6B7468)),
+        const SizedBox(width: 4),
+        Text('$label: ', style: const TextStyle(fontSize: 11, color: Color(0xFF6B7468))),
+        Text(value, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(title: Text(merchant?['displayName']?.toString() ?? 'Merchant')),
       body: loading
-          ? const Center(child: CircularProgressIndicator())
+          ? ListView(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 30),
+              children: [
+                const SkeletonBox(width: 220, height: 16),
+                const SizedBox(height: 8),
+                const SkeletonBox(width: double.infinity, height: 132, borderRadius: 18),
+                const SizedBox(height: 20),
+                const SkeletonBox(width: 160, height: 20),
+                const SizedBox(height: 12),
+                ...List.generate(
+                  4,
+                  (_) => const Padding(
+                    padding: EdgeInsets.only(bottom: 10),
+                    child: SkeletonBox(width: double.infinity, height: 76, borderRadius: 16),
+                  ),
+                ),
+              ],
+            )
           : error != null
               ? Padding(
                   padding: const EdgeInsets.all(20),
-                  child: ErrorBanner(message: error!),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    ErrorBanner(message: error!),
+                    OutlinedButton(onPressed: _load, child: const Text('Retry')),
+                  ]),
                 )
               : RefreshIndicator(
                   onRefresh: _load,
@@ -1769,15 +1937,16 @@ class _MerchantScreenState extends State<MerchantScreen> {
                           style: theme.textTheme.bodyMedium?.copyWith(color: const Color(0xFF6B7468)),
                         ),
                       const SizedBox(height: 18),
+                      _availabilityCard(theme),
                       Text(
-                        'Menu',
+                        'Products & services',
                         style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
                       ),
                       const SizedBox(height: 10),
                       if (products.isEmpty)
                         const EmptyState(
                           icon: Icons.restaurant_menu,
-                          title: 'No dishes yet',
+                          title: 'No products yet',
                           message: 'This merchant has not published products.',
                         ),
                       ...products.map(
@@ -1816,7 +1985,10 @@ class _MerchantScreenState extends State<MerchantScreen> {
                                   ),
                                   const SizedBox(width: 12),
                                   FilledButton.tonal(
-                                    onPressed: product['isAvailable'] == true && addingId == null
+                                    onPressed: product['isAvailable'] == true &&
+                                            addingId == null &&
+                                            merchant?['isDeliverable'] != false &&
+                                            merchant?['isOpen'] != false
                                         ? () => _add(product)
                                         : null,
                                     style: FilledButton.styleFrom(

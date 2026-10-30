@@ -76,10 +76,20 @@ class SearchQuery extends PaginationQuery implements LocationQuery {
   lng?: number;
 }
 
+class SearchSuggestionQuery {
+  @IsOptional() @IsString() @Length(0, 120)
+  q?: string;
+
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(20)
+  limit?: number;
+}
+
 class RecentSearchDto {
   @IsString() @Length(1, 120) @Matches(/\S/)
   term!: string;
 }
+
+class ProductListQuery extends MerchantListQuery {}
 
 @ApiTags("discovery")
 @Controller("v1")
@@ -130,8 +140,8 @@ export class DiscoveryController {
 
   @Get("merchants/:merchantId/products")
   @ApiOkResponse({ description: "Products offered by a merchant." })
-  async products(@Param("merchantId", ParseUUIDPipe) merchantId: string, @Query() query: PaginationQuery & { q?: string }) {
-    await this.discoveryService.getMerchant(merchantId);
+  async products(@Param("merchantId", ParseUUIDPipe) merchantId: string, @Query() query: ProductListQuery) {
+    await this.discoveryService.getMerchant(merchantId, query.lat, query.lng);
     return this.discoveryService.listProducts(merchantId, { q: query.q, limit: query.limit, offset: query.offset });
   }
 
@@ -149,6 +159,17 @@ export class DiscoveryController {
       openNow: query.openNow,
       latitude: query.lat,
       longitude: query.lng
+    });
+  }
+
+  @Get("search/suggestions")
+  @UseGuards(OptionalSessionGuard)
+  @ApiOkResponse({ description: "Typeahead suggestions across merchants, products and services, plus recent terms." })
+  suggestions(@Req() request: AuthenticatedRequest, @Query() query: SearchSuggestionQuery) {
+    return this.discoveryService.suggestions({
+      q: query.q ?? "",
+      limit: query.limit,
+      userId: request.authSession?.user.id
     });
   }
 

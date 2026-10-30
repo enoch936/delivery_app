@@ -140,7 +140,9 @@ JOIN (VALUES
   ('green-leaf-market', 'fruit', 'Fruit boxes', 1),
   ('green-leaf-market', 'juice', 'Fresh juice', 2),
   ('bole-books', 'books', 'Books', 1),
-  ('bole-books', 'stationery', 'Stationery', 2)
+  ('bole-books', 'stationery', 'Stationery', 2),
+  ('express-parcel', 'parcels', 'Parcel sizes', 1),
+  ('swift-courier', 'courier', 'Courier services', 1)
 ) AS data(merchant_slug, slug, display_name, sort_order) ON data.merchant_slug = m.slug
 ON CONFLICT (merchant_id, slug) DO UPDATE
 SET display_name = EXCLUDED.display_name, sort_order = EXCLUDED.sort_order;
@@ -164,7 +166,13 @@ JOIN (VALUES
   ('green-leaf-market', 'fruit', 'FRUIT-BOX', 'Seasonal fruit box', 'Five varieties of fresh fruit.', 'https://images.unsplash.com/photo-1619566636858-adf3ef46400b?auto=format&fit=crop&w=800&q=80', 32000),
   ('green-leaf-market', 'juice', 'MANGO-JUICE', 'Mango juice 1 L', 'Cold-pressed mango juice.', 'https://images.unsplash.com/photo-1546173159-315724a31696?auto=format&fit=crop&w=800&q=80', 11000),
   ('bole-books', 'books', 'ATLAS-ET', 'Ethiopia road atlas', 'Detailed road and city maps.', 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&w=800&q=80', 28000),
-  ('bole-books', 'stationery', 'NOTEBOOK-A5', 'A5 ruled notebook', '200 pages, hard cover.', 'https://images.unsplash.com/photo-1531346878377-a5be20888e57?auto=format&fit=crop&w=800&q=80', 6500)
+  ('bole-books', 'stationery', 'NOTEBOOK-A5', 'A5 ruled notebook', '200 pages, hard cover.', 'https://images.unsplash.com/photo-1531346878377-a5be20888e57?auto=format&fit=crop&w=800&q=80', 6500),
+  ('express-parcel', 'parcels', 'PARCEL-DOC', 'Document envelope', 'Same-day delivery for letters and documents up to 1 kg.', 'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?auto=format&fit=crop&w=800&q=80', 12000),
+  ('express-parcel', 'parcels', 'PARCEL-SMALL', 'Small parcel up to 5 kg', 'Boxed parcel pickup and door delivery with tracking.', 'https://images.unsplash.com/photo-1607083206968-13611e3d76db?auto=format&fit=crop&w=800&q=80', 22000),
+  ('express-parcel', 'parcels', 'PARCEL-MEDIUM', 'Medium parcel up to 15 kg', 'Larger parcels with proof of delivery on hand-over.', 'https://images.unsplash.com/photo-1600585152220-90363fe7e115?auto=format&fit=crop&w=800&q=80', 38000),
+  ('swift-courier', 'courier', 'COURIER-EXPRESS', 'Express pickup and drop-off', 'Dedicated rider from your door to the destination.', 'https://images.unsplash.com/photo-1566576912321-d58ddd7a6088?auto=format&fit=crop&w=800&q=80', 18000),
+  ('swift-courier', 'courier', 'COURIER-SCHEDULED', 'Scheduled courier run', 'Book a pickup slot for later today or tomorrow.', 'https://images.unsplash.com/photo-1521737604893-d14cc237f11d?auto=format&fit=crop&w=800&q=80', 15000),
+  ('swift-courier', 'courier', 'COURIER-BULK', 'Business bulk pickup', 'Multiple parcels collected in a single courier run.', 'https://images.unsplash.com/photo-1553413077-190dd305871c?auto=format&fit=crop&w=800&q=80', 45000)
 ) AS data(merchant_slug, category_slug, sku, display_name, description, image_url, price_minor)
   ON data.merchant_slug = m.slug
 JOIN product_categories pc ON pc.merchant_id = m.id AND pc.slug = data.category_slug
@@ -183,16 +191,16 @@ JOIN merchants m ON m.id = p.merchant_id
 WHERE m.slug IN ('sunrise-kitchen', 'harvest-grocery', 'bole-pharmacy', 'merkato-electronics', 'habesha-table', 'green-leaf-market', 'bole-books')
 ON CONFLICT (product_id) DO UPDATE SET quantity_available = EXCLUDED.quantity_available;
 
-INSERT INTO discovery_banners (title, subtitle, code, cta_label, image_url, accent_color, sort_order, is_active)
+INSERT INTO discovery_banners (title, subtitle, code, cta_label, image_url, accent_color, sort_order, is_active, target_category_slug)
 VALUES
   ('Fresh meals in 25 minutes', 'Breakfast, lunch and dinner from kitchens near you.', 'FAST25', 'Order food',
-   'https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=1200&q=80', '#E8613D', 10, true),
+   'https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=1200&q=80', '#E8613D', 10, true, 'restaurant'),
   ('20% off your first order', 'Use WELCOME20 at checkout on any merchant.', 'WELCOME20', 'Claim offer',
-   'https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=1200&q=80', '#2F6B4F', 20, true),
+   'https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=1200&q=80', '#2F6B4F', 20, true, NULL),
   ('Send parcels across Addis', 'Live tracking, proof of delivery and same-day courier.', 'EXPRESS', 'Book courier',
-   'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?auto=format&fit=crop&w=1200&q=80', '#1E2A24', 30, true),
+   'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?auto=format&fit=crop&w=1200&q=80', '#1E2A24', 30, true, 'parcel'),
   ('Pharmacy at your door', 'Licensed medicines delivered in under 30 minutes.', 'CARE30', 'Shop pharmacy',
-   'https://images.unsplash.com/photo-1587854692152-cbe660dbde88?auto=format&fit=crop&w=1200&q=80', '#1E88E5', 40, true)
+   'https://images.unsplash.com/photo-1587854692152-cbe660dbde88?auto=format&fit=crop&w=1200&q=80', '#1E88E5', 40, true, 'pharmacy')
 ON CONFLICT (title) DO UPDATE
 SET subtitle = EXCLUDED.subtitle,
     code = EXCLUDED.code,
@@ -200,7 +208,8 @@ SET subtitle = EXCLUDED.subtitle,
     image_url = EXCLUDED.image_url,
     accent_color = EXCLUDED.accent_color,
     sort_order = EXCLUDED.sort_order,
-    is_active = EXCLUDED.is_active;
+    is_active = EXCLUDED.is_active,
+    target_category_slug = EXCLUDED.target_category_slug;
 
 INSERT INTO promotions (code, display_name, kind, value, currency, minimum_order_minor, maximum_discount_minor, is_active)
 VALUES

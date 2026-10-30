@@ -13,6 +13,7 @@ import type {
   SearchInput,
   SearchProductRecord,
   SearchResultRecord,
+  SearchSuggestionRecord,
   ServiceCategoryRecord
 } from "../src/modules/discovery/discovery.types.js";
 
@@ -48,15 +49,27 @@ const merchant: MerchantSummaryRecord = {
   priceLevel: 1,
   deliveryFeeMinor: 3500,
   minOrderMinor: 5000,
+  deliveryRadiusKm: 8,
   etaMinMinutes: 15,
   etaMaxMinutes: 25,
   isFeatured: true,
   tags: ["teff"],
   isOpen: true,
-  distanceKm: 1.2
+  isDeliverable: true,
+  distanceKm: 1.2,
+  todayHours: { closed: false, open: "08:00", close: "21:00" },
+  nextOpenAt: null
 };
 
-const detail: MerchantDetailRecord = { ...merchant, openingHours: {}, addressLine: "Demo address", latitude: 9.02, longitude: 38.78 };
+const detail: MerchantDetailRecord = {
+  ...merchant,
+  openingHours: { default: { open: "08:00", close: "21:00" } },
+  weeklyHours: [{ day: "mon", label: "Monday", open: "08:00", close: "21:00", closed: false }],
+  addressLine: "Demo address",
+  latitude: 9.02,
+  longitude: 38.78,
+  deliveryUnavailableReason: null
+};
 
 const product: ProductRecord = {
   id: "22222222-2222-2222-2222-222222222222",
@@ -86,6 +99,10 @@ class MemoryDiscoveryRepository implements DiscoveryRepository {
   async listProducts(input: Readonly<{ merchantId: string }>): Promise<{ items: readonly ProductRecord[]; total: number }> {
     return input.merchantId === merchant.id ? { items: [product], total: 1 } : { items: [], total: 0 };
   }
+  async searchSuggestions(input: Readonly<{ query: string }>): Promise<readonly SearchSuggestionRecord[]> {
+    if (!input.query.toLowerCase().includes("teff")) return [];
+    return [{ type: "product", label: "Teff flour 1 kg", subtitle: "Harvest Grocery", categorySlug: "grocery", targetId: product.id }];
+  }
   async search(input: SearchInput): Promise<SearchResultRecord> {
     if (!input.query.toLowerCase().includes("teff")) {
       return { query: input.query, items: [], total: 0, merchants: [], products: [], services: [], suggestions: [] };
@@ -102,8 +119,8 @@ class MemoryDiscoveryRepository implements DiscoveryRepository {
   }
   async getHome(): Promise<DiscoveryHomeRecord> {
     return {
-      banners: [], categories: [category], featured: [merchant], recommendations: [], popularProducts: [searchProduct],
-      recentlyOrdered: [], stats: { merchantCount: 1, openNowCount: 1 }
+      banners: [], offers: [], categories: [category], featured: [merchant], recommendations: [], popularProducts: [searchProduct],
+      recentlyOrdered: [], recentlyOrderedProducts: [], stats: { merchantCount: 1, openNowCount: 1 }
     };
   }
   async listFavorites(): Promise<readonly MerchantSummaryRecord[]> { return this.favorites.has(merchant.id) ? [merchant] : []; }
@@ -142,6 +159,22 @@ test("builds a home feed with categories, featured merchants and popular product
   assert.equal(home.featured[0]?.slug, "harvest-grocery");
   assert.equal(home.popularProducts[0]?.displayName, "Teff flour 1 kg");
   assert.equal(home.stats.openNowCount, 1);
+});
+
+test("suggests merchants, products and services for a partial query", async () => {
+  const service = new DiscoveryService(new MemoryDiscoveryRepository(), config);
+  const suggestions = await service.suggestions({ q: "teff" });
+  assert.equal(suggestions.items[0]?.label, "Teff flour 1 kg");
+  assert.equal(suggestions.items[0]?.type, "product");
+});
+
+test("returns recent terms instead of catalog matches for very short queries", async () => {
+  const repository = new MemoryDiscoveryRepository();
+  repository.recent = [{ term: "teff", lastSearchedAt: new Date().toISOString() }];
+  const service = new DiscoveryService(repository, config);
+  const suggestions = await service.suggestions({ q: "t", userId: "user-1" });
+  assert.equal(suggestions.items.length, 0);
+  assert.deepEqual(suggestions.recent, ["teff"]);
 });
 
 test("tracks favorites and recent searches for the signed-in customer", async () => {

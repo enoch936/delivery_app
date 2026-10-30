@@ -1,7 +1,9 @@
 ﻿import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../account/address_book_screen.dart';
 import '../main.dart';
 
 class DiscoveryScreen extends StatefulWidget {
@@ -21,15 +23,20 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
   List<Map<String, dynamic>> merchants = [];
   List<Map<String, dynamic>> categories = [];
   List<Map<String, dynamic>> banners = [];
+  List<Map<String, dynamic>> offers = [];
+  List<Map<String, dynamic>> recommendations = [];
   List<Map<String, dynamic>> featured = [];
   List<Map<String, dynamic>> products = [];
   List<Map<String, dynamic>> recentlyOrdered = [];
+  List<Map<String, dynamic>> recentlyOrderedProducts = [];
   Map<String, dynamic> searchResult = <String, dynamic>{};
 
   Set<String> favorites = {};
   List<String> recentSearches = [];
+  List<Map<String, dynamic>> suggestions = [];
   String location = 'Bole, Addis Ababa';
   String? selectedCategory;
+  String searchType = 'all';
   String sort = 'recommended';
   bool openNow = false;
   bool favoritesOnly = false;
@@ -40,6 +47,13 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
   String? searchError;
   int promoIndex = 0;
   int _searchGeneration = 0;
+  int _suggestionGeneration = 0;
+  int _feedGeneration = 0;
+  int _listGeneration = 0;
+  int merchantTotal = 0;
+  bool searchLoading = false;
+  double? _latitude;
+  double? _longitude;
 
   Timer? _debounce;
   Timer? _promoTimer;
@@ -63,8 +77,8 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     'courier': Icons.delivery_dining_rounded,
   };
 
-  double get latitude => _locations[location]?.first ?? 9.0110;
-  double get longitude => _locations[location]?.last ?? 38.7865;
+  double get latitude => _latitude ?? _locations[location]?.first ?? 9.0110;
+  double get longitude => _longitude ?? _locations[location]?.last ?? 38.7865;
 
   @override
   void initState() {
@@ -72,9 +86,11 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     favorites = widget.client.storage.favoriteMerchantIds.toSet();
     recentSearches = widget.client.storage.recentSearches;
     location = widget.client.storage.selectedLocation;
+    _latitude = widget.client.storage.selectedLatitude;
+    _longitude = widget.client.storage.selectedLongitude;
     _bootstrap();
     _promoTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      if (!mounted || banners.isEmpty) return;
+      if (!mounted || banners.isEmpty || MediaQuery.of(context).disableAnimations) return;
       setState(() => promoIndex = (promoIndex + 1) % banners.length);
       if (pageController.hasClients) {
         pageController.animateToPage(
@@ -96,6 +112,8 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
   }
 
   Future<void> _bootstrap() async {
+    final generation = ++_feedGeneration;
+    ++_listGeneration;
     setState(() {
       loading = true;
       error = null;
@@ -107,18 +125,23 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         if (widget.client.session != null) widget.client.get('/v1/favorites?lat=$latitude&lng=$longitude'),
         if (widget.client.session != null) widget.client.get('/v1/search/recent'),
       ]);
-      if (!mounted) return;
+      if (!mounted || generation != _feedGeneration) return;
       final feed = asMap(results[0]);
       final indexOffset = 2;
       setState(() {
         home = feed;
         banners = asList(feed['banners']);
+        offers = asList(feed['offers']);
+        recommendations = asList(feed['recommendations']);
         categories = asList(feed['categories']);
         featured = asList(feed['featured']);
         products = asList(feed['popularProducts']);
         recentlyOrdered = asList(feed['recentlyOrdered']);
+        recentlyOrderedProducts = asList(feed['recentlyOrderedProducts']);
         merchants = asList(asMap(results[1])['items']);
+        merchantTotal = (asMap(results[1])['total'] as num?)?.toInt() ?? merchants.length;
         if (results.length > indexOffset) {
+          favorites = {};
           for (final merchant in asList(asMap(results[indexOffset])['items'])) {
             final id = merchant['id']?.toString();
             if (id != null) favorites.add(id);
@@ -132,9 +155,9 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         }
       });
     } catch (cause) {
-      if (mounted) setState(() => error = cause.toString());
+      if (mounted && generation == _feedGeneration) setState(() => error = cause.toString());
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (mounted && generation == _feedGeneration) setState(() => loading = false);
     }
   }
 
@@ -159,45 +182,74 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     return query.join('&');
   }
 
-  Future<void> _loadMerchants() async {
+  Future<void> _loadMerchants({bool append = false}) async {
+    final generation = ++_listGeneration;
     setState(() {
       loadingList = true;
       error = null;
     });
     try {
-      final result = await widget.client.get('/v1/merchants?${_merchantQuery()}');
-      if (!mounted) return;
-      setState(() => merchants = asList(asMap(result)['items']));
+      final result = asMap(await widget.client.get('/v1/merchants?${_merchantQuery()}&offset=${append ? merchants.length : 0}'));
+      if (!mounted || generation != _listGeneration) return;
+      setState(() {
+        final next = asList(result['items']);
+        merchants = append ? [...merchants, ...next] : next;
+        merchantTotal = (result['total'] as num?)?.toInt() ?? merchants.length;
+      });
     } catch (cause) {
-      if (mounted) setState(() => error = cause.toString());
+      if (mounted && generation == _listGeneration) setState(() => error = cause.toString());
     } finally {
-      if (mounted) setState(() => loadingList = false);
+      if (mounted && generation == _listGeneration) setState(() => loadingList = false);
     }
   }
 
   void _onSearchChanged(String value) {
     _debounce?.cancel();
+    ++_searchGeneration;
     final term = value.trim();
     if (term.isEmpty) {
       setState(() {
         searching = false;
         searchResult = <String, dynamic>{};
+        suggestions = [];
         searchError = null;
       });
       return;
     }
-    _debounce = Timer(const Duration(milliseconds: 350), () => _runSearch(term));
+    _debounce = Timer(const Duration(milliseconds: 300), () {
+      unawaited(_loadSuggestions(term));
+      unawaited(_runSearch(term));
+    });
+  }
+
+  Future<void> _loadSuggestions(String term) async {
+    final trimmed = term.trim();
+    final generation = ++_suggestionGeneration;
+    if (trimmed.length < 2) {
+      if (mounted) setState(() => suggestions = []);
+      return;
+    }
+    try {
+      final result = asMap(await widget.client.get(
+        '/v1/search/suggestions?q=${Uri.encodeQueryComponent(trimmed)}&limit=8',
+      ));
+      if (!mounted || generation != _suggestionGeneration) return;
+      setState(() => suggestions = asList(result['items']));
+    } catch (_) {
+      if (mounted && generation == _suggestionGeneration) setState(() => suggestions = []);
+    }
   }
 
   Future<void> _runSearch(String term) async {
     final generation = ++_searchGeneration;
     setState(() {
       searching = true;
+      searchLoading = true;
       searchError = null;
     });
     try {
       final result = await widget.client.get(
-        '/v1/search?q=${Uri.encodeQueryComponent(term)}&lat=$latitude&lng=$longitude&limit=30',
+        '/v1/search?q=${Uri.encodeQueryComponent(term)}&lat=$latitude&lng=$longitude&limit=30&sort=$sort&type=$searchType${selectedCategory == null ? '' : '&category=$selectedCategory'}${openNow ? '&openNow=true' : ''}',
       );
       if (!mounted || generation != _searchGeneration) return;
       setState(() => searchResult = asMap(result));
@@ -205,10 +257,13 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
       if (mounted && generation == _searchGeneration) {
         setState(() => searchError = cause.toString());
       }
+    } finally {
+      if (mounted && generation == _searchGeneration) setState(() => searchLoading = false);
     }
   }
 
   Future<void> _commitSearch(String raw) async {
+    _debounce?.cancel();
     final term = raw.trim();
     if (term.isEmpty) return;
     searchController.text = term;
@@ -266,6 +321,16 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
   }
 
   Future<void> _changeLocation() async {
+    List<Map<String, dynamic>> addresses = [];
+    if (widget.client.session != null) {
+      try {
+        addresses = asList(asMap(await widget.client.get('/v1/addresses'))['items']);
+      } catch (cause) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved addresses unavailable: $cause')));
+      }
+    }
+    if (!mounted) return;
     final selected = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -277,6 +342,19 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
           const SizedBox(height: 4),
           Text('Availability, ETA and fees update for your area.', style: Theme.of(context).textTheme.bodySmall),
           const SizedBox(height: 12),
+          for (final address in addresses)
+            ListTile(
+              leading: const Icon(Icons.home_outlined),
+              title: Text(address['label']?.toString() ?? 'Saved address'),
+              subtitle: Text(address['addressLine']?.toString() ?? ''),
+              onTap: () => Navigator.pop(context, 'address:${address['id']}'),
+            ),
+          if (widget.client.session != null)
+            ListTile(
+              leading: const Icon(Icons.add_location_alt_outlined),
+              title: const Text('Manage saved addresses'),
+              onTap: () => Navigator.pop(context, 'manage-addresses'),
+            ),
           ..._locations.keys.map(
             (entry) => ListTile(
               contentPadding: EdgeInsets.zero,
@@ -289,11 +367,35 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         ],
       ),
     );
-    if (selected == null || selected == location) return;
-    await widget.client.storage.setSelectedLocation(selected);
+    if (selected == null) return;
+    if (selected == 'manage-addresses') {
+      if (!mounted) return;
+      await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => AddressBookScreen(client: widget.client)));
+      return;
+    }
+    var label = selected;
+    double nextLatitude;
+    double nextLongitude;
+    if (selected.startsWith('address:')) {
+      final address = addresses.firstWhere((item) => 'address:${item['id']}' == selected);
+      if (address['latitude'] is! num || address['longitude'] is! num) return;
+      label = address['label']?.toString() ?? 'Saved address';
+      nextLatitude = (address['latitude'] as num).toDouble();
+      nextLongitude = (address['longitude'] as num).toDouble();
+    } else {
+      nextLatitude = _locations[selected]!.first;
+      nextLongitude = _locations[selected]!.last;
+    }
+    await widget.client.storage.saveDeliveryLocation(label, nextLatitude, nextLongitude);
     if (!mounted) return;
-    setState(() => location = selected);
+    ++_searchGeneration;
+    setState(() {
+      location = label;
+      _latitude = nextLatitude;
+      _longitude = nextLongitude;
+    });
     await _bootstrap();
+    if (mounted && searchController.text.trim().isNotEmpty) await _runSearch(searchController.text.trim());
   }
 
   Future<void> _openFilters() async {
@@ -384,19 +486,29 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
       openNow = nextOpen;
       favoritesOnly = nextFavorites;
     });
-    if (changed) await _loadMerchants();
+    if (changed) {
+      if (searchController.text.trim().isNotEmpty) {
+        await _runSearch(searchController.text.trim());
+      } else {
+        await _loadMerchants();
+      }
+    }
   }
 
   void _selectCategory(String? slug) {
     setState(() => selectedCategory = slug);
-    _loadMerchants();
+    if (searchController.text.trim().isNotEmpty) {
+      _runSearch(searchController.text.trim());
+    } else {
+      _loadMerchants();
+    }
   }
 
   void _openMerchant(String? id) {
     if (id == null) return;
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => MerchantScreen(client: widget.client, merchantId: id),
+        builder: (_) => MerchantScreen(client: widget.client, merchantId: id, latitude: latitude, longitude: longitude),
       ),
     );
   }
@@ -413,7 +525,9 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
           const SizedBox(height: 14),
           _searchBar(),
           if (searching) ...[
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
+            _searchTypeChips(),
+            const SizedBox(height: 12),
             _searchBody(),
           ] else ...[
             if (recentSearches.isNotEmpty) ...[
@@ -433,6 +547,37 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                 const SizedBox(height: 18),
               ],
               _statsRow(),
+              if (offers.isNotEmpty) ...[
+                const SizedBox(height: 20),
+                _sectionHeader('Offers for you', 'Eligibility is checked again at checkout'),
+                const SizedBox(height: 10),
+                ...offers.map((offer) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Card(child: ListTile(
+                    leading: const Icon(Icons.local_offer_outlined, color: Color(0xFFE8613D)),
+                    title: Text(offer['displayName']?.toString() ?? 'Offer'),
+                    subtitle: Text('Minimum ${money(offer['minimumOrderMinor'] as num?, offer['currency']?.toString())} · ${offer['code']}'),
+                    trailing: const Icon(Icons.copy_rounded),
+                    onTap: () async {
+                      await Clipboard.setData(ClipboardData(text: offer['code'].toString()));
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Offer code copied')));
+                    },
+                  )),
+                )),
+              ],
+              if (recommendations.isNotEmpty) ...[
+                const SizedBox(height: 20),
+                _sectionHeader('Recommended for you', 'Highly rated stores serving your location'),
+                const SizedBox(height: 10),
+                ...recommendations.take(3).map((merchant) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: MerchantCard(merchant: merchant,
+                    isFavorite: favorites.contains(merchant['id']),
+                    onFavoriteToggle: () => _toggleFavorite(merchant['id'].toString()),
+                    onTap: () => _openMerchant(merchant['id'].toString())),
+                )),
+              ],
               if (featured.isNotEmpty) ...[
                 const SizedBox(height: 20),
                 _sectionHeader('Featured near you', 'Curated for ${location.split(',').first}'),
@@ -451,10 +596,18 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                 const SizedBox(height: 10),
                 _recentOrderRail(),
               ],
+              if (recentlyOrderedProducts.isNotEmpty) ...[
+                const SizedBox(height: 20),
+                _sectionHeader('Buy it again', 'Products from your previous orders'),
+                const SizedBox(height: 10),
+                _productRail(recentlyOrderedProducts),
+              ],
               const SizedBox(height: 22),
               _allMerchantsHeader(),
               const SizedBox(height: 10),
               _merchantsSection(),
+              if (merchants.length < merchantTotal && !loadingList)
+                OutlinedButton(onPressed: () => _loadMerchants(append: true), child: const Text('Load more stores')),
             ],
           ],
         ],
@@ -566,6 +719,34 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     );
   }
 
+  Widget _searchTypeChips() {
+    const options = <String, String>{
+      'all': 'Everything',
+      'merchant': 'Stores',
+      'product': 'Products',
+      'service': 'Services',
+    };
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          for (final option in options.entries) ...[
+            ChoiceChip(
+              label: Text(option.value),
+              selected: searchType == option.key,
+              onSelected: (_) {
+                setState(() => searchType = option.key);
+                final term = searchController.text.trim();
+                if (term.isNotEmpty) _runSearch(term);
+              },
+            ),
+            const SizedBox(width: 6),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _workWithText(String text) {
     return Text(text, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800));
   }
@@ -661,6 +842,15 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                 child: InkWell(
                   borderRadius: BorderRadius.circular(22),
                   onTap: () {
+                    final merchantId = banner['targetMerchantId']?.toString();
+                    final categorySlug = banner['targetCategorySlug']?.toString();
+                    if (merchantId != null && merchantId.isNotEmpty) {
+                      _openMerchant(merchantId);
+                      return;
+                    }
+                    searchController.clear();
+                    setState(() => searching = false);
+                    _selectCategory(categorySlug);
                     final code = banner['code']?.toString();
                     if (code != null) {
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -1002,31 +1192,80 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     final merchantsResult = asList(results['merchants']);
     final productsResult = asList(results['products']);
     final servicesResult = asList(results['services']);
-    final suggestions = (results['suggestions'] as List? ?? const []).whereType<String>().toList();
+    final termSuggestions = (results['suggestions'] as List? ?? const []).whereType<String>().toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (searchError != null) ErrorBanner(message: searchError!),
+        if (searchError != null) ...[
+          ErrorBanner(message: searchError!),
+          OutlinedButton(onPressed: () => _runSearch(searchController.text.trim()), child: const Text('Retry search')),
+        ],
+        if (searchLoading) const LinearProgressIndicator(),
         if (searchResult.isEmpty && searchError == null)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 40),
-            child: Center(child: CircularProgressIndicator()),
+          Column(
+            children: List.generate(
+              4,
+              (_) => const Padding(padding: EdgeInsets.only(top: 10), child: MerchantCardSkeleton()),
+            ),
           ),
         if (suggestions.isNotEmpty) ...[
           Text('Suggestions', style: Theme.of(context).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700)),
           const SizedBox(height: 8),
+          Column(
+            children: suggestions.take(5).map((suggestion) {
+              final type = suggestion['type']?.toString() ?? 'merchant';
+              final icon = type == 'product'
+                  ? Icons.local_mall_rounded
+                  : type == 'service'
+                      ? Icons.local_offer_outlined
+                      : Icons.storefront_rounded;
+              return ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(icon, size: 20, color: const Color(0xFFE8613D)),
+                title: Text(suggestion['label']?.toString() ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text(suggestion['subtitle']?.toString() ?? ''),
+                trailing: const Icon(Icons.north_west_rounded, size: 16),
+                onTap: () {
+                  if (type == 'service') {
+                    final slug = suggestion['categorySlug']?.toString();
+                    searchController.clear();
+                    setState(() {
+                      searching = false;
+                      suggestions = [];
+                    });
+                    _selectCategory(slug);
+                    return;
+                  }
+                  _commitSearch(suggestion['label']?.toString() ?? '');
+                },
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 12),
+        ],
+        if (termSuggestions.isNotEmpty && suggestions.isEmpty) ...[
           Wrap(
             spacing: 6,
             runSpacing: 4,
-            children: suggestions.take(6).map((term) => ActionChip(label: Text(term), onPressed: () => _commitSearch(term))).toList(),
+            children: termSuggestions.take(6).map((term) => ActionChip(label: Text(term), onPressed: () => _commitSearch(term))).toList(),
           ),
           const SizedBox(height: 16),
         ],
         if (searchResult.isNotEmpty && items.isEmpty && searchError == null)
-          const EmptyState(
-            icon: Icons.search_off_rounded,
-            title: 'No matches yet',
-            message: 'Try a dish, store, product or service name.',
+          Column(
+            children: [
+              const EmptyState(
+                icon: Icons.search_off_rounded,
+                title: 'No matches yet',
+                message: 'Try a dish, store, product or service name, or switch the filter above.',
+              ),
+              OutlinedButton.icon(
+                onPressed: () => _runSearch(searchController.text.trim()),
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Search again'),
+              ),
+            ],
           )
         else ...[
           if (merchantsResult.isNotEmpty) ...[
