@@ -2,9 +2,19 @@
 
 ## Customer mobile (implemented)
 
-`Phone / OTP → Explore (categories, search, merchants) → Merchant menu → Cart → Checkout (address, quote, payment) → Order confirmation → Orders → Order detail (delivery code, timeline, cancel) → Profile`
+`Welcome → Phone / OTP → Explore (categories, search, merchants) → Merchant menu → Cart → Checkout (address, quote, payment) → Order confirmation → Orders → Order detail (delivery code, timeline, cancel) → Account`
 
-Session is held in memory (no persistence yet). Base URL is supplied with `--dart-define=API_BASE_URL`.
+Account is a hub with dedicated screens:
+
+- Personal information (`PATCH /v1/users/me`, email verification request/verify)
+- Saved addresses (list/create/update/delete, default selection)
+- Security & sign-in (active sessions, revoke one/others, revoke on sign-out)
+- Notifications (push/SMS/email, order updates, promotions, security alerts)
+- Privacy & data (marketing/analytics consent, terms/privacy acceptance, export, deletion request/cancel with 30-day grace)
+- Preferences (English/Amharic, accessibility: text scale, reduce motion, high contrast, screen-reader hints)
+- Help & support, sign out
+
+Session, locale and accessibility settings persist locally (`AppStorage`); accessibility overrides the app-wide `MediaQuery` (text scaling, animations, contrast) and syncs to `user_profiles`. Base URL is supplied with `--dart-define=API_BASE_URL`.
 
 ## Courier mobile (implemented)
 

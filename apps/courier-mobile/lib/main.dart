@@ -13,7 +13,7 @@ import 'push_service.dart';
 
 const apiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
-  defaultValue: 'http://10.0.2.2:3000/api',
+  defaultValue: 'https://delivery-app-api-v2i0.onrender.com/api',
 );
 
 final scaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
@@ -76,7 +76,6 @@ class _CourierAppState extends State<CourierApp> {
     return MaterialApp(
       title: 'delivery_app courier',
       debugShowCheckedModeBanner: false,
-      scaffoldMessengerKey: scaffoldMessengerKey,
       locale: _locale,
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       supportedLocales: AppLocalizations.supportedLocales,
@@ -120,7 +119,7 @@ class _CourierAppState extends State<CourierApp> {
           style: FilledButton.styleFrom(
             backgroundColor: const Color(0xFF1E2A24),
             foregroundColor: Colors.white,
-            minimumSize: const Size.fromHeight(50),
+            minimumSize: const Size(0, 50),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
         ),
@@ -131,6 +130,10 @@ class _CourierAppState extends State<CourierApp> {
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
         ),
+      ),
+      builder: (context, child) => ScaffoldMessenger(
+        key: scaffoldMessengerKey,
+        child: child ?? const SizedBox.shrink(),
       ),
       home: CourierGate(
         client: widget.client,

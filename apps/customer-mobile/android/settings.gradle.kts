@@ -1,3 +1,19 @@
+// Fix for AGP AndroidLocationsException caused by duplicate ANDROID_PREFS_ROOT and ANDROID_USER_HOME env vars
+run {
+    try {
+        val pe = Class.forName("java.lang.ProcessEnvironment")
+        val fields = listOf("theEnvironment", "theUnmodifiableEnvironment")
+        for (fieldName in fields) {
+            try {
+                val field = pe.getDeclaredField(fieldName)
+                field.isAccessible = true
+                val map = field.get(null) as? MutableMap<String, String>
+                map?.remove("ANDROID_PREFS_ROOT")
+            } catch (_: Exception) {}
+        }
+    } catch (_: Exception) {}
+}
+
 pluginManagement {
     val flutterSdkPath =
         run {

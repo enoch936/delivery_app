@@ -6,13 +6,15 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'account/accessibility_controller.dart';
+import 'account/account_screen.dart';
 import 'app_localizations.dart';
 import 'app_storage.dart';
 import 'push_service.dart';
 
 const apiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
-  defaultValue: 'http://10.0.2.2:3000/api',
+  defaultValue: 'https://delivery-app-api-v2i0.onrender.com/api',
 );
 
 final scaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
@@ -58,6 +60,7 @@ class _DeliveryAppState extends State<DeliveryApp> {
     super.initState();
     final code = widget.storage.localeCode;
     if (code != null && code.isNotEmpty) _locale = Locale(code);
+    unawaited(accessibilityController.load(widget.storage));
   }
 
   void _changeLocale(String code) {
@@ -75,7 +78,6 @@ class _DeliveryAppState extends State<DeliveryApp> {
     return MaterialApp(
       title: 'delivery_app',
       debugShowCheckedModeBanner: false,
-      scaffoldMessengerKey: scaffoldMessengerKey,
       locale: _locale,
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       supportedLocales: AppLocalizations.supportedLocales,
@@ -120,7 +122,7 @@ class _DeliveryAppState extends State<DeliveryApp> {
           style: FilledButton.styleFrom(
             backgroundColor: const Color(0xFF20261F),
             foregroundColor: Colors.white,
-            minimumSize: const Size.fromHeight(50),
+            minimumSize: const Size(0, 50),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
@@ -141,6 +143,24 @@ class _DeliveryAppState extends State<DeliveryApp> {
           selectedColor: Color(0xFF20261F),
           labelStyle: TextStyle(fontSize: 12),
         ),
+      ),
+      builder: (context, child) => ValueListenableBuilder<AccessibilitySettings>(
+        valueListenable: accessibilityController,
+        builder: (context, settings, _) {
+          final base = MediaQuery.of(context);
+          final systemScale = base.textScaler.scale(16) / 16;
+          return MediaQuery(
+            data: base.copyWith(
+              textScaler: TextScaler.linear(systemScale * settings.textScale),
+              disableAnimations: base.disableAnimations || settings.reduceMotion,
+              highContrast: base.highContrast || settings.highContrast,
+            ),
+            child: ScaffoldMessenger(
+              key: scaffoldMessengerKey,
+              child: child ?? const SizedBox.shrink(),
+            ),
+          );
+        },
       ),
       home: AuthGate(
         client: widget.client,
@@ -607,7 +627,10 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
                   const Spacer(),
                   FilledButton(
                     onPressed: page == slides.length - 1 ? _complete : () => controller.nextPage(duration: const Duration(milliseconds: 260), curve: Curves.easeOut),
-                    child: Text(page == slides.length - 1 ? l10n.getStarted : l10n.next),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Text(page == slides.length - 1 ? l10n.getStarted : l10n.next),
+                    ),
                   ),
                 ],
               ),
@@ -919,12 +942,12 @@ class _CustomerHomeState extends State<CustomerHome> {
         children: [
           ExploreScreen(client: widget.client),
           OrdersScreen(client: widget.client),
-          ProfileScreen(
+          AccountScreen(
             user: user,
-            onSignOut: signOut,
-            onOpenCart: openCart,
             client: widget.client,
+            onSignOut: signOut,
             onLocaleChanged: widget.onLocaleChanged,
+            onOpenCart: openCart,
           ),
         ],
       ),
@@ -965,20 +988,60 @@ class _ExploreScreenState extends State<ExploreScreen> {
   final searchController = TextEditingController();
   List<Map<String, dynamic>> merchants = [];
   List<Map<String, dynamic>> categories = [];
+  Set<String> favorites = {};
+  List<String> recentSearches = [];
+  String currentLocation = 'Bole, Addis Ababa';
+
   String? selectedCategory;
+  bool openNowOnly = false;
+  bool favoritesOnly = false;
   bool loading = true;
   String? error;
+
+  int promoIndex = 0;
+  Timer? promoTimer;
+
+  final List<Map<String, String>> promoBanners = [
+    {
+      'title': 'Express Delivery',
+      'subtitle': 'Hot meals & essentials in 25 mins',
+      'code': 'FAST25',
+    },
+    {
+      'title': '20% OFF First Order',
+      'subtitle': 'Valid on all local merchants',
+      'code': 'WELCOME20',
+    },
+    {
+      'title': 'Parcel & Courier',
+      'subtitle': 'Send packages anywhere in Addis',
+      'code': 'EXPRESS',
+    },
+  ];
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _loadStateAndData();
+    promoTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      if (mounted) {
+        setState(() => promoIndex = (promoIndex + 1) % promoBanners.length);
+      }
+    });
   }
 
   @override
   void dispose() {
     searchController.dispose();
+    promoTimer?.cancel();
     super.dispose();
+  }
+
+  void _loadStateAndData() {
+    favorites = widget.client.storage.favoriteMerchantIds.toSet();
+    recentSearches = widget.client.storage.recentSearches;
+    currentLocation = widget.client.storage.selectedLocation;
+    _load();
   }
 
   Future<void> _load() async {
@@ -990,16 +1053,29 @@ class _ExploreScreenState extends State<ExploreScreen> {
       final query = <String>[];
       if (selectedCategory != null) query.add('category=$selectedCategory');
       final search = searchController.text.trim();
-      if (search.isNotEmpty) query.add('q=${Uri.encodeQueryComponent(search)}');
+      if (search.isNotEmpty) {
+        query.add('q=${Uri.encodeQueryComponent(search)}');
+        await widget.client.storage.addRecentSearch(search);
+        recentSearches = widget.client.storage.recentSearches;
+      }
       final suffix = query.isEmpty ? '' : '?${query.join('&')}';
       final results = await Future.wait([
         widget.client.get('/v1/service-categories'),
         widget.client.get('/v1/merchants$suffix'),
       ]);
       if (!mounted) return;
+      var fetched = asList(asMap(results[1])['items']);
+
+      if (favoritesOnly) {
+        fetched = fetched.where((m) => favorites.contains(m['id']?.toString())).toList();
+      }
+      if (openNowOnly) {
+        fetched = fetched.where((m) => m['status'] == 'active' || m['isOpen'] == true).toList();
+      }
+
       setState(() {
         categories = asList(asMap(results[0])['items']);
-        merchants = asList(asMap(results[1])['items']);
+        merchants = fetched;
       });
     } catch (cause) {
       if (mounted) setState(() => error = cause.toString());
@@ -1008,17 +1084,113 @@ class _ExploreScreenState extends State<ExploreScreen> {
     }
   }
 
+  void _toggleFavorite(String merchantId) async {
+    final added = await widget.client.storage.toggleFavoriteMerchant(merchantId);
+    setState(() {
+      if (added) {
+        favorites.add(merchantId);
+      } else {
+        favorites.remove(merchantId);
+      }
+    });
+  }
+
+  void _changeLocation() async {
+    final locations = [
+      'Bole, Addis Ababa',
+      'Kazanchis, Addis Ababa',
+      'CMC, Addis Ababa',
+      'Sarbet, Addis Ababa',
+      'Old Airport, Addis Ababa',
+      'Piassa, Addis Ababa',
+      'Megenagna, Addis Ababa',
+    ];
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Select Delivery Location', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+              const SizedBox(height: 12),
+              ...locations.map((loc) => ListTile(
+                    leading: Icon(Icons.location_on_outlined, color: loc == currentLocation ? const Color(0xFFE8613D) : null),
+                    title: Text(loc, style: TextStyle(fontWeight: loc == currentLocation ? FontWeight.w800 : FontWeight.w500)),
+                    trailing: loc == currentLocation ? const Icon(Icons.check, color: Color(0xFFE8613D)) : null,
+                    onTap: () => Navigator.pop(context, loc),
+                  )),
+            ],
+          ),
+        );
+      },
+    );
+    if (selected != null && selected != currentLocation) {
+      await widget.client.storage.setSelectedLocation(selected);
+      setState(() => currentLocation = selected);
+      _load();
+    }
+  }
+
+  void _resetFilters() {
+    searchController.clear();
+    setState(() {
+      selectedCategory = null;
+      openNowOnly = false;
+      favoritesOnly = false;
+    });
+    _load();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final promo = promoBanners[promoIndex];
+
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
         children: [
+          // Location Selector Header
+          InkWell(
+            onTap: _changeLocation,
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE2DDD0).withValues(alpha: 0.5),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.location_on, color: Color(0xFFE8613D), size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('DELIVER TO', style: theme.textTheme.labelSmall?.copyWith(fontSize: 10, color: const Color(0xFF6B7468), fontWeight: FontWeight.w800)),
+                        Text(currentLocation, style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w800)),
+                      ],
+                    ),
+                  ),
+                  const Icon(Icons.keyboard_arrow_down, color: Color(0xFF6B7468)),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Search & Header Banner
           Container(
-            padding: const EdgeInsets.all(22),
+            padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
               color: const Color(0xFF1E2A24),
               borderRadius: BorderRadius.circular(22),
@@ -1026,22 +1198,42 @@ class _ExploreScreenState extends State<ExploreScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'DELIVERED AROUND ADDIS',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: const Color(0xFFF18A68),
-                    letterSpacing: 1.6,
-                    fontWeight: FontWeight.w800,
-                  ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'DELIVERED AROUND ADDIS',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: const Color(0xFFF18A68),
+                        letterSpacing: 1.6,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE8613D),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        promo['code']!,
+                        style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
                 Text(
-                  'What are you craving?',
+                  promo['title']!,
                   style: theme.textTheme.headlineSmall?.copyWith(
                     color: const Color(0xFFEEF0E6),
                     fontWeight: FontWeight.w800,
                     letterSpacing: -0.8,
                   ),
+                ),
+                Text(
+                  promo['subtitle']!,
+                  style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFFB0B7AC)),
                 ),
                 const SizedBox(height: 16),
                 TextField(
@@ -1049,19 +1241,101 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   textInputAction: TextInputAction.search,
                   onSubmitted: (_) => _load(),
                   decoration: InputDecoration(
-                    hintText: 'Search meals, shops, merchants',
+                    hintText: 'Search meals, shops, products',
                     fillColor: const Color(0xFFFFFDF7),
                     prefixIcon: const Icon(Icons.search),
-                    suffixIcon: IconButton(
-                      onPressed: _load,
-                      icon: const Icon(Icons.arrow_forward),
+                    suffixIcon: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (searchController.text.isNotEmpty)
+                          IconButton(
+                            icon: const Icon(Icons.clear, size: 18),
+                            onPressed: () {
+                              searchController.clear();
+                              _load();
+                            },
+                          ),
+                        IconButton(
+                          onPressed: _load,
+                          icon: const Icon(Icons.arrow_forward),
+                        ),
+                      ],
                     ),
                   ),
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
+
+          // Recent Searches Chips
+          if (recentSearches.isNotEmpty) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Recent Searches', style: theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w800, color: const Color(0xFF6B7468))),
+                TextButton(
+                  onPressed: () async {
+                    await widget.client.storage.clearRecentSearches();
+                    setState(() => recentSearches = []);
+                  },
+                  child: const Text('Clear', style: TextStyle(fontSize: 12)),
+                ),
+              ],
+            ),
+            SizedBox(
+              height: 32,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                children: recentSearches.map((term) => Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: ActionChip(
+                    label: Text(term, style: const TextStyle(fontSize: 11)),
+                    avatar: const Icon(Icons.history, size: 14),
+                    onPressed: () {
+                      searchController.text = term;
+                      _load();
+                    },
+                  ),
+                )).toList(),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+
+          // Quick Service Categories Tiles
+          SizedBox(
+            height: 80,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              children: [
+                _buildServiceTile(Icons.restaurant, 'Food', const Color(0xFFE8613D), () {
+                  setState(() => selectedCategory = 'restaurants');
+                  _load();
+                }),
+                _buildServiceTile(Icons.shopping_basket, 'Grocery', const Color(0xFF2F6B4F), () {
+                  setState(() => selectedCategory = 'groceries');
+                  _load();
+                }),
+                _buildServiceTile(Icons.medical_services, 'Pharmacy', const Color(0xFF1E88E5), () {
+                  setState(() => selectedCategory = 'pharmacy');
+                  _load();
+                }),
+                _buildServiceTile(Icons.storefront, 'Retail', const Color(0xFF8E24AA), () {
+                  setState(() => selectedCategory = 'retail');
+                  _load();
+                }),
+                _buildServiceTile(Icons.local_shipping, 'Parcel', const Color(0xFFD81B60), () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Express Parcel Courier Booking active in Addis Ababa')),
+                  );
+                }),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Category & Filter Chips
           SizedBox(
             height: 38,
             child: ListView(
@@ -1071,9 +1345,30 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   padding: const EdgeInsets.only(right: 8),
                   child: ChoiceChip(
                     label: const Text('All'),
-                    selected: selectedCategory == null,
-                    onSelected: (_) {
-                      setState(() => selectedCategory = null);
+                    selected: selectedCategory == null && !openNowOnly && !favoritesOnly,
+                    onSelected: (_) => _resetFilters(),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: FilterChip(
+                    avatar: const Icon(Icons.star, size: 16, color: Color(0xFFE8613D)),
+                    label: const Text('Favorites'),
+                    selected: favoritesOnly,
+                    onSelected: (val) {
+                      setState(() => favoritesOnly = val);
+                      _load();
+                    },
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: FilterChip(
+                    avatar: const Icon(Icons.schedule, size: 16),
+                    label: const Text('Open Now'),
+                    selected: openNowOnly,
+                    onSelected: (val) {
+                      setState(() => openNowOnly = val);
                       _load();
                     },
                   ),
@@ -1095,11 +1390,13 @@ class _ExploreScreenState extends State<ExploreScreen> {
             ),
           ),
           const SizedBox(height: 22),
+
+          // Merchant List Header
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                error == null ? 'Nearby kitchens' : 'Something went wrong',
+                error == null ? 'Nearby Merchants (${merchants.length})' : 'Something went wrong',
                 style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
               ),
               if (loading) const SizedBox(
@@ -1110,109 +1407,247 @@ class _ExploreScreenState extends State<ExploreScreen> {
             ],
           ),
           const SizedBox(height: 12),
+
           if (error != null) ErrorBanner(message: error!),
+
+          // Skeleton Loader while loading
+          if (loading && merchants.isEmpty) ...[
+            const MerchantCardSkeleton(),
+            const MerchantCardSkeleton(),
+            const MerchantCardSkeleton(),
+          ],
+
+          // Empty state with retry action
           if (!loading && error == null && merchants.isEmpty)
-            const EmptyState(
-              icon: Icons.storefront_outlined,
-              title: 'No merchants found',
-              message: 'Try another search or category.',
-            ),
-          ...merchants.map(
-            (merchant) => Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: MerchantCard(
-                merchant: merchant,
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => MerchantScreen(
-                      client: widget.client,
-                      merchantId: merchant['id'] as String,
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  children: [
+                    const Icon(Icons.storefront_outlined, size: 48, color: Color(0xFF6B7468)),
+                    const SizedBox(height: 12),
+                    Text('No merchants found', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+                    const SizedBox(height: 6),
+                    Text(
+                      'No matching stores or products found for current filters.',
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
                     ),
-                  ),
+                    const SizedBox(height: 16),
+                    FilledButton(
+                      onPressed: _resetFilters,
+                      child: const Text('Reset All Filters'),
+                    ),
+                  ],
                 ),
               ),
             ),
-          ),
+
+          // Merchant Cards
+          if (!loading || merchants.isNotEmpty)
+            ...merchants.map(
+              (merchant) {
+                final id = merchant['id']?.toString() ?? '';
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: MerchantCard(
+                    merchant: merchant,
+                    isFavorite: favorites.contains(id),
+                    onFavoriteToggle: () => _toggleFavorite(id),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => MerchantScreen(
+                          client: widget.client,
+                          merchantId: id,
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildServiceTile(IconData icon, String title, Color color, VoidCallback onTap) {
+    return Container(
+      width: 76,
+      margin: const EdgeInsets.only(right: 10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Column(
+          children: [
+            Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Icon(icon, color: color, size: 26),
+            ),
+            const SizedBox(height: 6),
+            Text(title, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700), maxLines: 1),
+          ],
+        ),
       ),
     );
   }
 }
 
 class MerchantCard extends StatelessWidget {
-  const MerchantCard({super.key, required this.merchant, required this.onTap});
+  const MerchantCard({
+    super.key,
+    required this.merchant,
+    required this.onTap,
+    required this.isFavorite,
+    required this.onFavoriteToggle,
+  });
 
   final Map<String, dynamic> merchant;
   final VoidCallback onTap;
+  final bool isFavorite;
+  final VoidCallback onFavoriteToggle;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final categories = (merchant['serviceCategorySlugs'] as List? ?? const [])
+    final categoryList = (merchant['serviceCategorySlugs'] as List? ?? const [])
         .map((value) => label(value.toString()))
         .take(2)
         .join(' · ');
+    final isOpen = merchant['status'] == 'active' || merchant['isOpen'] == true;
+    final rating = merchant['rating']?.toString() ?? '4.8';
+    final estTime = merchant['estimatedDeliveryTime']?.toString() ?? '25-35 min';
+    final fee = merchant['deliveryFee']?.toString() ?? 'ETB 50';
+
     return Card(
       child: InkWell(
         borderRadius: BorderRadius.circular(18),
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Column(
             children: [
-              Container(
-                width: 62,
-                height: 62,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF0EAD9),
-                  borderRadius: BorderRadius.circular(15),
-                ),
-                clipBehavior: Clip.antiAlias,
-                child: merchant['logoUrl'] != null
-                    ? Image.network(
-                        merchant['logoUrl'] as String,
-                        fit: BoxFit.cover,
-                        errorBuilder: (context, error, stack) => const Icon(Icons.storefront),
-                      )
-                    : Center(
-                        child: Text(
-                          (merchant['displayName']?.toString() ?? 'S').characters.first,
-                          style: const TextStyle(
-                            fontSize: 26,
-                            fontWeight: FontWeight.w800,
-                            color: Color(0xFFE8613D),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 62,
+                    height: 62,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF0EAD9),
+                      borderRadius: BorderRadius.circular(15),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: merchant['logoUrl'] != null
+                        ? Image.network(
+                            merchant['logoUrl'] as String,
+                            fit: BoxFit.cover,
+                            errorBuilder: (context, error, stack) => const Icon(Icons.storefront),
+                          )
+                        : Center(
+                            child: Text(
+                              (merchant['displayName']?.toString() ?? 'S').characters.first,
+                              style: const TextStyle(
+                                fontSize: 26,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFFE8613D),
+                              ),
+                            ),
                           ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                merchant['displayName']?.toString() ?? 'Merchant',
+                                style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                              ),
+                            ),
+                            IconButton(
+                              constraints: const BoxConstraints(),
+                              padding: EdgeInsets.zero,
+                              icon: Icon(
+                                isFavorite ? Icons.star : Icons.star_border,
+                                color: isFavorite ? const Color(0xFFE8613D) : const Color(0xFF9E9E9E),
+                                size: 22,
+                              ),
+                              onPressed: onFavoriteToggle,
+                            ),
+                          ],
                         ),
-                      ),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      merchant['displayName']?.toString() ?? 'Merchant',
-                      style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                        if (merchant['description'] != null) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            merchant['description'].toString(),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
+                          ),
+                        ],
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: isOpen ? const Color(0xFFE8F5E9) : const Color(0xFFFFEBEE),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                isOpen ? 'OPEN' : 'CLOSED',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w800,
+                                  color: isOpen ? const Color(0xFF2E7D32) : const Color(0xFFC62828),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                [if (categoryList.isNotEmpty) categoryList, if (merchant['primaryLocationName'] != null) merchant['primaryLocationName'].toString()].join(' · '),
+                                style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFF6B7468)),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ),
-                    if (merchant['description'] != null) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        merchant['description'].toString(),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
-                      ),
+                  ),
+                ],
+              ),
+              const Divider(height: 20),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.star, size: 16, color: Color(0xFFE8613D)),
+                      const SizedBox(width: 4),
+                      Text(rating, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+                      const SizedBox(width: 12),
+                      const Icon(Icons.access_time, size: 16, color: Color(0xFF6B7468)),
+                      const SizedBox(width: 4),
+                      Text(estTime, style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468))),
                     ],
-                    const SizedBox(height: 8),
-                    Text(
-                      [if (categories.isNotEmpty) categories, if (merchant['primaryLocationName'] != null) merchant['primaryLocationName'].toString()].join(' · '),
-                      style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFF6B7468)),
-                    ),
-                  ],
-                ),
+                  ),
+                  Text(
+                    fee,
+                    style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12, color: Color(0xFF20261F)),
+                  ),
+                ],
               ),
-              const Icon(Icons.chevron_right, color: Color(0xFF6B7468)),
             ],
           ),
         ),
@@ -2456,314 +2891,6 @@ class _LiveTrackingCard extends StatelessWidget {
   }
 }
 
-class ProfileScreen extends StatelessWidget {
-  const ProfileScreen({
-    super.key,
-    required this.user,
-    required this.onSignOut,
-    required this.onOpenCart,
-    required this.client,
-    required this.onLocaleChanged,
-  });
-
-  final Map<String, dynamic> user;
-  final Future<void> Function() onSignOut;
-  final Future<void> Function() onOpenCart;
-  final ApiClient client;
-  final ValueChanged<String> onLocaleChanged;
-
-  Future<void> _editProfile(BuildContext context) async {
-    final displayName = TextEditingController(text: user['displayName']?.toString() ?? '');
-    final email = TextEditingController(text: user['email']?.toString() ?? '');
-    final values = await showDialog<Map<String, String>>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Edit profile'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: displayName, decoration: const InputDecoration(labelText: 'Name')),
-            const SizedBox(height: 12),
-            TextField(controller: email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'Email (optional)')),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, {'displayName': displayName.text.trim(), 'email': email.text.trim()}),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-    displayName.dispose();
-    email.dispose();
-    if (values == null || !context.mounted) return;
-    try {
-      final updated = asMap(await client.post('/v1/users/me/preferences', values));
-      user['displayName'] = updated['displayName'];
-      user['email'] = updated['email'];
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Profile updated.')));
-    } catch (cause) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(cause.toString())));
-    }
-  }
-
-  Future<void> _editPrivacy(BuildContext context) async {
-    try {
-      final profile = asMap(await client.get('/v1/users/me'));
-      var marketing = profile['marketingConsent'] == true;
-      var analytics = profile['analyticsConsent'] == true;
-      if (!context.mounted) return;
-      final values = await showDialog<Map<String, bool>>(
-        context: context,
-        builder: (dialogContext) => StatefulBuilder(
-          builder: (context, setDialogState) => AlertDialog(
-            title: const Text('Privacy choices'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                SwitchListTile(value: marketing, onChanged: (value) => setDialogState(() => marketing = value), title: const Text('Offers and promotions')),
-                SwitchListTile(value: analytics, onChanged: (value) => setDialogState(() => analytics = value), title: const Text('Product analytics')),
-              ],
-            ),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
-              FilledButton(onPressed: () => Navigator.pop(dialogContext, {'marketingConsent': marketing, 'analyticsConsent': analytics}), child: const Text('Save choices')),
-            ],
-          ),
-        ),
-      );
-      if (values == null || !context.mounted) return;
-      await client.post('/v1/users/me/preferences', values);
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Privacy choices updated.')));
-    } catch (cause) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(cause.toString())));
-    }
-  }
-
-  Future<void> _editNotifications(BuildContext context) async {
-    try {
-      final preferences = asMap(await client.get('/v1/notifications/preferences'));
-      var pushEnabled = preferences['pushEnabled'] == true;
-      var smsEnabled = preferences['smsEnabled'] == true;
-      var emailEnabled = preferences['emailEnabled'] == true;
-      var orderUpdates = preferences['orderUpdates'] == true;
-      var promotions = preferences['promotions'] == true;
-      var securityAlerts = preferences['securityAlerts'] == true;
-      if (!context.mounted) return;
-      final values = await showDialog<Map<String, bool>>(
-        context: context,
-        builder: (dialogContext) => StatefulBuilder(
-          builder: (context, setDialogState) => AlertDialog(
-            title: Text(AppLocalizations.of(context).notificationPreferences),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SwitchListTile(value: pushEnabled, onChanged: (value) => setDialogState(() => pushEnabled = value), title: Text(AppLocalizations.of(context).pushNotifications)),
-                  SwitchListTile(value: smsEnabled, onChanged: (value) => setDialogState(() => smsEnabled = value), title: Text(AppLocalizations.of(context).smsNotifications)),
-                  SwitchListTile(value: emailEnabled, onChanged: (value) => setDialogState(() => emailEnabled = value), title: Text(AppLocalizations.of(context).emailNotifications)),
-                  SwitchListTile(value: orderUpdates, onChanged: (value) => setDialogState(() => orderUpdates = value), title: Text(AppLocalizations.of(context).orderUpdates)),
-                  SwitchListTile(value: promotions, onChanged: (value) => setDialogState(() => promotions = value), title: Text(AppLocalizations.of(context).promotions)),
-                  SwitchListTile(value: securityAlerts, onChanged: (value) => setDialogState(() => securityAlerts = value), title: const Text('Security alerts')),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
-              FilledButton(
-                onPressed: () => Navigator.pop(dialogContext, {
-                  'pushEnabled': pushEnabled, 'smsEnabled': smsEnabled, 'emailEnabled': emailEnabled,
-                  'orderUpdates': orderUpdates, 'promotions': promotions, 'securityAlerts': securityAlerts,
-                }),
-                child: const Text('Save'),
-              ),
-            ],
-          ),
-        ),
-      );
-      if (values == null || !context.mounted) return;
-      await client.patch('/v1/notifications/preferences', values);
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Notification preferences updated.')));
-    } catch (cause) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(cause.toString())));
-    }
-  }
-
-  Future<void> _exportData(BuildContext context) async {
-    try {
-      final result = asMap(await client.get('/v1/users/me/export'));
-      if (!context.mounted) return;
-      final orders = asList(result['orders']).length;
-      final addresses = asList(result['addresses']).length;
-      await showDialog<void>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Your data export'),
-          content: Text('Export generated at ${shortDate(result['exportedAt']?.toString())}.\n\n$orders orders and $addresses saved addresses are included.'),
-          actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close'))],
-        ),
-      );
-    } catch (cause) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(cause.toString())));
-    }
-  }
-
-  Future<void> _deleteAccount(BuildContext context) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Request account deletion?'),
-        content: const Text('Your account will be marked for deletion and active sessions will be revoked. This cannot be undone from the app.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Request deletion')),
-        ],
-      ),
-    );
-    if (confirmed != true || !context.mounted) return;
-    try {
-      await client.post('/v1/users/me/deletion-request');
-      await onSignOut();
-    } catch (cause) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(cause.toString())));
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final l10n = AppLocalizations.of(context);
-    final localeCode = Localizations.localeOf(context).languageCode == 'am' ? 'am' : 'en';
-    final roles = (user['roles'] as List? ?? const []).map((role) => label(role.toString())).join(', ');
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 30),
-      children: [
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Row(
-              children: [
-                CircleAvatar(
-                  radius: 30,
-                  backgroundColor: const Color(0xFF1E2A24),
-                  child: Text(
-                    (user['displayName']?.toString() ?? user['phoneE164']?.toString() ?? 'U').characters.first.toUpperCase(),
-                    style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w800),
-                  ),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        user['displayName']?.toString() ?? 'Delivery customer',
-                        style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        user['phoneE164']?.toString() ?? user['email']?.toString() ?? '',
-                        style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
-                      ),
-                      if (roles.isNotEmpty) ...[
-                        const SizedBox(height: 4),
-                        Text(roles, style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFF6B7468))),
-                      ],
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 16),
-        Card(
-          child: Column(
-            children: [
-              ListTile(
-                leading: const Icon(Icons.edit_outlined),
-                title: const Text('Edit profile'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => _editProfile(context),
-              ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.shopping_bag_outlined),
-                title: Text(l10n.yourCart),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: onOpenCart,
-              ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.language),
-                title: Text(l10n.language),
-                trailing: DropdownButton<String>(
-                  value: localeCode,
-                  underline: const SizedBox.shrink(),
-                  items: [
-                    DropdownMenuItem(value: 'en', child: Text(l10n.english)),
-                    DropdownMenuItem(value: 'am', child: Text(l10n.amharic)),
-                  ],
-                  onChanged: (value) {
-                    if (value != null) onLocaleChanged(value);
-                  },
-                ),
-              ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.privacy_tip_outlined),
-                title: const Text('Privacy choices'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => _editPrivacy(context),
-              ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.notifications_none_outlined),
-                title: Text(l10n.notificationPreferences),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => _editNotifications(context),
-              ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.download_outlined),
-                title: const Text('Export my data'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => _exportData(context),
-              ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.delete_outline, color: Color(0xFFA63A32)),
-                title: const Text('Request account deletion'),
-                onTap: () => _deleteAccount(context),
-              ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.support_agent),
-                title: Text(l10n.helpAndSupport),
-                subtitle: Text(l10n.helpSubtitle),
-              ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.logout),
-                title: Text(l10n.signOut),
-                onTap: onSignOut,
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 20),
-        Text(
-          '${l10n.connectedTo} $apiBaseUrl',
-          textAlign: TextAlign.center,
-          style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
-        ),
-      ],
-    );
-  }
-}
-
 class EmptyState extends StatelessWidget {
   const EmptyState({
     super.key,
@@ -2793,6 +2920,92 @@ class EmptyState extends StatelessWidget {
             style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class SkeletonBox extends StatefulWidget {
+  const SkeletonBox({
+    super.key,
+    required this.width,
+    required this.height,
+    this.borderRadius = 12.0,
+  });
+
+  final double width;
+  final double height;
+  final double borderRadius;
+
+  @override
+  State<SkeletonBox> createState() => _SkeletonBoxState();
+}
+
+class _SkeletonBoxState extends State<SkeletonBox> with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _animation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    )..repeat(reverse: true);
+    _animation = Tween<double>(begin: 0.35, end: 0.75).animate(_controller);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _animation,
+      builder: (context, _) {
+        return Container(
+          width: widget.width,
+          height: widget.height,
+          decoration: BoxDecoration(
+            color: const Color(0xFFE2DDD0).withValues(alpha: _animation.value),
+            borderRadius: BorderRadius.circular(widget.borderRadius),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class MerchantCardSkeleton extends StatelessWidget {
+  const MerchantCardSkeleton({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            const SkeletonBox(width: 62, height: 62, borderRadius: 15),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: const [
+                  SkeletonBox(width: 140, height: 16),
+                  SizedBox(height: 8),
+                  SkeletonBox(width: 200, height: 12),
+                  SizedBox(height: 8),
+                  SkeletonBox(width: 100, height: 10),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

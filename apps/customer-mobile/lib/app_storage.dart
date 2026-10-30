@@ -52,6 +52,9 @@ class AppStorage {
   static const _cachePrefix = 'delivery.cache.';
   static const _localeKey = 'delivery.locale.v1';
   static const _welcomeKey = 'delivery.welcome.completed.v1';
+  static const _favoritesKey = 'delivery.favorites.v1';
+  static const _recentSearchesKey = 'delivery.recent_searches.v1';
+  static const _locationKey = 'delivery.selected_location.v1';
 
   static Future<AppStorage> open() async {
     final preferences = await SharedPreferences.getInstance();
@@ -156,4 +159,60 @@ class AppStorage {
   bool get welcomeCompleted => _preferences.getBool(_welcomeKey) ?? false;
 
   Future<void> setWelcomeCompleted() => _preferences.setBool(_welcomeKey, true);
+
+  List<String> get favoriteMerchantIds => _preferences.getStringList(_favoritesKey) ?? [];
+
+  Future<bool> toggleFavoriteMerchant(String id) async {
+    final list = List<String>.from(favoriteMerchantIds);
+    bool added = false;
+    if (list.contains(id)) {
+      list.remove(id);
+    } else {
+      list.add(id);
+      added = true;
+    }
+    await _preferences.setStringList(_favoritesKey, list);
+    return added;
+  }
+
+  List<String> get recentSearches => _preferences.getStringList(_recentSearchesKey) ?? [];
+
+  Future<void> addRecentSearch(String term) async {
+    final trimmed = term.trim();
+    if (trimmed.isEmpty) return;
+    final list = List<String>.from(recentSearches)..remove(trimmed);
+    list.insert(0, trimmed);
+    if (list.length > 8) list.removeLast();
+    await _preferences.setStringList(_recentSearchesKey, list);
+  }
+
+  Future<void> clearRecentSearches() => _preferences.remove(_recentSearchesKey);
+
+  String get selectedLocation => _preferences.getString(_locationKey) ?? 'Bole, Addis Ababa';
+
+  Future<void> setSelectedLocation(String location) => _preferences.setString(_locationKey, location);
+
+  static const _textScaleKey = 'delivery.a11y.text_scale.v1';
+  static const _reduceMotionKey = 'delivery.a11y.reduce_motion.v1';
+  static const _highContrastKey = 'delivery.a11y.high_contrast.v1';
+  static const _screenReaderHintsKey = 'delivery.a11y.screen_reader_hints.v1';
+
+  double get textScale => _preferences.getDouble(_textScaleKey) ?? 1.0;
+  bool get reduceMotion => _preferences.getBool(_reduceMotionKey) ?? false;
+  bool get highContrast => _preferences.getBool(_highContrastKey) ?? false;
+  bool get screenReaderHints => _preferences.getBool(_screenReaderHintsKey) ?? true;
+
+  Future<void> saveAccessibility({
+    required double textScale,
+    required bool reduceMotion,
+    required bool highContrast,
+    required bool screenReaderHints,
+  }) async {
+    await Future.wait([
+      _preferences.setDouble(_textScaleKey, textScale.clamp(1.0, 2.0)),
+      _preferences.setBool(_reduceMotionKey, reduceMotion),
+      _preferences.setBool(_highContrastKey, highContrast),
+      _preferences.setBool(_screenReaderHintsKey, screenReaderHints),
+    ]);
+  }
 }

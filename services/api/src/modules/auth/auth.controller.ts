@@ -2,6 +2,7 @@ import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Post, Req, UseGua
 import { ApiAcceptedResponse, ApiBearerAuth, ApiCreatedResponse, ApiNoContentResponse, ApiTags, ApiUnauthorizedResponse } from "@nestjs/swagger";
 import { IsOptional, IsString, Length, Matches } from "class-validator";
 import type { FastifyRequest } from "fastify";
+import { RateLimit, RateLimitGuard } from "../../common/rate-limit.guard.js";
 import { AuthService } from "./auth.service.js";
 import { SessionGuard, type AuthenticatedRequest } from "./session.guard.js";
 
@@ -40,12 +41,16 @@ export class AuthController {
 
   @Post("otp/request")
   @HttpCode(HttpStatus.ACCEPTED)
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ points: 5, durationSeconds: 60, keyPrefix: "otp-request" })
   @ApiAcceptedResponse({ description: "A one-time phone verification code was requested." })
   async requestOtp(@Body() body: RequestOtpDto, @Headers("x-request-id") requestId: string | undefined, @Req() request: FastifyRequest) {
     return this.authService.requestPhoneOtp({ phoneE164: body.phoneE164, requestId: requestId ?? null, ipAddress: request.ip ?? null });
   }
 
   @Post("otp/verify")
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ points: 10, durationSeconds: 60, keyPrefix: "otp-verify" })
   @ApiCreatedResponse({ description: "The phone number was verified and an opaque session was created." })
   @ApiUnauthorizedResponse({ description: "The code is invalid, expired, or already used." })
   async verifyOtp(@Body() body: VerifyOtpDto, @Headers("x-request-id") requestId: string | undefined, @Req() request: FastifyRequest) {

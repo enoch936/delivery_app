@@ -82,7 +82,8 @@ export class AuthService {
 
   async authenticate(accessToken: string): Promise<AuthSession> {
     const session = await this.repository.findSessionByTokenHash(this.hashToken(accessToken));
-    if (!session || session.user.accountStatus !== "active") throw new UnauthorizedException("Your session is invalid or has expired.");
+    const signInAllowed = session?.user.accountStatus === "active" || session?.user.accountStatus === "deletion_requested";
+    if (!session || !signInAllowed) throw new UnauthorizedException("Your session is invalid or has expired.");
     return session;
   }
 

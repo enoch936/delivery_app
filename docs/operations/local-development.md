@@ -14,7 +14,7 @@ The API integration test applies the real HTTP pipeline against PostgreSQL/PostG
 PowerShell example (after Docker, migrations and seeds):
 
 ```powershell
-$env:DATABASE_URL = "postgresql://delivery_app:delivery_app@localhost:5432/delivery_app"
+$env:DATABASE_URL = "postgresql://delivery_app:delivery_app@localhost:5433/delivery_app"
 $env:NODE_ENV = "development"
 $env:OTP_PROVIDER = "development"
 $env:OTP_DEVELOPMENT_CODE = "123456"

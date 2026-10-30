@@ -22,7 +22,7 @@ Use the direct (non-pooled) Neon host for migrations and seeds. Use the pooled h
 | Merchant portal | https://delivery-merchant-azure.vercel.app |
 | Admin portal | https://delivery-admin-kappa.vercel.app |
 
-The last recorded hosted Neon verification covered migrations `0001`–`0009` and both demo seeds. Before deploying the current source, apply and verify `0010_multi_party_finance.sql` and `0011_identity_email.sql` on the target Neon branch; the finance migration adds the finance tables and fields used by the settlement, payout, commission, subscription, and cash-on-delivery modules, and the identity email migration adds the email verification and recovery workflow fields. Stripe test checkout was verified end-to-end against the earlier schema: the hosted checkout completed, the signed webhook was accepted, the payment became `SUCCEEDED`, and the order became `CONFIRMED`/`PAID`.
+The last recorded hosted Neon verification covered migrations `0001`–`0009` and both demo seeds. Before deploying the current source, apply and verify `0010_multi_party_finance.sql`, `0011_identity_email.sql` and `0012_account_experience.sql` on the target Neon branch; the finance migration adds the finance tables and fields used by the settlement, payout, commission, subscription, and cash-on-delivery modules, the identity email migration adds the email verification and recovery workflow fields, and the account experience migration adds accessibility/consent columns and the account deletion request table. Stripe test checkout was verified end-to-end against the earlier schema: the hosted checkout completed, the signed webhook was accepted, the payment became `SUCCEEDED`, and the order became `CONFIRMED`/`PAID`.
 
 ## Finance operations
 

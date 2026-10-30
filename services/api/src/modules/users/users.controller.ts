@@ -1,6 +1,6 @@
-import { Body, Controller, Get, Headers, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Req, UseGuards } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
-import { IsBoolean, IsEmail, IsIn, IsOptional, IsString, Length, Matches } from "class-validator";
+import { IsBoolean, IsEmail, IsIn, IsNumber, IsOptional, IsString, Length, Matches, Max, Min } from "class-validator";
 import { requireUser } from "../../common/auth-context.js";
 import { SessionGuard, type AuthenticatedRequest } from "../auth/session.guard.js";
 import { RolesGuard } from "../auth/roles.guard.js";
@@ -23,6 +23,13 @@ class UpdateProfileDto {
 
   @IsOptional() @IsBoolean() marketingConsent?: boolean;
   @IsOptional() @IsBoolean() analyticsConsent?: boolean;
+  @IsOptional() @IsBoolean() acceptTerms?: boolean;
+  @IsOptional() @IsBoolean() acceptPrivacy?: boolean;
+
+  @IsOptional() @IsNumber({ maxDecimalPlaces: 2 }) @Min(1) @Max(2) textScale?: number;
+  @IsOptional() @IsBoolean() reduceMotion?: boolean;
+  @IsOptional() @IsBoolean() highContrast?: boolean;
+  @IsOptional() @IsBoolean() screenReaderHints?: boolean;
 }
 
 class EmailVerificationRequestDto {
@@ -51,22 +58,58 @@ export class UsersController {
     return this.service.profile(requireUser(request).id);
   }
 
+  @Patch("me")
+  @RateLimit({ points: 30, durationSeconds: 60 })
+  update(@Req() request: AuthenticatedRequest, @Body() body: UpdateProfileDto, @Headers("x-request-id") requestId: string | undefined) {
+    return this.service.update(requireUser(request).id, body, requestId ?? null);
+  }
+
   @Post("me/preferences")
   @RateLimit({ points: 30, durationSeconds: 60 })
-  preferences(@Req() request: AuthenticatedRequest, @Body() body: UpdateProfileDto) {
-    return this.service.update(requireUser(request).id, body);
+  preferences(@Req() request: AuthenticatedRequest, @Body() body: UpdateProfileDto, @Headers("x-request-id") requestId: string | undefined) {
+    return this.service.update(requireUser(request).id, body, requestId ?? null);
+  }
+
+  @Get("me/sessions")
+  @RateLimit({ points: 30, durationSeconds: 60 })
+  sessions(@Req() request: AuthenticatedRequest) {
+    return this.service.sessions(requireUser(request).id, request.authSession?.id ?? null);
+  }
+
+  @Post("me/sessions/revoke-others")
+  @HttpCode(HttpStatus.OK)
+  @RateLimit({ points: 5, durationSeconds: 60 })
+  revokeOtherSessions(@Req() request: AuthenticatedRequest, @Headers("x-request-id") requestId: string | undefined) {
+    return this.service.revokeOtherSessions(requireUser(request).id, request.authSession?.id ?? null, requestId ?? null);
+  }
+
+  @Post("me/sessions/:sessionId/revoke")
+  @HttpCode(HttpStatus.OK)
+  @RateLimit({ points: 20, durationSeconds: 60 })
+  revokeSession(
+    @Req() request: AuthenticatedRequest,
+    @Param("sessionId", ParseUUIDPipe) sessionId: string,
+    @Headers("x-request-id") requestId: string | undefined
+  ) {
+    return this.service.revokeSession(requireUser(request).id, sessionId, requestId ?? null);
   }
 
   @Post("me/deletion-request")
   @RateLimit({ points: 3, durationSeconds: 86_400 })
-  requestDeletion(@Req() request: AuthenticatedRequest) {
-    return this.service.requestDeletion(requireUser(request).id);
+  requestDeletion(@Req() request: AuthenticatedRequest, @Headers("x-request-id") requestId: string | undefined) {
+    return this.service.requestDeletion(requireUser(request).id, requestId ?? null);
+  }
+
+  @Post("me/deletion-request/cancel")
+  @RateLimit({ points: 5, durationSeconds: 86_400 })
+  cancelDeletion(@Req() request: AuthenticatedRequest, @Headers("x-request-id") requestId: string | undefined) {
+    return this.service.cancelDeletion(requireUser(request).id, requestId ?? null);
   }
 
   @Get("me/export")
   @RateLimit({ points: 3, durationSeconds: 86_400 })
-  exportData(@Req() request: AuthenticatedRequest) {
-    return this.service.exportData(requireUser(request).id);
+  exportData(@Req() request: AuthenticatedRequest, @Headers("x-request-id") requestId: string | undefined) {
+    return this.service.exportData(requireUser(request).id, requestId ?? null);
   }
 
   @Post("me/email/verification/request")
@@ -77,8 +120,8 @@ export class UsersController {
 
   @Post("me/email/verification/verify")
   @RateLimit({ points: 5, durationSeconds: 900 })
-  verifyEmail(@Req() request: AuthenticatedRequest, @Body() body: EmailVerificationDto) {
-    return this.service.verifyEmail(requireUser(request).id, body.email, body.challengeId, body.code);
+  verifyEmail(@Req() request: AuthenticatedRequest, @Body() body: EmailVerificationDto, @Headers("x-request-id") requestId: string | undefined) {
+    return this.service.verifyEmail(requireUser(request).id, body.email, body.challengeId, body.code, requestId ?? null);
   }
 
   @Post("email/recovery/request")
