@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -7,6 +8,7 @@ import 'package:http/http.dart' as http;
 
 import '../../shared/domain/models.dart';
 import '../../shared/domain/formatters.dart';
+import 'app_storage.dart';
 
 const apiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',

@@ -1,3 +1,5 @@
+import 'formatters.dart';
+
 class Session {
   Session({required this.accessToken, required this.refreshToken, required this.user});
 

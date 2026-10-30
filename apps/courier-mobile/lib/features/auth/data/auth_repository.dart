@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import '../../shared/domain/models.dart';
 import '../../shared/infrastructure/api_client.dart';
 
