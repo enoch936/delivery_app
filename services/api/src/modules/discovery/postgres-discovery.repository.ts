@@ -46,7 +46,6 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
 
   async listMerchants(input: MerchantListInput): Promise<{ items: readonly MerchantSummaryRecord[]; total: number }> {
     const params: unknown[] = [input.citySlug];
-    const distance = this.distanceExpression(params, input.latitude, input.longitude, "ml");
     const filters = ["m.status = 'active'"];
 
     if (input.categorySlug) {
@@ -84,6 +83,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
       WHERE ${filters.join(" AND ")}`;
     const count = await this.getPool().query<{ count: string }>(`SELECT count(*)::text AS count ${from}`, params);
 
+    const distance = this.distanceExpression(params, input.latitude, input.longitude, "ml");
     const limitIndex = params.push(input.limit);
     const offsetIndex = params.push(input.offset);
     const result = await this.getPool().query<MerchantRow>(
