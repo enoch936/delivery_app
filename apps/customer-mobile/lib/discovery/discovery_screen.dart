@@ -196,9 +196,16 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
       searchError = null;
     });
     try {
-      final result = await widget.client.get(
-        '/v1/search?q=${Uri.encodeQueryComponent(term)}&lat=$latitude&lng=$longitude&limit=30',
-      );
+      final params = <String>[
+        'q=${Uri.encodeQueryComponent(term)}',
+        'lat=$latitude',
+        'lng=$longitude',
+        'limit=30',
+        if (selectedCategory != null) 'category=$selectedCategory',
+        if (openNow) 'openNow=true',
+        if (sort != 'recommended') 'sort=$sort',
+      ];
+      final result = await widget.client.get('/v1/search?${params.join('&')}');
       if (!mounted || generation != _searchGeneration) return;
       setState(() => searchResult = asMap(result));
     } catch (cause) {
@@ -447,7 +454,7 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
               ],
               if (recentlyOrdered.isNotEmpty) ...[
                 const SizedBox(height: 20),
-                _sectionHeader('Order again', 'Your recent favorites'),
+                _sectionHeader('Order again', 'Your recent orders'),
                 const SizedBox(height: 10),
                 _recentOrderRail(),
               ],

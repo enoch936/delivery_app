@@ -1745,6 +1745,102 @@ class _MerchantScreenState extends State<MerchantScreen> {
     }
   }
 
+  Widget _merchantInfo(Map<String, dynamic> merchant) {
+    final theme = Theme.of(context);
+    final isOpen = merchant['isOpen'] == true || merchant['status'] == 'active';
+    final etaMin = merchant['etaMinMinutes'];
+    final etaMax = merchant['etaMaxMinutes'];
+    final eta = etaMin != null && etaMax != null
+        ? '$etaMin-$etaMax min delivery'
+        : merchant['estimatedDeliveryTime']?.toString() ?? '25-35 min delivery';
+    final deliveryFeeMinor = merchant['deliveryFeeMinor'];
+    final deliveryFee = deliveryFeeMinor is num
+        ? money(deliveryFeeMinor, merchant['currency']?.toString() ?? 'ETB')
+        : merchant['deliveryFee']?.toString() ?? 'TBD';
+    final minOrderMinor = merchant['minOrderMinor'];
+    final minOrder = minOrderMinor is num
+        ? money(minOrderMinor, merchant['currency']?.toString() ?? 'ETB')
+        : null;
+    final categories = (merchant['serviceCategorySlugs'] as List? ?? const [])
+        .map((value) => value.toString())
+        .where((value) => value.isNotEmpty)
+        .toList();
+    final rawHours = merchant['openingHours'];
+    final entries = rawHours is Map ? rawHours.entries.toList() : <MapEntry<dynamic, dynamic>>[];
+    final hours = entries.isEmpty
+        ? null
+        : entries.map((entry) => '${entry.key}: ${entry.value}').join(' · ');
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: isOpen ? const Color(0xFFE8F5E9) : const Color(0xFFFFEBEE),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    isOpen ? 'OPEN' : 'CLOSED',
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: isOpen ? const Color(0xFF2E7D32) : const Color(0xFFC62828)),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    eta,
+                    style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              merchant['displayName']?.toString() ?? 'Merchant',
+              style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                const Icon(Icons.star, size: 14, color: Color(0xFFE8613D)),
+                const SizedBox(width: 4),
+                Text(merchant['rating']?.toString() ?? '—', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+                const SizedBox(width: 12),
+                const Icon(Icons.delivery_dining_rounded, size: 14, color: Color(0xFF6B7468)),
+                const SizedBox(width: 4),
+                Text(deliveryFee, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12, color: Color(0xFF20261F))),
+                if (minOrder != null) ...[
+                  const SizedBox(width: 12),
+                  const Icon(Icons.receipt_long, size: 14, color: Color(0xFF6B7468)),
+                  const SizedBox(width: 4),
+                  Text(minOrder.toString(), style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468))),
+                ],
+              ],
+            ),
+            if (categories.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(
+                'Serves ${categories.join(', ')}',
+                style: theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w800, color: const Color(0xFF6B7468)),
+              ),
+            ],
+            if (hours != null) ...[
+              const SizedBox(height: 8),
+              Text('Opening hours', style: theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w800, color: const Color(0xFF6B7468))),
+              const SizedBox(height: 4),
+              Text(hours, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468))),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -1755,7 +1851,17 @@ class _MerchantScreenState extends State<MerchantScreen> {
           : error != null
               ? Padding(
                   padding: const EdgeInsets.all(20),
-                  child: ErrorBanner(message: error!),
+                  child: Column(
+                    children: [
+                      ErrorBanner(message: error!),
+                      const SizedBox(height: 12),
+                      FilledButton.tonalIcon(
+                        onPressed: _load,
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: const Text('Try again'),
+                      ),
+                    ],
+                  ),
                 )
               : RefreshIndicator(
                   onRefresh: _load,
@@ -1768,7 +1874,10 @@ class _MerchantScreenState extends State<MerchantScreen> {
                           merchant!['addressLine'].toString(),
                           style: theme.textTheme.bodyMedium?.copyWith(color: const Color(0xFF6B7468)),
                         ),
-                      const SizedBox(height: 18),
+                      if (merchant != null) ...[
+                        _merchantInfo(merchant!),
+                        const SizedBox(height: 18),
+                      ],
                       Text(
                         'Menu',
                         style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
