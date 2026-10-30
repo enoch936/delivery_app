@@ -1,8 +1,41 @@
 import { Inject, Injectable, NotFoundException } from "@nestjs/common";
 import type { RuntimeConfig } from "../../config/runtime-config.js";
-import { DISCOVERY_REPOSITORY, RUNTIME_CONFIG, type DiscoveryRepository } from "./discovery.types.js";
+import {
+  DISCOVERY_REPOSITORY,
+  RUNTIME_CONFIG,
+  type DiscoveryRepository,
+  type MerchantSort,
+  type SearchInput
+} from "./discovery.types.js";
 
 const MAX_PAGE_SIZE = 50;
+const SORTS: readonly MerchantSort[] = ["recommended", "distance", "rating", "eta", "name"];
+const SEARCH_TYPES = ["all", "merchant", "product", "service"] as const;
+
+export type MerchantQueryInput = Readonly<{
+  categorySlug?: string | undefined;
+  q?: string | undefined;
+  limit?: number | undefined;
+  offset?: number | undefined;
+  sort?: string | undefined;
+  openNow?: boolean | undefined;
+  favoritesOnly?: boolean | undefined;
+  latitude?: number | undefined;
+  longitude?: number | undefined;
+  userId?: string | undefined;
+}>;
+
+export type SearchQueryInput = Readonly<{
+  q: string;
+  type?: string | undefined;
+  categorySlug?: string | undefined;
+  limit?: number | undefined;
+  offset?: number | undefined;
+  sort?: string | undefined;
+  openNow?: boolean | undefined;
+  latitude?: number | undefined;
+  longitude?: number | undefined;
+}>;
 
 @Injectable()
 export class DiscoveryService {
@@ -15,18 +48,29 @@ export class DiscoveryService {
     return this.repository.listActiveServiceCategories();
   }
 
-  async listMerchants(input: Readonly<{ categorySlug?: string | undefined; q?: string | undefined; limit?: number | undefined; offset?: number | undefined }>) {
+  async listMerchants(input: MerchantQueryInput) {
     return this.repository.listMerchants({
       citySlug: this.config.launchCitySlug,
-      categorySlug: input.categorySlug ?? null,
+      categorySlug: normalizeSlug(input.categorySlug),
       query: normalizeQuery(input.q),
       limit: clampLimit(input.limit),
-      offset: clampOffset(input.offset)
+      offset: clampOffset(input.offset),
+      sort: parseSort(input.sort),
+      openNow: input.openNow === true,
+      featuredOnly: false,
+      favoritesUserId: input.favoritesOnly === true ? input.userId ?? null : null,
+      latitude: parseCoordinate(input.latitude, 90),
+      longitude: parseCoordinate(input.longitude, 180)
     });
   }
 
-  async getMerchant(merchantId: string) {
-    const merchant = await this.repository.getMerchantById(merchantId, this.config.launchCitySlug);
+  async getMerchant(merchantId: string, latitude?: number | undefined, longitude?: number | undefined) {
+    const merchant = await this.repository.getMerchantById(
+      merchantId,
+      this.config.launchCitySlug,
+      parseCoordinate(latitude, 90),
+      parseCoordinate(longitude, 180)
+    );
     if (!merchant) throw new NotFoundException("Merchant is not available in the current service area.");
     return merchant;
   }
@@ -40,15 +84,73 @@ export class DiscoveryService {
     });
   }
 
-  search(input: Readonly<{ q: string; limit?: number | undefined; offset?: number | undefined }>) {
+  async search(input: SearchQueryInput) {
     const query = normalizeQuery(input.q);
-    if (!query) return { items: [], total: 0 };
+    if (!query) {
+      return {
+        query: "",
+        items: [],
+        total: 0,
+        merchants: [],
+        products: [],
+        services: [],
+        suggestions: []
+      };
+    }
+    const type = SEARCH_TYPES.includes(input.type as (typeof SEARCH_TYPES)[number])
+      ? (input.type as SearchInput["type"])
+      : "all";
     return this.repository.search({
       citySlug: this.config.launchCitySlug,
       query,
+      type,
+      categorySlug: normalizeSlug(input.categorySlug),
       limit: clampLimit(input.limit),
-      offset: clampOffset(input.offset)
+      offset: clampOffset(input.offset),
+      sort: parseSort(input.sort),
+      openNow: input.openNow === true,
+      latitude: parseCoordinate(input.latitude, 90),
+      longitude: parseCoordinate(input.longitude, 180)
     });
+  }
+
+  home(input: Readonly<{ userId: string | null; latitude?: number | undefined; longitude?: number | undefined }>) {
+    return this.repository.getHome({
+      citySlug: this.config.launchCitySlug,
+      userId: input.userId,
+      latitude: parseCoordinate(input.latitude, 90),
+      longitude: parseCoordinate(input.longitude, 180)
+    });
+  }
+
+  listFavorites(userId: string, latitude?: number | undefined, longitude?: number | undefined) {
+    return this.repository.listFavorites(
+      userId,
+      this.config.launchCitySlug,
+      parseCoordinate(latitude, 90),
+      parseCoordinate(longitude, 180)
+    );
+  }
+
+  addFavorite(userId: string, merchantId: string) {
+    return this.repository.addFavorite(userId, merchantId);
+  }
+
+  removeFavorite(userId: string, merchantId: string) {
+    return this.repository.removeFavorite(userId, merchantId);
+  }
+
+  listRecentSearches(userId: string) {
+    return this.repository.listRecentSearches(userId, 10);
+  }
+
+  recordRecentSearch(userId: string, term: string) {
+    const normalized = normalizeQuery(term);
+    return normalized ? this.repository.recordRecentSearch(userId, normalized) : Promise.resolve();
+  }
+
+  clearRecentSearches(userId: string) {
+    return this.repository.clearRecentSearches(userId);
   }
 
   async enabledCategorySlugs(): Promise<readonly string[]> {
@@ -70,4 +172,18 @@ function clampOffset(value: number | undefined): number {
 function normalizeQuery(value: string | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed.slice(0, 120) : null;
+}
+
+function normalizeSlug(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(trimmed) ? trimmed : null;
+}
+
+function parseSort(value: string | undefined): MerchantSort {
+  return SORTS.includes(value as MerchantSort) ? (value as MerchantSort) : "recommended";
+}
+
+function parseCoordinate(value: number | undefined, limit: number): number | null {
+  if (value === undefined || !Number.isFinite(value) || Math.abs(value) > limit) return null;
+  return value;
 }

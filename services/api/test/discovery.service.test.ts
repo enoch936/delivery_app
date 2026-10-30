@@ -2,7 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { RuntimeConfig } from "../src/config/runtime-config.js";
 import { DiscoveryService } from "../src/modules/discovery/discovery.service.js";
-import type { DiscoveryRepository, MerchantDetailRecord, MerchantSummaryRecord, ProductRecord, SearchHitRecord, ServiceCategoryRecord } from "../src/modules/discovery/discovery.types.js";
+import type {
+  DiscoveryHomeRecord,
+  DiscoveryRepository,
+  MerchantDetailRecord,
+  MerchantListInput,
+  MerchantSummaryRecord,
+  ProductRecord,
+  RecentSearchRecord,
+  SearchInput,
+  SearchProductRecord,
+  SearchResultRecord,
+  ServiceCategoryRecord
+} from "../src/modules/discovery/discovery.types.js";
 
 const config: RuntimeConfig = {
   nodeEnv: "test",
@@ -20,17 +32,31 @@ const config: RuntimeConfig = {
   deliveryFeeMinor: 0n, serviceFeeMinor: 0n, quoteValiditySeconds: 300, accessTokenLifetimeSeconds: 900, refreshTokenLifetimeSeconds: 2592000,   paymentsProvider: "disabled", paymentWebhookSecret: undefined, chapaSecretKey: undefined, chapaWebhookSecret: undefined, chapaBaseUrl: "https://api.chapa.global", stripeSecretKey: undefined, stripeWebhookSecret: undefined, telebirrEnvironment: "test", telebirrBaseUrl: "https://example.test/api", telebirrWebBaseUrl: "https://example.test/pay?", telebirrFabricAppId: undefined, telebirrAppSecret: undefined, telebirrMerchantAppId: undefined, telebirrMerchantCode: undefined, telebirrPrivateKey: undefined, telebirrPublicKey: undefined, telebirrNotifyUrl: "http://localhost:3000/api/v1/payments/webhooks/telebirr", telebirrRedirectUrl: undefined, paymentReturnUrl: undefined, paymentCancelUrl: undefined, courierOfferTimeoutSeconds: 45, dispatchRadiusMeters: 8000, maxPendingOffersPerCourier: 3, deliveryProofOtpRequired: true, taxRateBps: 0, mapsProvider: "disabled", pushProvider: "disabled", firebaseServiceAccountJson: undefined, publicApiBaseUrl: "http://localhost:3000", geocodingProvider: "disabled"
 };
 
-const merchant: MerchantDetailRecord = {
+const category: ServiceCategoryRecord = { id: "cat-1", slug: "grocery", displayName: "Groceries", description: null, sortOrder: 1, merchantCount: 1 };
+
+const merchant: MerchantSummaryRecord = {
   id: "11111111-1111-1111-1111-111111111111",
   slug: "harvest-grocery",
   displayName: "Harvest Grocery",
   description: "Fresh produce",
   logoUrl: null,
+  coverImageUrl: null,
   serviceCategorySlugs: ["grocery"],
   primaryLocationName: "Main",
-  openingHours: {},
-  addressLine: "Demo address"
+  rating: 4.6,
+  ratingCount: 10,
+  priceLevel: 1,
+  deliveryFeeMinor: 3500,
+  minOrderMinor: 5000,
+  etaMinMinutes: 15,
+  etaMaxMinutes: 25,
+  isFeatured: true,
+  tags: ["teff"],
+  isOpen: true,
+  distanceKm: 1.2
 };
+
+const detail: MerchantDetailRecord = { ...merchant, openingHours: {}, addressLine: "Demo address", latitude: 9.02, longitude: 38.78 };
 
 const product: ProductRecord = {
   id: "22222222-2222-2222-2222-222222222222",
@@ -45,24 +71,47 @@ const product: ProductRecord = {
   quantityAvailable: 10
 };
 
+const searchProduct: SearchProductRecord = { ...product, merchant: { id: merchant.id, slug: merchant.slug, displayName: merchant.displayName, logoUrl: null, coverImageUrl: null, rating: 4.6 } };
+
 class MemoryDiscoveryRepository implements DiscoveryRepository {
-  async listActiveServiceCategories(): Promise<readonly ServiceCategoryRecord[]> {
-    return [{ id: "cat-1", slug: "grocery", displayName: "Groceries", description: null, sortOrder: 1 }];
-  }
-  async listMerchants(): Promise<{ items: readonly MerchantSummaryRecord[]; total: number }> {
+  recent: RecentSearchRecord[] = [];
+  favorites = new Set<string>();
+
+  async listActiveServiceCategories(): Promise<readonly ServiceCategoryRecord[]> { return [category]; }
+  async listMerchants(input: MerchantListInput): Promise<{ items: readonly MerchantSummaryRecord[]; total: number }> {
+    if (input.favoritesUserId && this.favorites.size === 0) return { items: [], total: 0 };
     return { items: [merchant], total: 1 };
   }
-  async getMerchantById(merchantId: string): Promise<MerchantDetailRecord | null> {
-    return merchantId === merchant.id ? merchant : null;
-  }
+  async getMerchantById(merchantId: string): Promise<MerchantDetailRecord | null> { return merchantId === merchant.id ? detail : null; }
   async listProducts(input: Readonly<{ merchantId: string }>): Promise<{ items: readonly ProductRecord[]; total: number }> {
     return input.merchantId === merchant.id ? { items: [product], total: 1 } : { items: [], total: 0 };
   }
-  async search(input: Readonly<{ query: string }>): Promise<{ items: readonly SearchHitRecord[]; total: number }> {
-    return input.query.toLowerCase().includes("teff")
-      ? { items: [{ type: "product", product, merchant: { id: merchant.id, slug: merchant.slug, displayName: merchant.displayName } }], total: 1 }
-      : { items: [], total: 0 };
+  async search(input: SearchInput): Promise<SearchResultRecord> {
+    if (!input.query.toLowerCase().includes("teff")) {
+      return { query: input.query, items: [], total: 0, merchants: [], products: [], services: [], suggestions: [] };
+    }
+    return {
+      query: input.query,
+      items: [{ type: "product", product: searchProduct, merchant: searchProduct.merchant }],
+      total: 1,
+      merchants: [],
+      products: [searchProduct],
+      services: [],
+      suggestions: ["Teff flour 1 kg"]
+    };
   }
+  async getHome(): Promise<DiscoveryHomeRecord> {
+    return {
+      banners: [], categories: [category], featured: [merchant], recommendations: [], popularProducts: [searchProduct],
+      recentlyOrdered: [], stats: { merchantCount: 1, openNowCount: 1 }
+    };
+  }
+  async listFavorites(): Promise<readonly MerchantSummaryRecord[]> { return this.favorites.has(merchant.id) ? [merchant] : []; }
+  async addFavorite(_userId: string, merchantId: string): Promise<boolean> { this.favorites.add(merchantId); return true; }
+  async removeFavorite(_userId: string, merchantId: string): Promise<boolean> { return this.favorites.delete(merchantId); }
+  async listRecentSearches(): Promise<readonly RecentSearchRecord[]> { return this.recent; }
+  async recordRecentSearch(_userId: string, term: string): Promise<void> { this.recent = [{ term, lastSearchedAt: new Date().toISOString() }]; }
+  async clearRecentSearches(): Promise<void> { this.recent = []; }
 }
 
 test("scopes merchant discovery to the configured launch city slug", async () => {
@@ -76,7 +125,31 @@ test("scopes merchant discovery to the configured launch city slug", async () =>
 test("returns empty search results for blank queries", async () => {
   const service = new DiscoveryService(new MemoryDiscoveryRepository(), config);
   const result = await service.search({ q: "   " });
-  assert.deepEqual(result, { items: [], total: 0 });
+  assert.deepEqual(result, { query: "", items: [], total: 0, merchants: [], products: [], services: [], suggestions: [] });
 });
 
+test("returns typed search sections and suggestions", async () => {
+  const service = new DiscoveryService(new MemoryDiscoveryRepository(), config);
+  const result = await service.search({ q: "teff", type: "product" });
+  assert.equal(result.total, 1);
+  assert.equal(result.items[0]?.type, "product");
+  assert.equal(result.suggestions[0], "Teff flour 1 kg");
+});
 
+test("builds a home feed with categories, featured merchants and popular products", async () => {
+  const service = new DiscoveryService(new MemoryDiscoveryRepository(), config);
+  const home = await service.home({ userId: null, latitude: 9.02, longitude: 38.78 });
+  assert.equal(home.featured[0]?.slug, "harvest-grocery");
+  assert.equal(home.popularProducts[0]?.displayName, "Teff flour 1 kg");
+  assert.equal(home.stats.openNowCount, 1);
+});
+
+test("tracks favorites and recent searches for the signed-in customer", async () => {
+  const service = new DiscoveryService(new MemoryDiscoveryRepository(), config);
+  await service.addFavorite("user-1", merchant.id);
+  assert.equal((await service.listFavorites("user-1")).length, 1);
+  await service.recordRecentSearch("user-1", "  teff  ");
+  assert.equal((await service.listRecentSearches("user-1"))[0]?.term, "teff");
+  await service.clearRecentSearches("user-1");
+  assert.equal((await service.listRecentSearches("user-1")).length, 0);
+});

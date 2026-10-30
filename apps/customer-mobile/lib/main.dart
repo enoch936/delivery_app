@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -10,6 +10,7 @@ import 'account/accessibility_controller.dart';
 import 'account/account_screen.dart';
 import 'app_localizations.dart';
 import 'app_storage.dart';
+import 'discovery/discovery_screen.dart';
 import 'push_service.dart';
 
 const apiBaseUrl = String.fromEnvironment(
@@ -940,7 +941,7 @@ class _CustomerHomeState extends State<CustomerHome> {
       body: IndexedStack(
         index: index,
         children: [
-          ExploreScreen(client: widget.client),
+          DiscoveryScreen(client: widget.client),
           OrdersScreen(client: widget.client),
           AccountScreen(
             user: user,
@@ -1519,10 +1520,19 @@ class MerchantCard extends StatelessWidget {
         .map((value) => label(value.toString()))
         .take(2)
         .join(' · ');
-    final isOpen = merchant['status'] == 'active' || merchant['isOpen'] == true;
+    final isOpen = merchant['isOpen'] == true || merchant['status'] == 'active';
     final rating = merchant['rating']?.toString() ?? '4.8';
-    final estTime = merchant['estimatedDeliveryTime']?.toString() ?? '25-35 min';
-    final fee = merchant['deliveryFee']?.toString() ?? 'ETB 50';
+    final etaMin = merchant['etaMinMinutes'];
+    final etaMax = merchant['etaMaxMinutes'];
+    final estTime = etaMin != null && etaMax != null
+        ? '$etaMin-$etaMax min'
+        : merchant['estimatedDeliveryTime']?.toString() ?? '25-35 min';
+    final deliveryFeeMinor = merchant['deliveryFeeMinor'];
+    final fee = deliveryFeeMinor is num
+        ? money(deliveryFeeMinor, merchant['currency']?.toString() ?? 'ETB')
+        : merchant['deliveryFee']?.toString() ?? 'ETB 50';
+    final distance = merchant['distanceKm'];
+    final tags = (merchant['tags'] as List? ?? const []).whereType<String>().take(2).toList();
 
     return Card(
       child: InkWell(
@@ -1543,9 +1553,9 @@ class MerchantCard extends StatelessWidget {
                       borderRadius: BorderRadius.circular(15),
                     ),
                     clipBehavior: Clip.antiAlias,
-                    child: merchant['logoUrl'] != null
+                    child: merchant['logoUrl'] != null || merchant['coverImageUrl'] != null
                         ? Image.network(
-                            merchant['logoUrl'] as String,
+                            (merchant['logoUrl'] ?? merchant['coverImageUrl']) as String,
                             fit: BoxFit.cover,
                             errorBuilder: (context, error, stack) => const Icon(Icons.storefront),
                           )
@@ -1640,11 +1650,24 @@ class MerchantCard extends StatelessWidget {
                       const Icon(Icons.access_time, size: 16, color: Color(0xFF6B7468)),
                       const SizedBox(width: 4),
                       Text(estTime, style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468))),
+                      if (distance is num) ...[
+                        const SizedBox(width: 12),
+                        const Icon(Icons.near_me_outlined, size: 16, color: Color(0xFF6B7468)),
+                        const SizedBox(width: 4),
+                        Text('${distance.toStringAsFixed(1)} km', style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468))),
+                      ],
                     ],
                   ),
-                  Text(
-                    fee,
-                    style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12, color: Color(0xFF20261F)),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        fee,
+                        style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12, color: Color(0xFF20261F)),
+                      ),
+                      if (tags.isNotEmpty)
+                        Text(tags.join(' · '), style: const TextStyle(fontSize: 10, color: Color(0xFF6B7468))),
+                    ],
                   ),
                 ],
               ),
@@ -3010,6 +3033,7 @@ class MerchantCardSkeleton extends StatelessWidget {
     );
   }
 }
+
 
 
 

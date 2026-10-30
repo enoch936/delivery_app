@@ -6,13 +6,14 @@ import { IDENTITY_REPOSITORY, OTP_PROVIDER, RUNTIME_CONFIG } from "./auth.types.
 import { DevelopmentOtpProvider, DisabledOtpProvider } from "./otp.provider.js";
 import { PostgresIdentityRepository } from "./postgres-identity.repository.js";
 import { RolesGuard } from "./roles.guard.js";
-import { SessionGuard } from "./session.guard.js";
+import { OptionalSessionGuard, SessionGuard } from "./session.guard.js";
 
 @Module({
   controllers: [AuthController],
   providers: [
     AuthService,
     SessionGuard,
+    OptionalSessionGuard,
     RolesGuard,
     PostgresIdentityRepository,
     { provide: RUNTIME_CONFIG, useFactory: readRuntimeConfig },
@@ -22,6 +23,6 @@ import { SessionGuard } from "./session.guard.js";
       useFactory: () => readRuntimeConfig().otpProvider === "development" ? new DevelopmentOtpProvider() : new DisabledOtpProvider()
     }
   ],
-  exports: [AuthService, SessionGuard, RolesGuard]
+  exports: [AuthService, SessionGuard, OptionalSessionGuard, RolesGuard]
 })
 export class AuthModule {}
