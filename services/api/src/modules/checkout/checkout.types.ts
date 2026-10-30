@@ -1,5 +1,11 @@
 import type { PaymentProviderName } from "../../config/runtime-config.js";
 
+export type QuoteOption = Readonly<{
+  optionId: string;
+  displayName: string;
+  priceDeltaMinor: number;
+}>;
+
 export type QuoteLine = Readonly<{
   productId: string;
   displayName: string;
@@ -7,6 +13,8 @@ export type QuoteLine = Readonly<{
   unitPriceMinor: number;
   lineTotalMinor: number;
   currency: string;
+  options: readonly QuoteOption[];
+  optionsLabel: string;
 }>;
 
 export type QuoteBreakdown = Readonly<{
@@ -27,11 +35,19 @@ export type QuoteBreakdown = Readonly<{
   paymentRequired: boolean;
 }>;
 
+export type QuoteFulfillment = Readonly<{
+  type: "delivery" | "pickup";
+  scheduledFor: string | null;
+  pickup: Readonly<{ locationId: string; name: string; addressLine: string | null }> | null;
+  deliveryAddressId: string | null;
+}>;
+
 export type CheckoutQuoteRecord = Readonly<{
   quoteId: string;
   merchantId: string;
   merchantName: string;
-  deliveryAddressId: string;
+  deliveryAddressId: string | null;
+  fulfillment: QuoteFulfillment;
   lines: readonly QuoteLine[];
   breakdown: QuoteBreakdown;
   promotionCode: string | null;

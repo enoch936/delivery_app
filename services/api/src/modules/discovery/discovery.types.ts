@@ -48,6 +48,27 @@ export type MerchantSummaryRecord = Readonly<{
   nextOpenAt: string | null;
 }>;
 
+export type MerchantPolicyRecord = Readonly<{
+  cancellationPolicy: string | null;
+  refundPolicy: string | null;
+}>;
+
+export type MerchantFulfillmentRecord = Readonly<{
+  supportsPickup: boolean;
+  pickupInstructions: string | null;
+  allowsScheduling: boolean;
+  minScheduleLeadMinutes: number;
+  maxScheduleDays: number;
+}>;
+
+export type PickupLocationRecord = Readonly<{
+  id: string;
+  name: string;
+  addressLine: string | null;
+  latitude: number | null;
+  longitude: number | null;
+}>;
+
 export type MerchantDetailRecord = MerchantSummaryRecord &
   Readonly<{
     openingHours: Record<string, unknown>;
@@ -56,7 +77,32 @@ export type MerchantDetailRecord = MerchantSummaryRecord &
     latitude: number | null;
     longitude: number | null;
     deliveryUnavailableReason: string | null;
+    policy: MerchantPolicyRecord;
+    fulfillment: MerchantFulfillmentRecord;
+    pickupLocations: readonly PickupLocationRecord[];
   }>;
+
+export type ProductOptionRecord = Readonly<{
+  id: string;
+  sku: string | null;
+  displayName: string;
+  priceDeltaMinor: number;
+  isDefault: boolean;
+  isAvailable: boolean;
+}>;
+
+export type ProductOptionGroupRecord = Readonly<{
+  id: string;
+  slug: string;
+  displayName: string;
+  selectionType: "single" | "multi";
+  isRequired: boolean;
+  minSelections: number;
+  maxSelections: number;
+  options: readonly ProductOptionRecord[];
+}>;
+
+export type ProductStockState = "in_stock" | "low_stock" | "out_of_stock";
 
 export type ProductRecord = Readonly<{
   id: string;
@@ -69,6 +115,8 @@ export type ProductRecord = Readonly<{
   currency: string;
   isAvailable: boolean;
   quantityAvailable: number | null;
+  stockState: ProductStockState;
+  optionGroups: readonly ProductOptionGroupRecord[];
 }>;
 
 export type SearchProductRecord = ProductRecord &

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -55,10 +56,23 @@ class AppStorage {
   static const _favoritesKey = 'delivery.favorites.v1';
   static const _recentSearchesKey = 'delivery.recent_searches.v1';
   static const _locationKey = 'delivery.selected_location.v1';
+  static const _deviceKey = 'delivery.device_id.v1';
 
   static Future<AppStorage> open() async {
     final preferences = await SharedPreferences.getInstance();
     return AppStorage(preferences, const FlutterSecureStorage());
+  }
+
+  /// Stable anonymous identity so a cart survives app restarts before sign-in.
+  String? get deviceId => _preferences.getString(_deviceKey);
+
+  String ensureDeviceId() {
+    final existing = deviceId;
+    if (existing != null && existing.length >= 8) return existing;
+    final bytes = List<int>.generate(16, (_) => _random.nextInt(256));
+    final generated = 'dev-${bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join()}';
+    unawaited(_preferences.setString(_deviceKey, generated));
+    return generated;
   }
 
   Future<void> saveSession(Map<String, dynamic> session) =>

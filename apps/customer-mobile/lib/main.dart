@@ -242,6 +242,22 @@ class ApiClient {
       }
     }
     pendingSync.value = storage.queue().length;
+    if (session != null) unawaited(mergeGuestCart());
+  }
+
+  /// Folds the pre-sign-in device cart into the account cart. Best effort:
+  /// a failed merge must never block sign-in.
+  Future<void> mergeGuestCart() async {
+    if (session == null) return;
+    try {
+      await _send('POST', '/v1/cart/merge', body: const <String, dynamic>{});
+    } catch (_) {
+      // The guest cart stays on the device and can be merged on the next launch.
+    }
+  }
+
+  Future<Map<String, dynamic>> reconcileCart() async {
+    return asMap(await _send('POST', '/v1/cart/reconcile', body: const <String, dynamic>{}));
   }
 
   Future<void> startSync() async {
@@ -330,6 +346,7 @@ class ApiClient {
     try {
       final request = await _http.openUrl(method, Uri.parse('$apiBaseUrl$path'));
       request.headers.contentType = ContentType.json;
+      request.headers.set('x-device-id', storage.ensureDeviceId());
       if (headers != null) {
         headers.forEach(request.headers.set);
       }
@@ -393,6 +410,7 @@ class ApiClient {
       );
       session = Session.fromJson(asMap(result));
       await storage.saveSession(session!.toJson());
+      await mergeGuestCart();
       return true;
     } catch (_) {
       return false;
@@ -427,6 +445,7 @@ class ApiClient {
     );
     session = Session.fromJson(asMap(result));
     await storage.saveSession(session!.toJson());
+    await mergeGuestCart();
     return session!;
   }
 
@@ -491,6 +510,19 @@ String formatClockTime(DateTime value) {
   final hour = local.hour.toString().padLeft(2, '0');
   final minute = local.minute.toString().padLeft(2, '0');
   return '$hour:$minute';
+}
+
+/// "Today 19:30", "Tomorrow 08:00" or "Sat 2 Nov, 19:30" for scheduled orders.
+String formatSchedule(DateTime value) {
+  final local = value.toLocal();
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final day = DateTime(local.year, local.month, local.day);
+  final clock = formatClockTime(local);
+  if (day == today) return 'Today $clock';
+  if (day == today.add(const Duration(days: 1))) return 'Tomorrow $clock';
+  const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  return '${names[local.weekday - 1]} ${local.day}/${local.month} $clock';
 }
 
 /// Human opening-hours state for a merchant payload: "Open · closes 22:00",
@@ -1759,23 +1791,179 @@ class _MerchantScreenState extends State<MerchantScreen> {
   }
 
   Future<void> _add(Map<String, dynamic> product) async {
-    setState(() => addingId = product['id'] as String?);
-    try {
-      await widget.client.post('/v1/cart/items', {
-        'productId': product['id'],
-        'quantity': 1,
-      });
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${product['displayName']} added to cart')),
+    final groups = asList(product['optionGroups']);
+    final currency = product['currency']?.toString();
+    final basePrice = (product['basePriceMinor'] as num?) ?? 0;
+    final available = product['quantityAvailable'] is num ? (product['quantityAvailable'] as num).toInt() : null;
+    final maxQuantity = available == null ? 20 : available.clamp(1, 20);
+    final selected = <String, Set<String>>{};
+    var quantity = 1;
+    for (final group in groups) {
+      final groupId = group['id'].toString();
+      selected[groupId] = asList(group['options'])
+          .where((option) => option['isDefault'] == true && option['isAvailable'] != false)
+          .map((option) => option['id'].toString())
+          .toSet();
+    }
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) {
+          double unitPrice = basePrice.toDouble();
+          for (final group in groups) {
+            final chosen = selected[group['id'].toString()] ?? <String>{};
+            for (final option in asList(group['options'])) {
+              if (chosen.contains(option['id'].toString())) {
+                unitPrice += (option['priceDeltaMinor'] as num?)?.toDouble() ?? 0;
+              }
+            }
+          }
+          final missing = groups.where((group) {
+            if (group['isRequired'] != true) return false;
+            final chosen = selected[group['id'].toString()]?.length ?? 0;
+            final minimum = ((group['minSelections'] as num?)?.toInt() ?? 0).clamp(1, 20);
+            return chosen < minimum;
+          }).toList();
+          final multipleUnits = currency != null ? money((unitPrice * quantity).round(), currency) : '—';
+          return Padding(
+            padding: EdgeInsets.fromLTRB(20, 4, 20, 20 + MediaQuery.of(sheetContext).viewInsets.bottom),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(product['displayName']?.toString() ?? 'Item', style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+                  if (product['description'] != null) ...[
+                    const SizedBox(height: 4),
+                    Text(product['description'].toString(), style: const TextStyle(color: Color(0xFF6B7468), fontSize: 13)),
+                  ],
+                  const SizedBox(height: 14),
+                  for (final group in groups) ...[
+                    Text(
+                      '${group['displayName']}${group['isRequired'] == true ? ' · required' : ''}',
+                      style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: asList(group['options']).map((option) {
+                        final groupId = group['id'].toString();
+                        final optionId = option['id'].toString();
+                        final chosen = selected[groupId]?.contains(optionId) ?? false;
+                        final disabled = option['isAvailable'] == false;
+                        final delta = (option['priceDeltaMinor'] as num?)?.toInt() ?? 0;
+                        final label = delta > 0
+                            ? '${option['displayName']} +${money(delta, currency)}'
+                            : option['displayName'].toString();
+                        if (group['selectionType'] == 'multi') {
+                          return FilterChip(
+                            label: Text(label, style: const TextStyle(fontSize: 12)),
+                            selected: chosen,
+                            onSelected: disabled ? null : (value) {
+                              setSheetState(() {
+                                final set = selected.putIfAbsent(groupId, () => <String>{});
+                                final max = (group['maxSelections'] as num?)?.toInt() ?? 1;
+                                if (value) {
+                                  if (set.length >= max) set.remove(set.first);
+                                  set.add(optionId);
+                                } else {
+                                  set.remove(optionId);
+                                }
+                              });
+                            },
+                          );
+                        }
+                        return ChoiceChip(
+                          label: Text(label, style: const TextStyle(fontSize: 12)),
+                          selected: chosen,
+                          onSelected: disabled ? null : (_) => setSheetState(() => selected[groupId] = {optionId}),
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  Row(
+                    children: [
+                      const Text('Quantity', style: TextStyle(fontWeight: FontWeight.w700)),
+                      const Spacer(),
+                      IconButton.filledTonal(
+                        onPressed: quantity <= 1 ? null : () => setSheetState(() => quantity--),
+                        icon: const Icon(Icons.remove, size: 18),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Text('$quantity', style: const TextStyle(fontWeight: FontWeight.w800)),
+                      ),
+                      IconButton.filledTonal(
+                        onPressed: quantity >= maxQuantity ? null : () => setSheetState(() => quantity++),
+                        icon: const Icon(Icons.add, size: 18),
+                      ),
+                    ],
+                  ),
+                  if (available != null && available <= 5)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        available <= 0 ? 'Out of stock' : 'Only $available left',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: available <= 0 ? const Color(0xFFC62828) : const Color(0xFFB26A00)),
+                      ),
+                    ),
+                  if (missing.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        'Choose ${missing.map((group) => group['displayName']).join(', ')} to continue.',
+                        style: const TextStyle(fontSize: 12, color: Color(0xFFC62828)),
+                      ),
+                    ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: missing.isNotEmpty || available == 0
+                          ? null
+                          : () async {
+                              setState(() => addingId = product['id'] as String?);
+                              Navigator.of(sheetContext).pop(false);
+                              try {
+                                await widget.client.post('/v1/cart/items', {
+                                  'productId': product['id'],
+                                  'quantity': quantity,
+                                  'optionIds': selected.values.expand((value) => value).toList(),
+                                });
+                                if (!mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('${product['displayName']} added to cart')),
+                                );
+                                Navigator.of(context).pop(true);
+                              } catch (cause) {
+                                if (!mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text(cause.toString())),
+                                );
+                              } finally {
+                                if (mounted) setState(() => addingId = null);
+                              }
+                            },
+                      icon: const Icon(Icons.shopping_bag_outlined),
+                      label: Text('Add · $multipleUnits'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    if (confirmed == true && mounted) {
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => CartScreen(client: widget.client)),
       );
-    } catch (cause) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(cause.toString())),
-      );
-    } finally {
-      if (mounted) setState(() => addingId = null);
+      if (mounted) _load();
     }
   }
 
@@ -1893,6 +2081,107 @@ class _MerchantScreenState extends State<MerchantScreen> {
     );
   }
 
+  Widget _storefrontInfoCard(ThemeData theme) {
+    final data = merchant ?? const <String, dynamic>{};
+    final fulfillment = asMap(data['fulfillment']);
+    final policy = asMap(data['policy']);
+    final pickupLocations = asList(data['pickupLocations']);
+    if (fulfillment.isEmpty && policy.isEmpty) return const SizedBox.shrink();
+    final supportsPickup = fulfillment['supportsPickup'] == true;
+    final allowsScheduling = fulfillment['allowsScheduling'] == true;
+    final lead = (fulfillment['minScheduleLeadMinutes'] as num?)?.toInt() ?? 60;
+    final days = (fulfillment['maxScheduleDays'] as num?)?.toInt() ?? 0;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('How this store works', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _serviceChip(Icons.storefront_outlined, supportsPickup ? 'Collection available' : 'Delivery only'),
+                _serviceChip(
+                  Icons.schedule,
+                  allowsScheduling && days > 0 ? 'Schedule up to $days day${days == 1 ? '' : 's'} · $lead min lead' : 'No scheduled orders',
+                ),
+              ],
+            ),
+            if (supportsPickup && fulfillment['pickupInstructions'] != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                fulfillment['pickupInstructions'].toString(),
+                style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
+              ),
+            ],
+            if (pickupLocations.isNotEmpty && supportsPickup) ...[
+              const SizedBox(height: 6),
+              for (final location in pickupLocations)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.place_outlined, size: 14, color: Color(0xFF6B7468)),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          '${location['name']}${location['addressLine'] == null ? '' : ' · ${location['addressLine']}'}',
+                          style: theme.textTheme.bodySmall,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+            const SizedBox(height: 6),
+            ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: const EdgeInsets.only(bottom: 6),
+              title: const Text('Policies', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+              children: [
+                if (policy['cancellationPolicy'] != null)
+                  _policyRow('Cancellation', policy['cancellationPolicy'].toString()),
+                if (policy['refundPolicy'] != null) _policyRow('Refunds', policy['refundPolicy'].toString()),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _serviceChip(IconData icon, String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(color: const Color(0xFFF4F0E8), borderRadius: BorderRadius.circular(10)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: const Color(0xFF6B7468)),
+          const SizedBox(width: 5),
+          Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+
+  Widget _policyRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+          Text(value, style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468))),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -1938,6 +2227,8 @@ class _MerchantScreenState extends State<MerchantScreen> {
                         ),
                       const SizedBox(height: 18),
                       _availabilityCard(theme),
+                      const SizedBox(height: 10),
+                      _storefrontInfoCard(theme),
                       Text(
                         'Products & services',
                         style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
@@ -1976,16 +2267,39 @@ class _MerchantScreenState extends State<MerchantScreen> {
                                           ),
                                         ],
                                         const SizedBox(height: 8),
-                                        Text(
-                                          money(product['basePriceMinor'] as num?, product['currency']?.toString()),
-                                          style: const TextStyle(fontWeight: FontWeight.w800),
+                                        Row(
+                                          children: [
+                                            Text(
+                                              money(product['basePriceMinor'] as num?, product['currency']?.toString()),
+                                              style: const TextStyle(fontWeight: FontWeight.w800),
+                                            ),
+                                            if (asList(product['optionGroups']).isNotEmpty) ...[
+                                              const SizedBox(width: 6),
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                decoration: BoxDecoration(color: const Color(0xFFF0EBE1), borderRadius: BorderRadius.circular(6)),
+                                                child: const Text('Customisable', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Color(0xFF6B7468))),
+                                              ),
+                                            ],
+                                          ],
                                         ),
+                                        if (product['stockState'] == 'low_stock')
+                                          const Padding(
+                                            padding: EdgeInsets.only(top: 4),
+                                            child: Text('Low stock', style: TextStyle(fontSize: 11, color: Color(0xFFB26A00), fontWeight: FontWeight.w700)),
+                                          ),
+                                        if (product['stockState'] == 'out_of_stock' || product['isAvailable'] == false)
+                                          const Padding(
+                                            padding: EdgeInsets.only(top: 4),
+                                            child: Text('Out of stock', style: TextStyle(fontSize: 11, color: Color(0xFFC62828), fontWeight: FontWeight.w700)),
+                                          ),
                                       ],
                                     ),
                                   ),
                                   const SizedBox(width: 12),
                                   FilledButton.tonal(
                                     onPressed: product['isAvailable'] == true &&
+                                            product['stockState'] != 'out_of_stock' &&
                                             addingId == null &&
                                             merchant?['isDeliverable'] != false &&
                                             merchant?['isOpen'] != false
@@ -2047,12 +2361,32 @@ class _CartScreenState extends State<CartScreen> {
 
   Future<void> _load() async {
     try {
-      final result = await widget.client.get('/v1/cart');
+      final result = asMap(await widget.client.reconcileCart());
+      final issues = asList(result['issues']);
       if (!mounted) return;
       setState(() {
-        cart = asMap(result);
+        cart = asMap(result['cart']);
         error = null;
       });
+      if (issues.isNotEmpty && mounted) {
+        final messages = issues.map((issue) => issue['message']?.toString() ?? '').where((message) => message.isNotEmpty);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(messages.join('\n')), duration: const Duration(seconds: 5)),
+        );
+      }
+    } on ApiException catch (cause) {
+      // A stale offline cache must not hide an empty cart.
+      if (cause.statusCode == 0) {
+        try {
+          final result = await widget.client.get('/v1/cart');
+          if (!mounted) return;
+          return setState(() => cart = asMap(result));
+        } catch (_) {
+          if (mounted) setState(() => error = cause.toString());
+        }
+      } else if (mounted) {
+        setState(() => error = cause.toString());
+      }
     } catch (cause) {
       if (mounted) setState(() => error = cause.toString());
     } finally {
@@ -2069,6 +2403,9 @@ class _CartScreenState extends State<CartScreen> {
       );
       if (!mounted) return;
       setState(() => cart = asMap(result));
+      if (asList(cart?['items']).isEmpty) {
+        Navigator.of(context).pop(true);
+      }
     } catch (cause) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2079,13 +2416,38 @@ class _CartScreenState extends State<CartScreen> {
     }
   }
 
+  Future<void> _clear() async {
+    setState(() => updating = true);
+    try {
+      await widget.client.delete('/v1/cart');
+      if (!mounted) return;
+      setState(() => cart = null);
+      Navigator.of(context).pop(true);
+    } catch (cause) {
+      if (mounted) setState(() => error = cause.toString());
+    } finally {
+      if (mounted) setState(() => updating = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final items = asList(cart?['items']);
     final empty = cart == null || items.isEmpty;
     final theme = Theme.of(context);
+    final fulfillment = asMap(cart?['fulfillment']);
     return Scaffold(
-      appBar: AppBar(title: const Text('Your cart')),
+      appBar: AppBar(
+        title: const Text('Your cart'),
+        actions: [
+          if (!empty)
+            IconButton(
+              tooltip: 'Clear cart',
+              onPressed: updating ? null : _clear,
+              icon: const Icon(Icons.delete_outline),
+            ),
+        ],
+      ),
       body: loading
           ? const Center(child: CircularProgressIndicator())
           : error != null
@@ -2120,9 +2482,16 @@ class _CartScreenState extends State<CartScreen> {
                                             item['displayName']?.toString() ?? 'Item',
                                             style: const TextStyle(fontWeight: FontWeight.w700),
                                           ),
+                                          if ((item['optionsLabel']?.toString() ?? '').isNotEmpty) ...[
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              item['optionsLabel'].toString(),
+                                              style: const TextStyle(fontSize: 11, color: Color(0xFF6B7468)),
+                                            ),
+                                          ],
                                           const SizedBox(height: 4),
                                           Text(
-                                            money(item['lineTotalMinor'] as num?, item['currency']?.toString()),
+                                            '${money(item['unitPriceMinor'] as num?, item['currency']?.toString())} · ${money(item['lineTotalMinor'] as num?, item['currency']?.toString())}',
                                             style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
                                           ),
                                           if (item['stockIssue'] != null)
@@ -2130,21 +2499,36 @@ class _CartScreenState extends State<CartScreen> {
                                               item['stockIssue'].toString(),
                                               style: const TextStyle(color: Color(0xFFA63A32), fontSize: 12),
                                             ),
+                                          if (item['stockState'] == 'low_stock')
+                                            const Text(
+                                              'Low stock',
+                                              style: TextStyle(color: Color(0xFFB26A00), fontSize: 11, fontWeight: FontWeight.w700),
+                                            ),
                                         ],
                                       ),
                                     ),
-                                    IconButton(
-                                      onPressed: updating ? null : () => _update(item, (item['quantity'] as num).toInt() - 1),
-                                      icon: const Icon(Icons.remove_circle_outline),
-                                    ),
-                                    Text(
-                                      '${item['quantity']}',
-                                      style: const TextStyle(fontWeight: FontWeight.w800),
-                                    ),
-                                    IconButton(
-                                      onPressed: updating ? null : () => _update(item, (item['quantity'] as num).toInt() + 1),
-                                      icon: const Icon(Icons.add_circle_outline),
-                                    ),
+                                    if (item['isAvailable'] == false)
+                                      IconButton(
+                                        tooltip: 'Remove',
+                                        onPressed: updating ? null : () => _update(item, 0),
+                                        icon: const Icon(Icons.delete_outline),
+                                      )
+                                    else ...[
+                                      IconButton(
+                                        onPressed: updating ? null : () => _update(item, (item['quantity'] as num).toInt() - 1),
+                                        icon: Icon((item['quantity'] as num).toInt() <= 1 ? Icons.delete_outline : Icons.remove_circle_outline),
+                                      ),
+                                      Text(
+                                        '${item['quantity']}',
+                                        style: const TextStyle(fontWeight: FontWeight.w800),
+                                      ),
+                                      IconButton(
+                                        onPressed: updating || (item['quantity'] as num).toInt() >= ((item['maxQuantity'] as num?)?.toInt() ?? 99)
+                                            ? null
+                                            : () => _update(item, (item['quantity'] as num).toInt() + 1),
+                                        icon: const Icon(Icons.add_circle_outline),
+                                      ),
+                                    ],
                                   ],
                                 ),
                               ),
@@ -2162,6 +2546,26 @@ class _CartScreenState extends State<CartScreen> {
                             ),
                           ],
                         ),
+                        if (fulfillment['supportsPickup'] == true || fulfillment['allowsScheduling'] == true) ...[
+                          const SizedBox(height: 14),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 6,
+                            children: [
+                              if (fulfillment['supportsPickup'] == true)
+                                const _CartHint(icon: Icons.storefront_outlined, label: 'Collect in store available'),
+                              if (fulfillment['allowsScheduling'] == true && ((fulfillment['maxScheduleDays'] as num?)?.toInt() ?? 0) > 0)
+                                const _CartHint(icon: Icons.schedule, label: 'Schedule for later'),
+                            ],
+                          ),
+                        ],
+                        if (cart?['policy'] is Map && asMap(cart!['policy'])['cancellationPolicy'] != null) ...[
+                          const SizedBox(height: 12),
+                          Text(
+                            asMap(cart!['policy'])['cancellationPolicy'].toString(),
+                            style: const TextStyle(fontSize: 11, color: Color(0xFF6B7468)),
+                          ),
+                        ],
                       ],
                     ),
       bottomNavigationBar: empty
@@ -2211,6 +2615,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   bool busy = false;
   String? error;
   bool showAddressForm = false;
+  String fulfillmentType = 'delivery';
+  Map<String, dynamic>? merchantInfo;
+  String? pickupLocationId;
+  DateTime? scheduledFor;
 
   final labelController = TextEditingController(text: 'Home');
   final recipientController = TextEditingController();
@@ -2222,6 +2630,43 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   void initState() {
     super.initState();
     _loadAddresses();
+    _loadMerchant();
+  }
+
+  Future<void> _loadMerchant() async {
+    try {
+      final result = asMap(await widget.client.get('/v1/merchants/${widget.merchantId}'));
+      if (!mounted) return;
+      final locations = asList(result['pickupLocations']);
+      setState(() {
+        merchantInfo = result;
+        pickupLocationId = pickupLocationId ?? (locations.isEmpty ? null : locations.first['id']?.toString());
+      });
+    } catch (_) {
+      // Delivery checkout still works when storefront details cannot be loaded.
+    }
+  }
+
+  Map<String, dynamic> get _fulfillment => asMap(merchantInfo?['fulfillment']);
+
+  Future<void> _pickSchedule() async {
+    final maxDays = (_fulfillment['maxScheduleDays'] as num?)?.toInt() ?? 0;
+    if (maxDays <= 0) return;
+    final now = DateTime.now();
+    final date = await showDatePicker(
+      context: context,
+      firstDate: DateTime(now.year, now.month, now.day),
+      lastDate: now.add(Duration(days: maxDays)),
+      initialDate: now,
+      helpText: 'Choose an order date',
+    );
+    if (date == null || !mounted) return;
+    final time = await showTimePicker(context: context, initialTime: TimeOfDay.fromDateTime(now.add(const Duration(hours: 1))));
+    if (time == null || !mounted) return;
+    setState(() {
+      scheduledFor = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+      quote = null;
+    });
   }
 
   @override
@@ -2291,7 +2736,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   }
 
   Future<void> _quoteOrder() async {
-    if (selectedAddress == null) return;
+    if (fulfillmentType == 'delivery' && selectedAddress == null) return;
+    if (fulfillmentType == 'pickup' && pickupLocationId == null) return;
     setState(() {
       busy = true;
       error = null;
@@ -2299,7 +2745,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     try {
       final result = await widget.client.post('/v1/checkout/quote', {
         'merchantId': widget.merchantId,
-        'deliveryAddressId': selectedAddress,
+        'fulfillmentType': fulfillmentType,
+        if (fulfillmentType == 'delivery') 'deliveryAddressId': selectedAddress,
+        if (fulfillmentType == 'pickup') 'pickupLocationId': pickupLocationId,
+        if (scheduledFor != null) 'scheduledFor': scheduledFor!.toUtc().toIso8601String(),
         'tipMinor': 0,
       });
       if (mounted) setState(() => quote = asMap(result));
@@ -2419,56 +2868,138 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 120),
         children: [
           if (error != null) ...[ErrorBanner(message: error!), const SizedBox(height: 14)],
-          Text('Deliver to', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
-          const SizedBox(height: 10),
-          RadioGroup<String>(
-            groupValue: selectedAddress,
-            onChanged: (value) => setState(() => selectedAddress = value),
-            child: Column(
-              children: addresses.map(
-                (address) => Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: RadioListTile<String>(
-                    value: address['id'] as String,
-                    title: Text('${address['label']} · ${address['recipientName']}'),
-                    subtitle: Text(address['addressLine']?.toString() ?? ''),
-                    tileColor: const Color(0xFFFFFDF7),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                      side: const BorderSide(color: Color(0xFFD9D5C7)),
+          if (_fulfillment['supportsPickup'] == true) ...[
+            Text('How do you want it?', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 10),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'delivery', icon: Icon(Icons.delivery_dining_outlined), label: Text('Delivery')),
+                ButtonSegment(value: 'pickup', icon: Icon(Icons.storefront_outlined), label: Text('Collect')),
+              ],
+              selected: {fulfillmentType},
+              onSelectionChanged: (selection) {
+                setState(() {
+                  fulfillmentType = selection.first;
+                  quote = null;
+                });
+              },
+            ),
+            const SizedBox(height: 18),
+          ],
+          if (fulfillmentType == 'delivery') ...[
+            Text('Deliver to', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 10),
+            RadioGroup<String>(
+              groupValue: selectedAddress,
+              onChanged: (value) => setState(() {
+                selectedAddress = value;
+                quote = null;
+              }),
+              child: Column(
+                children: addresses.map(
+                  (address) => Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: RadioListTile<String>(
+                      value: address['id'] as String,
+                      title: Text('${address['label']} · ${address['recipientName']}'),
+                      subtitle: Text(address['addressLine']?.toString() ?? ''),
+                      tileColor: const Color(0xFFFFFDF7),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        side: const BorderSide(color: Color(0xFFD9D5C7)),
+                      ),
                     ),
                   ),
-                ),
-              ).toList(),
+                ).toList(),
+              ),
             ),
-          ),
-          TextButton.icon(
-            onPressed: () => setState(() => showAddressForm = !showAddressForm),
-            icon: Icon(showAddressForm ? Icons.close : Icons.add_location_alt_outlined),
-            label: Text(showAddressForm ? 'Cancel new address' : 'Add a new address'),
-          ),
-          if (showAddressForm) ...[
-            const SizedBox(height: 6),
-            TextField(controller: labelController, decoration: const InputDecoration(labelText: 'Label')),
+            TextButton.icon(
+              onPressed: () => setState(() => showAddressForm = !showAddressForm),
+              icon: Icon(showAddressForm ? Icons.close : Icons.add_location_alt_outlined),
+              label: Text(showAddressForm ? 'Cancel new address' : 'Add a new address'),
+            ),
+            if (showAddressForm) ...[
+              const SizedBox(height: 6),
+              TextField(controller: labelController, decoration: const InputDecoration(labelText: 'Label')),
+              const SizedBox(height: 10),
+              TextField(controller: recipientController, decoration: const InputDecoration(labelText: 'Recipient name')),
+              const SizedBox(height: 10),
+              TextField(controller: phoneController, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Phone (+251…)')),
+              const SizedBox(height: 10),
+              TextField(controller: addressController, decoration: const InputDecoration(labelText: 'Address line')),
+              const SizedBox(height: 10),
+              TextField(controller: instructionsController, decoration: const InputDecoration(labelText: 'Delivery instructions (optional)')),
+              const SizedBox(height: 10),
+              OutlinedButton(
+                onPressed: busy ? null : _createAddress,
+                child: const Text('Save address'),
+              ),
+            ],
+          ] else ...[
+            Text('Collect from', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
             const SizedBox(height: 10),
-            TextField(controller: recipientController, decoration: const InputDecoration(labelText: 'Recipient name')),
-            const SizedBox(height: 10),
-            TextField(controller: phoneController, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Phone (+251…)')),
-            const SizedBox(height: 10),
-            TextField(controller: addressController, decoration: const InputDecoration(labelText: 'Address line')),
-            const SizedBox(height: 10),
-            TextField(controller: instructionsController, decoration: const InputDecoration(labelText: 'Delivery instructions (optional)')),
-            const SizedBox(height: 10),
-            OutlinedButton(
-              onPressed: busy ? null : _createAddress,
-              child: const Text('Save address'),
+            RadioGroup<String>(
+              groupValue: pickupLocationId,
+              onChanged: (value) => setState(() {
+                pickupLocationId = value;
+                quote = null;
+              }),
+              child: Column(
+                children: asList(merchantInfo?['pickupLocations']).map(
+                  (location) => Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: RadioListTile<String>(
+                      value: location['id'] as String,
+                      title: Text(location['name']?.toString() ?? 'Store'),
+                      subtitle: Text(location['addressLine']?.toString() ?? ''),
+                      tileColor: const Color(0xFFFFFDF7),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        side: const BorderSide(color: Color(0xFFD9D5C7)),
+                      ),
+                    ),
+                  ),
+                ).toList(),
+              ),
+            ),
+            if (_fulfillment['pickupInstructions'] != null)
+              Text(
+                _fulfillment['pickupInstructions'].toString(),
+                style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
+              ),
+          ],
+          if ((_fulfillment['maxScheduleDays'] as num? ?? 0) > 0) ...[
+            const SizedBox(height: 16),
+            Text('When?', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ChoiceChip(
+                  label: const Text('As soon as possible'),
+                  selected: scheduledFor == null,
+                  onSelected: (_) => setState(() {
+                    scheduledFor = null;
+                    quote = null;
+                  }),
+                ),
+                ChoiceChip(
+                  avatar: const Icon(Icons.schedule, size: 16),
+                  label: Text(scheduledFor == null ? 'Schedule for later' : formatSchedule(scheduledFor!)),
+                  selected: scheduledFor != null,
+                  onSelected: (_) => _pickSchedule(),
+                ),
+              ],
             ),
           ],
           const SizedBox(height: 22),
           if (quote == null)
             FilledButton(
-              onPressed: selectedAddress == null || busy ? null : _quoteOrder,
-              child: Text(busy ? 'Calculating…' : 'Review delivery fee'),
+              onPressed: busy || (fulfillmentType == 'delivery' ? selectedAddress == null : pickupLocationId == null)
+                  ? null
+                  : _quoteOrder,
+              child: Text(busy ? 'Calculating…' : 'Review totals'),
             )
           else _quoteView(theme),
         ],
@@ -2479,6 +3010,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   Widget _quoteView(ThemeData theme) {
     final breakdown = asMap(quote!['breakdown']);
     final lines = asList(quote!['lines']);
+    final fulfillment = asMap(quote!['fulfillment']);
+    final isPickup = fulfillment['type'] == 'pickup';
+    final pickup = asMap(fulfillment['pickup']);
+    final scheduledAt = DateTime.tryParse(fulfillment['scheduledFor']?.toString() ?? '');
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2493,8 +3028,21 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                   (line) => Padding(
                     padding: const EdgeInsets.only(bottom: 8),
                     child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Expanded(child: Text('${line['quantity']} × ${line['displayName']}')),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('${line['quantity']} × ${line['displayName']}'),
+                              if ((line['optionsLabel']?.toString() ?? '').isNotEmpty)
+                                Text(
+                                  line['optionsLabel'].toString(),
+                                  style: const TextStyle(fontSize: 11, color: Color(0xFF6B7468)),
+                                ),
+                            ],
+                          ),
+                        ),
                         Text(money(line['lineTotalMinor'] as num?, line['currency']?.toString())),
                       ],
                     ),
@@ -2502,7 +3050,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 ),
                 const Divider(height: 24),
                 _amountRow('Items', breakdown['itemsSubtotalMinor'] as num?, breakdown['currency']?.toString()),
-                _amountRow('Delivery', breakdown['deliveryFeeMinor'] as num?, breakdown['currency']?.toString()),
+                _amountRow(isPickup ? 'Collection' : 'Delivery', breakdown['deliveryFeeMinor'] as num?, breakdown['currency']?.toString()),
                 _amountRow('Service fee', breakdown['serviceFeeMinor'] as num?, breakdown['currency']?.toString()),
                 if ((breakdown['discountMinor'] as num? ?? 0) > 0)
                   _amountRow('Discount', -(breakdown['discountMinor'] as num), breakdown['currency']?.toString()),
@@ -2513,10 +3061,23 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    'Estimated ${breakdown['deliveryEstimateMinutes'] ?? '—'} min · ${((breakdown['distanceMeters'] as num? ?? 0) / 1000).toStringAsFixed(1)} km',
+                    isPickup
+                        ? 'Collect from ${pickup['name'] ?? 'the store'} · ready in about ${breakdown['deliveryEstimateMinutes'] ?? '—'} min'
+                        : 'Estimated ${breakdown['deliveryEstimateMinutes'] ?? '—'} min · ${((breakdown['distanceMeters'] as num? ?? 0) / 1000).toStringAsFixed(1)} km',
                     style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
                   ),
                 ),
+                if (scheduledAt != null)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        'Scheduled for ${formatSchedule(scheduledAt)}',
+                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF2E7D32)),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -2529,7 +3090,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         const SizedBox(height: 8),
         TextButton(
           onPressed: busy ? null : () => setState(() => quote = null),
-          child: const Text('Back to address'),
+          child: const Text('Back to options'),
         ),
       ],
     );
@@ -3081,6 +3642,29 @@ class _LiveTrackingCard extends StatelessWidget {
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _CartHint extends StatelessWidget {
+  const _CartHint({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(color: const Color(0xFFF4F0E8), borderRadius: BorderRadius.circular(10)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: const Color(0xFF6B7468)),
+          const SizedBox(width: 5),
+          Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+        ],
       ),
     );
   }

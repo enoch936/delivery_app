@@ -68,7 +68,10 @@ const detail: MerchantDetailRecord = {
   addressLine: "Demo address",
   latitude: 9.02,
   longitude: 38.78,
-  deliveryUnavailableReason: null
+  deliveryUnavailableReason: null,
+  policy: { cancellationPolicy: null, refundPolicy: null },
+  fulfillment: { supportsPickup: true, pickupInstructions: null, allowsScheduling: true, minScheduleLeadMinutes: 60, maxScheduleDays: 3 },
+  pickupLocations: []
 };
 
 const product: ProductRecord = {
@@ -81,7 +84,9 @@ const product: ProductRecord = {
   basePriceMinor: 42000,
   currency: "ETB",
   isAvailable: true,
-  quantityAvailable: 10
+  quantityAvailable: 10,
+  stockState: "in_stock",
+  optionGroups: []
 };
 
 const searchProduct: SearchProductRecord = { ...product, merchant: { id: merchant.id, slug: merchant.slug, displayName: merchant.displayName, logoUrl: null, coverImageUrl: null, rating: 4.6 } };

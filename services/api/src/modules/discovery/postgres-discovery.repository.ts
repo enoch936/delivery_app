@@ -12,7 +12,10 @@ import type {
   MerchantSort,
   MerchantSummaryRecord,
   MerchantWeeklyHours,
+  ProductOptionGroupRecord,
+  ProductOptionRecord,
   ProductRecord,
+  ProductStockState,
   RecentlyOrderedRecord,
   RecentSearchRecord,
   SearchInput,
@@ -117,7 +120,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
       `SELECT m.id, m.slug, m.display_name, m.description, m.logo_url, m.cover_image_url,
               m.rating, m.rating_count, m.price_level, m.delivery_fee_minor, m.min_order_minor,
               m.delivery_radius_km, (${eta})[1] AS eta_min_minutes, (${eta})[2] AS eta_max_minutes,
-              m.is_featured, m.tags,
+              m.is_featured, m.tags, m.supports_pickup, m.allows_scheduling,
               ml.name AS location_name, ml.address_line, ml.opening_hours,
               ST_Y(ml.location) AS latitude, ST_X(ml.location) AS longitude,
               discovery_is_open(ml.opening_hours) AS is_open,
@@ -145,7 +148,9 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
       `SELECT m.id, m.slug, m.display_name, m.description, m.logo_url, m.cover_image_url,
               m.rating, m.rating_count, m.price_level, m.delivery_fee_minor, m.min_order_minor,
               m.delivery_radius_km, (${eta})[1] AS eta_min_minutes, (${eta})[2] AS eta_max_minutes,
-              m.is_featured, m.tags,
+              m.is_featured, m.tags, m.supports_pickup, m.allows_scheduling,
+              m.cancellation_policy, m.refund_policy, m.pickup_instructions,
+              m.min_schedule_lead_minutes, m.max_schedule_days,
               ml.name AS location_name, ml.address_line, ml.opening_hours,
               ST_Y(ml.location) AS latitude, ST_X(ml.location) AS longitude,
               discovery_is_open(ml.opening_hours) AS is_open,
@@ -168,6 +173,13 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     if (!row) return null;
     const [summary] = await this.attachCategorySlugs([row]);
     if (!summary) return null;
+    const pickupLocations = await this.getPool().query<{ id: string; name: string; address_line: string | null; latitude: number | string | null; longitude: number | string | null }>(
+      `SELECT ml.id, ml.name, ml.address_line, ST_Y(ml.location) AS latitude, ST_X(ml.location) AS longitude
+       FROM merchant_locations ml
+       WHERE ml.merchant_id = $1 AND ml.is_active = true AND ml.location IS NOT NULL
+       ORDER BY ml.created_at ASC`,
+      [merchantId]
+    );
     return {
       ...summary,
       openingHours: row.opening_hours ?? {},
@@ -175,7 +187,25 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
       addressLine: row.address_line ?? null,
       latitude: row.latitude === null ? null : Number(row.latitude),
       longitude: row.longitude === null ? null : Number(row.longitude),
-      deliveryUnavailableReason: summary.isDeliverable ? null : "Your delivery address is outside this merchant's delivery area."
+      deliveryUnavailableReason: summary.isDeliverable ? null : "Your delivery address is outside this merchant's delivery area.",
+      policy: {
+        cancellationPolicy: row.cancellation_policy ?? null,
+        refundPolicy: row.refund_policy ?? null
+      },
+      fulfillment: {
+        supportsPickup: row.supports_pickup ?? false,
+        pickupInstructions: row.pickup_instructions ?? null,
+        allowsScheduling: row.allows_scheduling ?? false,
+        minScheduleLeadMinutes: row.min_schedule_lead_minutes ?? 60,
+        maxScheduleDays: row.max_schedule_days ?? 3
+      },
+      pickupLocations: pickupLocations.rows.map((location) => ({
+        id: location.id,
+        name: location.name,
+        addressLine: location.address_line,
+        latitude: location.latitude === null ? null : Number(location.latitude),
+        longitude: location.longitude === null ? null : Number(location.longitude)
+      }))
     };
   }
 
@@ -193,14 +223,19 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     const limitIndex = params.push(input.limit);
     const offsetIndex = params.push(input.offset);
     const result = await this.getPool().query<ProductRow>(
-      `SELECT p.id, p.merchant_id, p.sku, p.display_name, p.description, p.image_url, p.base_price_minor, p.currency, p.is_available, i.quantity_available
+      `SELECT p.id, p.merchant_id, p.sku, p.display_name, p.description, p.image_url, p.base_price_minor, p.currency, p.is_available, i.quantity_available,
+              catalog_stock_state(p.is_available, i.quantity_available) AS stock_state
        FROM products p LEFT JOIN inventory i ON i.product_id = p.id
        WHERE p.merchant_id = $1 ${queryFilter}
        ORDER BY p.is_available DESC, p.display_name ASC
        LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
       params
     );
-    return { items: result.rows.map(mapProduct), total: Number(count.rows[0]?.count ?? "0") };
+    const groups = await this.loadProductOptionGroups(result.rows.map((row) => row.id));
+    return {
+      items: result.rows.map((row) => mapProduct(row, groups.get(row.id) ?? [])),
+      total: Number(count.rows[0]?.count ?? "0")
+    };
   }
 
   async search(input: SearchInput): Promise<SearchResultRecord> {
@@ -344,6 +379,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     const offsetIndex = params.push(input.offset);
     const result = await this.getPool().query<SearchProductRow>(
       `SELECT p.id, p.merchant_id, p.sku, p.display_name, p.description, p.image_url, p.base_price_minor, p.currency, p.is_available, i.quantity_available,
+              catalog_stock_state(p.is_available, i.quantity_available) AS stock_state,
               m.slug AS merchant_slug, m.display_name AS merchant_name, m.logo_url AS merchant_logo_url,
               m.cover_image_url AS merchant_cover_image_url, m.rating AS merchant_rating
        ${from}
@@ -437,6 +473,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
   private async listRecentlyOrderedProducts(userId: string): Promise<readonly SearchProductRecord[]> {
     const result = await this.getPool().query<SearchProductRow>(
       `SELECT p.id, p.merchant_id, p.sku, p.display_name, p.description, p.image_url, p.base_price_minor, p.currency, p.is_available, i.quantity_available,
+              catalog_stock_state(p.is_available, i.quantity_available) AS stock_state,
               m.slug AS merchant_slug, m.display_name AS merchant_name, m.logo_url AS merchant_logo_url,
               m.cover_image_url AS merchant_cover_image_url, m.rating AS merchant_rating
        FROM order_items oi
@@ -494,6 +531,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     }
     const result = await this.getPool().query<SearchProductRow>(
       `SELECT p.id, p.merchant_id, p.sku, p.display_name, p.description, p.image_url, p.base_price_minor, p.currency, p.is_available, i.quantity_available,
+              catalog_stock_state(p.is_available, i.quantity_available) AS stock_state,
               m.slug AS merchant_slug, m.display_name AS merchant_name, m.logo_url AS merchant_logo_url,
               m.cover_image_url AS merchant_cover_image_url, m.rating AS merchant_rating
        FROM products p
@@ -662,6 +700,72 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     return result.rows.map(mapCategory);
   }
 
+  private async loadProductOptionGroups(productIds: readonly string[]): Promise<Map<string, ProductOptionGroupRecord[]>> {
+    const byProduct = new Map<string, ProductOptionGroupRecord[]>();
+    if (productIds.length === 0) return byProduct;
+    const result = await this.getPool().query<{
+      product_id: string;
+      group_id: string;
+      group_slug: string;
+      group_name: string;
+      selection_type: "single" | "multi";
+      is_required: boolean;
+      min_selections: number;
+      max_selections: number;
+      option_id: string | null;
+      option_sku: string | null;
+      option_name: string | null;
+      price_delta_minor: string | null;
+      is_default: boolean | null;
+      is_option_available: boolean | null;
+    }>(
+      `SELECT g.product_id, g.id AS group_id, g.slug AS group_slug, g.display_name AS group_name,
+              g.selection_type, g.is_required, g.min_selections, g.max_selections,
+              o.id AS option_id, o.sku AS option_sku, o.display_name AS option_name,
+              o.price_delta_minor, o.is_default, o.is_available AS is_option_available
+       FROM product_option_groups g
+       LEFT JOIN product_options o ON o.group_id = g.id
+       WHERE g.product_id = ANY($1::uuid[])
+       ORDER BY g.sort_order ASC, g.display_name ASC, o.sort_order ASC, o.display_name ASC`,
+      [productIds]
+    );
+    const groups = new Map<string, Map<string, { record: Omit<ProductOptionGroupRecord, "options">; options: ProductOptionRecord[] }>>();
+    for (const row of result.rows) {
+      const productGroups = groups.get(row.product_id) ?? new Map();
+      groups.set(row.product_id, productGroups);
+      let group = productGroups.get(row.group_id);
+      if (!group) {
+        group = {
+          record: {
+            id: row.group_id,
+            slug: row.group_slug,
+            displayName: row.group_name,
+            selectionType: row.selection_type,
+            isRequired: row.is_required,
+            minSelections: row.min_selections,
+            maxSelections: row.max_selections
+          },
+          options: []
+        };
+        productGroups.set(row.group_id, group);
+      }
+      if (row.option_id) {
+        group.options.push({
+          id: row.option_id,
+          sku: row.option_sku,
+          displayName: row.option_name ?? "",
+          priceDeltaMinor: Number(row.price_delta_minor ?? 0),
+          isDefault: row.is_default ?? false,
+          isAvailable: row.is_option_available ?? true
+        });
+      }
+    }
+    for (const [productId, productGroups] of groups) {
+      byProduct.set(productId, [...productGroups.values()].map((entry) => ({ ...entry.record, options: entry.options })));
+    }
+    return byProduct;
+  }
+
   private distanceExpression(params: unknown[], latitude: number | null, longitude: number | null, alias: string): string {
     if (latitude === null || longitude === null) return "NULL::double precision";
     const latIndex = params.push(latitude);
@@ -720,6 +824,13 @@ type MerchantRow = {
   eta_max_minutes: number;
   is_featured: boolean;
   tags: string[] | null;
+  supports_pickup: boolean;
+  allows_scheduling: boolean;
+  cancellation_policy?: string | null;
+  refund_policy?: string | null;
+  pickup_instructions?: string | null;
+  min_schedule_lead_minutes?: number;
+  max_schedule_days?: number;
   location_name: string | null;
   address_line: string | null;
   opening_hours: Record<string, unknown> | null;
@@ -743,6 +854,7 @@ type ProductRow = {
   currency: string;
   is_available: boolean;
   quantity_available: number | null;
+  stock_state: ProductStockState;
 };
 
 type SearchProductRow = ProductRow & {
@@ -868,7 +980,7 @@ function weeklyHours(hours: Record<string, unknown>): readonly MerchantWeeklyHou
   });
 }
 
-function mapProduct(row: ProductRow): ProductRecord {
+function mapProduct(row: ProductRow, optionGroups: readonly ProductOptionGroupRecord[] = []): ProductRecord {
   return {
     id: row.id,
     merchantId: row.merchant_id,
@@ -879,7 +991,9 @@ function mapProduct(row: ProductRow): ProductRecord {
     basePriceMinor: Number(row.base_price_minor),
     currency: row.currency,
     isAvailable: row.is_available && (row.quantity_available === null || row.quantity_available > 0),
-    quantityAvailable: row.quantity_available
+    quantityAvailable: row.quantity_available,
+    stockState: row.stock_state ?? (row.is_available ? "in_stock" : "out_of_stock"),
+    optionGroups
   };
 }
 

@@ -40,6 +40,8 @@ type OrderRow = {
   version: number;
   delivery_instructions: string | null;
   delivery_address_snapshot: Record<string, unknown> | null;
+  fulfillment_type: "delivery" | "pickup";
+  pickup_location_id: string | null;
   scheduled_for: Date | null;
   delivery_estimate_minutes: number | null;
   distance_meters: number | null;
@@ -55,7 +57,10 @@ type QuoteRow = {
   id: string;
   user_id: string;
   merchant_id: string;
-  delivery_address_id: string;
+  delivery_address_id: string | null;
+  fulfillment_type: "delivery" | "pickup";
+  scheduled_for: Date | null;
+  pickup_location_id: string | null;
   currency: string;
   items_subtotal_minor: string;
   delivery_fee_minor: string;
@@ -74,7 +79,15 @@ type QuoteRow = {
   pricing_rule_id: string | null;
 };
 
-type QuoteLineRow = { productId: string; displayName: string; quantity: number; unitPriceMinor: number; lineTotalMinor: number; currency: string };
+type QuoteLineRow = {
+  productId: string;
+  displayName: string;
+  quantity: number;
+  unitPriceMinor: number;
+  lineTotalMinor: number;
+  currency: string;
+  options?: readonly { optionId: string; displayName: string; priceDeltaMinor: number }[];
+};
 
 type AddressSnapshot = {
   label: string;
@@ -118,14 +131,18 @@ export class OrdersService {
       if (quote.consumed_at) throw new ConflictException("This checkout quote has already been used.");
       if (quote.expires_at <= new Date()) throw new GoneException("This checkout quote has expired. Please request a new quote.");
 
-      const addressResult = await client.query<{ label: string; recipient_name: string; phone_e164: string; address_line: string; delivery_instructions: string | null; latitude: number | null; longitude: number | null }>(
-        `SELECT label, recipient_name, phone_e164, address_line, delivery_instructions,
-                ST_Y(location::geometry) AS latitude, ST_X(location::geometry) AS longitude
-         FROM customer_addresses WHERE id = $1 AND user_id = $2`,
-        [quote.delivery_address_id, input.userId]
-      );
-      const address = addressResult.rows[0];
-      if (!address) throw new ConflictException("The delivery address is no longer available.");
+      const isPickup = quote.fulfillment_type === "pickup";
+      const addressResult = isPickup
+        ? { rows: [] as { label: string; recipient_name: string; phone_e164: string; address_line: string; delivery_instructions: string | null; latitude: number | null; longitude: number | null }[] }
+        : await client.query<{ label: string; recipient_name: string; phone_e164: string; address_line: string; delivery_instructions: string | null; latitude: number | null; longitude: number | null }>(
+            `SELECT label, recipient_name, phone_e164, address_line, delivery_instructions,
+                    ST_Y(location::geometry) AS latitude, ST_X(location::geometry) AS longitude
+             FROM customer_addresses WHERE id = $1 AND user_id = $2`,
+            [quote.delivery_address_id, input.userId]
+          );
+      const address = addressResult.rows[0] ?? null;
+      if (!isPickup && !address) throw new ConflictException("The delivery address is no longer available.");
+      if (isPickup && !quote.pickup_location_id) throw new ConflictException("This collection quote is missing its store location.");
 
       const merchantResult = await client.query<{ id: string; display_name: string; location_id: string; commission_bps: number }>(
         `SELECT m.id, m.display_name, ml.id AS location_id,
@@ -147,40 +164,46 @@ export class OrdersService {
         );
         const current = product.rows[0];
         if (!current || !current.is_available) throw new ConflictException(`${line.displayName} is no longer available.`);
-        if (Number(current.base_price_minor) !== line.unitPriceMinor) throw new ConflictException(`The price of ${line.displayName} has changed. Please request a new quote.`);
+        const optionDelta = (line.options ?? []).reduce((sum, option) => sum + Number(option.priceDeltaMinor), 0);
+        if (Number(current.base_price_minor) + optionDelta !== line.unitPriceMinor) throw new ConflictException(`The price of ${line.displayName} has changed. Please request a new quote.`);
         if (current.quantity_available !== null && current.quantity_available < line.quantity) throw new ConflictException(`There is not enough stock for ${line.displayName}.`);
       }
 
       const paymentRequired = this.config.paymentsProvider !== "disabled";
       const initialStatus: OrderStatus = paymentRequired ? "AWAITING_PAYMENT" : "CONFIRMED";
-      const snapshot: AddressSnapshot = {
-        label: address.label,
-        recipientName: address.recipient_name,
-        phoneE164: address.phone_e164,
-        addressLine: address.address_line,
-        deliveryInstructions: address.delivery_instructions,
-        latitude: address.latitude === null ? null : Number(address.latitude),
-        longitude: address.longitude === null ? null : Number(address.longitude)
-      };
+      const snapshot: AddressSnapshot | null = address
+        ? {
+            label: address.label,
+            recipientName: address.recipient_name,
+            phoneE164: address.phone_e164,
+            addressLine: address.address_line,
+            deliveryInstructions: address.delivery_instructions,
+            latitude: address.latitude === null ? null : Number(address.latitude),
+            longitude: address.longitude === null ? null : Number(address.longitude)
+          }
+        : null;
       const insert = await client.query<OrderRow>(
         `INSERT INTO orders (
            order_number, user_id, merchant_id, merchant_location_id, delivery_address_id, quote_id, kind, status, currency,
            items_subtotal_minor, delivery_fee_minor, service_fee_minor, discount_minor, total_minor, idempotency_key,
            tip_minor, tax_minor, payment_status, delivery_instructions, delivery_lat, delivery_lng,
            delivery_address_snapshot, merchant_name_snapshot, scheduled_for, distance_meters,
-           delivery_estimate_minutes, delivery_otp_hash, delivery_proof_required, promotion_id
+           delivery_estimate_minutes, delivery_otp_hash, delivery_proof_required, promotion_id,
+           fulfillment_type, pickup_location_id
          ) VALUES (
            'D-' || to_char(now(), 'YYMMDD') || '-' || upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 8)),
-           $1,$2,$3,$4,$5,'MERCHANT_DELIVERY',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-           NULL,$22,$23,NULL,$24,$25
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
+           $22,$23,$24,$25,NULL,$26,$27,$28,$29
          ) RETURNING *`,
         [
-          input.userId, quote.merchant_id, merchant.location_id, quote.delivery_address_id, quote.id, initialStatus, quote.currency,
+          input.userId, quote.merchant_id, isPickup ? quote.pickup_location_id : merchant.location_id, quote.delivery_address_id, quote.id,
+          "MERCHANT_DELIVERY", initialStatus, quote.currency,
           quote.items_subtotal_minor, quote.delivery_fee_minor, quote.service_fee_minor, quote.discount_minor, quote.total_minor,
           input.idempotencyKey, quote.tip_minor, quote.tax_minor,
-          paymentRequired ? "PENDING" : "UNPAID", snapshot.deliveryInstructions, snapshot.latitude, snapshot.longitude,
-          JSON.stringify(snapshot), merchant.display_name,
-          quote.distance_meters, quote.delivery_estimate_minutes, this.config.deliveryProofOtpRequired, quote.promotion_id
+          paymentRequired ? "PENDING" : "UNPAID", snapshot?.deliveryInstructions ?? null, snapshot?.latitude ?? null, snapshot?.longitude ?? null,
+          snapshot ? JSON.stringify(snapshot) : null, merchant.display_name,
+          quote.scheduled_for, quote.distance_meters, quote.delivery_estimate_minutes, this.config.deliveryProofOtpRequired, quote.promotion_id,
+          quote.fulfillment_type ?? "delivery", isPickup ? quote.pickup_location_id : null
         ]
       );
       const order = insert.rows[0];
@@ -189,9 +212,9 @@ export class OrdersService {
 
       for (const line of lineItems) {
         await client.query(
-          `INSERT INTO order_items (order_id, product_id, display_name, quantity, unit_price_minor, line_total_minor, currency)
-           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-          [order.id, line.productId, line.displayName, line.quantity, line.unitPriceMinor, line.lineTotalMinor, line.currency]
+          `INSERT INTO order_items (order_id, product_id, display_name, quantity, unit_price_minor, line_total_minor, currency, options)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [order.id, line.productId, line.displayName, line.quantity, line.unitPriceMinor, line.lineTotalMinor, line.currency, JSON.stringify(line.options ?? [])]
         );
         const inventory = await client.query(
           "UPDATE inventory SET quantity_available = quantity_available - $2 WHERE product_id = $1 AND quantity_available >= $2",
@@ -544,6 +567,12 @@ export class OrdersService {
       freeCancellationWindowSeconds: 120
     });
     const snapshot = (order.delivery_address_snapshot ?? {}) as Record<string, unknown>;
+    const pickup = order.fulfillment_type === "pickup" && order.pickup_location_id
+      ? (await executor.query<{ id: string; name: string; address_line: string | null }>(
+          "SELECT id, name, address_line FROM merchant_locations WHERE id = $1",
+          [order.pickup_location_id]
+        )).rows[0] ?? null
+      : null;
     const locationFresh = assignment?.last_seen_at ? Date.now() - assignment.last_seen_at.getTime() < 120_000 : false;
     const deliveryCode = isOwner && ["COURIER_ASSIGNED", "COURIER_ARRIVING_PICKUP", "PICKED_UP", "IN_TRANSIT"].includes(order.status)
       ? this.deliveryCodeForOrder(order)
@@ -566,6 +595,8 @@ export class OrdersService {
         unitPriceMinor: Number(item.unit_price_minor), lineTotalMinor: Number(item.line_total_minor), options: item.options
       })),
       deliveryAddress: Object.keys(snapshot).length > 0 ? snapshot : { addressId: order.delivery_address_id },
+      fulfillmentType: order.fulfillment_type ?? "delivery",
+      pickupLocation: pickup ? { id: pickup.id, name: pickup.name, addressLine: pickup.address_line } : null,
       deliveryInstructions: order.delivery_instructions,
       scheduledFor: order.scheduled_for?.toISOString() ?? null,
       deliveryEstimateMinutes: order.delivery_estimate_minutes,

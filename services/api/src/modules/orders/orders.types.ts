@@ -53,6 +53,8 @@ export type OrderDetailRecord = Readonly<{
   totals: OrderTotals;
   items: readonly OrderItemRecord[];
   deliveryAddress: Record<string, unknown>;
+  fulfillmentType: "delivery" | "pickup";
+  pickupLocation: Readonly<{ id: string; name: string; addressLine: string | null }> | null;
   deliveryInstructions: string | null;
   scheduledFor: string | null;
   deliveryEstimateMinutes: number | null;
