@@ -1,9 +1,10 @@
-import { Injectable, ServiceUnavailableException } from "@nestjs/common";
+﻿import { Injectable, ServiceUnavailableException } from "@nestjs/common";
 import { Pool } from "pg";
 import { readRuntimeConfig } from "../../config/runtime-config.js";
 import type {
   DiscoveryBannerRecord,
   DiscoveryHomeRecord,
+  DiscoveryOfferRecord,
   DiscoveryRepository,
   MerchantDetailRecord,
   MerchantListInput,
@@ -72,6 +73,14 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
         WHERE f.user_id = $${params.length} AND f.merchant_id = m.id AND f.product_id IS NULL
       )`);
     }
+    if (input.latitude !== null && input.longitude !== null) {
+      params.push(input.longitude, input.latitude);
+      filters.push(`ST_DWithin(
+        ml.location::geography,
+        ST_SetSRID(ST_MakePoint($${params.length - 1}, $${params.length}), 4326)::geography,
+        m.delivery_radius_km * 1000
+      )`);
+    }
 
     const from = `FROM merchants m
       JOIN LATERAL (
@@ -89,7 +98,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     const result = await this.getPool().query<MerchantRow>(
       `SELECT m.id, m.slug, m.display_name, m.description, m.logo_url, m.cover_image_url,
               m.rating, m.rating_count, m.price_level, m.delivery_fee_minor, m.min_order_minor,
-              m.eta_min_minutes, m.eta_max_minutes, m.is_featured, m.tags,
+              m.delivery_radius_km, m.eta_min_minutes, m.eta_max_minutes, m.is_featured, m.tags,
               ml.name AS location_name, ml.address_line, ml.opening_hours,
               ST_Y(ml.location) AS latitude, ST_X(ml.location) AS longitude,
               discovery_is_open(ml.opening_hours) AS is_open,
@@ -109,7 +118,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     const result = await this.getPool().query<MerchantRow>(
       `SELECT m.id, m.slug, m.display_name, m.description, m.logo_url, m.cover_image_url,
               m.rating, m.rating_count, m.price_level, m.delivery_fee_minor, m.min_order_minor,
-              m.eta_min_minutes, m.eta_max_minutes, m.is_featured, m.tags,
+              m.delivery_radius_km, m.eta_min_minutes, m.eta_max_minutes, m.is_featured, m.tags,
               ml.name AS location_name, ml.address_line, ml.opening_hours,
               ST_Y(ml.location) AS latitude, ST_X(ml.location) AS longitude,
               discovery_is_open(ml.opening_hours) AS is_open,
@@ -220,6 +229,14 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
       )`);
     }
     if (input.openNow) filters.push("discovery_is_open(ml.opening_hours) = true");
+    if (input.latitude !== null && input.longitude !== null) {
+      params.push(input.longitude, input.latitude);
+      filters.push(`ST_DWithin(
+        ml.location::geography,
+        ST_SetSRID(ST_MakePoint($${params.length - 1}, $${params.length}), 4326)::geography,
+        m.delivery_radius_km * 1000
+      )`);
+    }
     const from = `FROM products p
       JOIN merchants m ON m.id = p.merchant_id
       JOIN LATERAL (
@@ -248,6 +265,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
   async getHome(input: Readonly<{ citySlug: string; userId: string | null; latitude: number | null; longitude: number | null }>): Promise<DiscoveryHomeRecord> {
     const categories = await this.listActiveServiceCategories();
     const banners = await this.listBanners();
+    const offers = await this.listOffers();
     const featuredResult = await this.listMerchants({
       citySlug: input.citySlug,
       categorySlug: null,
@@ -277,12 +295,13 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     const featuredIds = new Set(featuredResult.items.map((merchant) => merchant.id));
     const recommendations = recommendationResult.items.filter((merchant) => !featuredIds.has(merchant.id)).slice(0, 8);
     const [popularProducts, recentlyOrdered, stats] = await Promise.all([
-      this.listPopularProducts(input.citySlug),
+      this.listPopularProducts(input.citySlug, input.latitude, input.longitude),
       input.userId ? this.listRecentlyOrdered(input.userId) : Promise.resolve([]),
-      this.homeStats(input.citySlug)
+      this.homeStats(input.citySlug, input.latitude, input.longitude)
     ]);
     return {
       banners,
+      offers,
       categories,
       featured: featuredResult.items,
       recommendations,
@@ -310,7 +329,38 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     }));
   }
 
-  private async listPopularProducts(citySlug: string): Promise<readonly SearchProductRecord[]> {
+  private async listOffers(): Promise<readonly DiscoveryOfferRecord[]> {
+    const result = await this.getPool().query<OfferRow>(
+      `SELECT id, code, display_name, kind, value, currency, minimum_order_minor, maximum_discount_minor, merchant_id
+       FROM promotions
+       WHERE is_active = true AND starts_at <= now() AND (ends_at IS NULL OR ends_at > now())
+       ORDER BY created_at DESC
+       LIMIT 6`
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      code: row.code,
+      displayName: row.display_name,
+      kind: row.kind,
+      value: Number(row.value),
+      currency: row.currency,
+      minimumOrderMinor: Number(row.minimum_order_minor),
+      maximumDiscountMinor: row.maximum_discount_minor === null ? null : Number(row.maximum_discount_minor),
+      merchantId: row.merchant_id
+    }));
+  }
+
+  private async listPopularProducts(citySlug: string, latitude: number | null, longitude: number | null): Promise<readonly SearchProductRecord[]> {
+    const params: unknown[] = [citySlug];
+    let availability = "";
+    if (latitude !== null && longitude !== null) {
+      params.push(longitude, latitude);
+      availability = `AND ST_DWithin(
+        ml.location::geography,
+        ST_SetSRID(ST_MakePoint($${params.length - 1}, $${params.length}), 4326)::geography,
+        m.delivery_radius_km * 1000
+      )`;
+    }
     const result = await this.getPool().query<SearchProductRow>(
       `SELECT p.id, p.merchant_id, p.sku, p.display_name, p.description, p.image_url, p.base_price_minor, p.currency, p.is_available, i.quantity_available,
               m.slug AS merchant_slug, m.display_name AS merchant_name, m.logo_url AS merchant_logo_url,
@@ -326,10 +376,10 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
          WHERE o.created_at > now() - interval '30 days' AND o.status NOT IN ('CANCELLED', 'REFUNDED')
          GROUP BY oi.product_id
        ) sales ON sales.product_id = p.id
-       WHERE p.is_available = true
+       WHERE p.is_available = true ${availability}
        ORDER BY COALESCE(sales.ordered, 0) DESC, m.rating DESC, p.display_name ASC
        LIMIT 8`,
-      [citySlug]
+      params
     );
     const unique = new Map<string, SearchProductRow>();
     for (const row of result.rows) if (!unique.has(row.id)) unique.set(row.id, row);
@@ -367,15 +417,25 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     }));
   }
 
-  private async homeStats(citySlug: string): Promise<{ merchantCount: number; openNowCount: number }> {
+  private async homeStats(citySlug: string, latitude: number | null, longitude: number | null): Promise<{ merchantCount: number; openNowCount: number }> {
+    const params: unknown[] = [citySlug];
+    let availability = "";
+    if (latitude !== null && longitude !== null) {
+      params.push(longitude, latitude);
+      availability = `AND ST_DWithin(
+        ml.location::geography,
+        ST_SetSRID(ST_MakePoint($${params.length - 1}, $${params.length}), 4326)::geography,
+        m.delivery_radius_km * 1000
+      )`;
+    }
     const result = await this.getPool().query<{ merchant_count: string; open_now_count: string }>(
       `SELECT count(DISTINCT m.id)::text AS merchant_count,
               count(DISTINCT m.id) FILTER (WHERE discovery_is_open(ml.opening_hours))::text AS open_now_count
        FROM merchants m
        JOIN merchant_locations ml ON ml.merchant_id = m.id AND ml.is_active = true
        JOIN cities c ON c.id = ml.city_id AND c.slug = $1 AND c.is_active = true
-       WHERE m.status = 'active'`,
-      [citySlug]
+       WHERE m.status = 'active' ${availability}`,
+      params
     );
     return {
       merchantCount: Number(result.rows[0]?.merchant_count ?? "0"),
@@ -550,7 +610,7 @@ type SearchProductRow = ProductRow & {
   merchant_rating: string;
 };
 
-type BannerRow = {
+type OfferRow = {`n  id: string;`n  code: string;`n  display_name: string;`n  kind: string;`n  value: string;`n  currency: string;`n  minimum_order_minor: string;`n  maximum_discount_minor: string | null;`n  merchant_id: string | null;`n};`n`ntype BannerRow = {
   id: string;
   title: string;
   subtitle: string;
@@ -599,7 +659,7 @@ function mapMerchant(row: MerchantRow, serviceCategorySlugs: readonly string[]):
     priceLevel: row.price_level,
     deliveryFeeMinor: Number(row.delivery_fee_minor),
     minOrderMinor: Number(row.min_order_minor),
-    etaMinMinutes: row.eta_min_minutes,
+    deliveryRadiusKm: Number(row.delivery_radius_km),`n    etaMinMinutes: row.eta_min_minutes,
     etaMaxMinutes: row.eta_max_minutes,
     isFeatured: row.is_featured,
     tags: row.tags ?? [],
@@ -655,3 +715,5 @@ function orderBy(sort: MerchantSort): string {
 function escapeLike(value: string): string {
   return value.replace(/[%_\\]/g, "\\$&");
 }
+
+
