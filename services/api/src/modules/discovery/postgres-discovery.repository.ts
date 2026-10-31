@@ -98,11 +98,11 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
 
     // Ranking and personalisation parameters are only referenced by the page
     // query, so they are bound after the count query has run.
-    if (input.query) {
+    if (input.sort === "recommended" && input.query) {
       params.push(input.query);
       rankExpression = `GREATEST(similarity(m.display_name, $${params.length}), similarity(COALESCE(m.description, ''), $${params.length}) * 0.6)`;
     }
-    if (input.recommendationUserId) {
+    if (input.sort === "recommended" && input.recommendationUserId) {
       params.push(input.recommendationUserId);
       affinityExpression = `(SELECT count(*) FROM orders o
         WHERE o.user_id = $${params.length} AND o.merchant_id = m.id
