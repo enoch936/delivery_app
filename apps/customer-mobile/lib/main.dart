@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -454,6 +454,7 @@ class ApiClient {
     session = null;
     await storage.clearSession();
     await storage.clearQueued();
+    await storage.clearDiscoveryData();
     pendingSync.value = 0;
     if (current == null) return;
     try {
@@ -1462,7 +1463,17 @@ class _ExploreScreenState extends State<ExploreScreen> {
           ),
           const SizedBox(height: 12),
 
-          if (error != null) ErrorBanner(message: error!),
+          if (error != null) ...[
+            ErrorBanner(message: error!),
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: OutlinedButton.icon(
+                onPressed: _load,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Retry'),
+              ),
+            ),
+          ],
 
           // Skeleton Loader while loading
           if (loading && merchants.isEmpty) ...[
@@ -1838,6 +1849,23 @@ class _MerchantScreenState extends State<MerchantScreen> {
                   if (product['description'] != null) ...[
                     const SizedBox(height: 4),
                     Text(product['description'].toString(), style: const TextStyle(color: Color(0xFF6B7468), fontSize: 13)),
+                  ],
+                  if (product['imageUrl'] != null) ...[
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: Image.network(
+                        product['imageUrl'].toString(),
+                        width: double.infinity,
+                        height: 170,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stack) => Container(
+                          height: 170,
+                          color: const Color(0xFFF0EAD9),
+                          child: const Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D), size: 44),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
                   ],
                   const SizedBox(height: 14),
                   for (final group in groups) ...[
@@ -2296,6 +2324,27 @@ class _MerchantScreenState extends State<MerchantScreen> {
                                       ],
                                     ),
                                   ),
+                                  SizedBox(
+                                    width: 72,
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(14),
+                                      child: product['imageUrl'] != null
+                                          ? Image.network(
+                                              product['imageUrl'].toString(),
+                                              fit: BoxFit.cover,
+                                              errorBuilder: (context, error, stack) => Container(
+                                                width: 72,
+                                                color: const Color(0xFFF0EAD9),
+                                                child: const Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D), size: 26),
+                                              ),
+                                            )
+                                          : Container(
+                                              width: 72,
+                                              color: const Color(0xFFF0EAD9),
+                                              child: const Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D), size: 26),
+                                            ),
+                                    ),
+                                  ),
                                   const SizedBox(width: 12),
                                   FilledButton.tonal(
                                     onPressed: product['isAvailable'] == true &&
@@ -2451,7 +2500,21 @@ class _CartScreenState extends State<CartScreen> {
       body: loading
           ? const Center(child: CircularProgressIndicator())
           : error != null
-              ? Padding(padding: const EdgeInsets.all(20), child: ErrorBanner(message: error!))
+              ? Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ErrorBanner(message: error!),
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: _load,
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: const Text('Retry'),
+                      ),
+                    ],
+                  ),
+              )
               : empty
                   ? const EmptyState(
                       icon: Icons.shopping_bag_outlined,

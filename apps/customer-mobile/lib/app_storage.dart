@@ -92,6 +92,14 @@ class AppStorage {
 
   Future<void> clearSession() => _secureStorage.delete(key: _sessionKey);
 
+  Future<void> clearDiscoveryData() async {
+    for (final key in _preferences.getKeys().toList()) {
+      if (key.startsWith(_cachePrefix) || key == _favoritesKey || key == _recentSearchesKey) {
+        await _preferences.remove(key);
+      }
+    }
+  }
+
   Future<void> cacheResponse(String path, dynamic value) async {
     try {
       await _preferences.setString('$_cachePrefix$path', jsonEncode(value));

@@ -3,6 +3,7 @@ import { ApiBearerAuth, ApiOkResponse, ApiTags } from "@nestjs/swagger";
 import { Transform, Type } from "class-transformer";
 import { IsBoolean, IsIn, IsInt, IsNumber, IsOptional, IsString, Length, Matches, Max, Min } from "class-validator";
 import { requireUser } from "../../common/auth-context.js";
+import { RateLimit, RateLimitGuard } from "../../common/rate-limit.guard.js";
 import { OptionalSessionGuard, SessionGuard, type AuthenticatedRequest } from "../auth/session.guard.js";
 import { DiscoveryService } from "./discovery.service.js";
 
@@ -69,6 +70,10 @@ class SearchQuery extends PaginationQuery implements LocationQuery {
   @IsBoolean()
   openNow?: boolean;
 
+  @IsOptional() @Transform(({ value }) => value === true || value === "true")
+  @IsBoolean()
+  favorites?: boolean;
+
   @IsOptional() @Type(() => Number) @IsNumber() @Min(-90) @Max(90)
   lat?: number;
 
@@ -82,6 +87,12 @@ class SearchSuggestionQuery {
 
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(20)
   limit?: number;
+
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(-90) @Max(90)
+  lat?: number;
+
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(-180) @Max(180)
+  lng?: number;
 }
 
 class RecentSearchDto {
@@ -92,6 +103,7 @@ class RecentSearchDto {
 class ProductListQuery extends MerchantListQuery {}
 
 @ApiTags("discovery")
+@UseGuards(RateLimitGuard)
 @Controller("v1")
 export class DiscoveryController {
   constructor(private readonly discoveryService: DiscoveryService) {}
@@ -103,6 +115,7 @@ export class DiscoveryController {
     return { items };
   }
 
+  @RateLimit({ points: 120, durationSeconds: 60 })
   @Get("discovery/home")
   @UseGuards(OptionalSessionGuard)
   @ApiOkResponse({ description: "Personalized home feed with banners, categories, featured merchants and recommendations." })
@@ -114,6 +127,7 @@ export class DiscoveryController {
     });
   }
 
+  @RateLimit({ points: 120, durationSeconds: 60 })
   @Get("merchants")
   @UseGuards(OptionalSessionGuard)
   @ApiOkResponse({ description: "Merchants available in the configured launch city." })
@@ -145,10 +159,11 @@ export class DiscoveryController {
     return this.discoveryService.listProducts(merchantId, { q: query.q, limit: query.limit, offset: query.offset });
   }
 
+  @RateLimit({ points: 90, durationSeconds: 60 })
   @Get("search")
   @UseGuards(OptionalSessionGuard)
   @ApiOkResponse({ description: "Search merchants, products and services in the launch city." })
-  search(@Query() query: SearchQuery) {
+  search(@Req() request: AuthenticatedRequest, @Query() query: SearchQuery) {
     return this.discoveryService.search({
       q: query.q,
       type: query.type,
@@ -157,11 +172,14 @@ export class DiscoveryController {
       offset: query.offset,
       sort: query.sort,
       openNow: query.openNow,
+      favoritesOnly: query.favorites,
       latitude: query.lat,
-      longitude: query.lng
+      longitude: query.lng,
+      userId: request.authSession?.user.id
     });
   }
 
+  @RateLimit({ points: 180, durationSeconds: 60 })
   @Get("search/suggestions")
   @UseGuards(OptionalSessionGuard)
   @ApiOkResponse({ description: "Typeahead suggestions across merchants, products and services, plus recent terms." })
@@ -169,6 +187,8 @@ export class DiscoveryController {
     return this.discoveryService.suggestions({
       q: query.q ?? "",
       limit: query.limit,
+      latitude: query.lat,
+      longitude: query.lng,
       userId: request.authSession?.user.id
     });
   }

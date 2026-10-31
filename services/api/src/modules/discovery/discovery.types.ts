@@ -199,6 +199,7 @@ export type SearchInput = Readonly<{
   offset: number;
   sort: MerchantSort;
   openNow: boolean;
+  favoritesUserId: string | null;
   latitude: number | null;
   longitude: number | null;
 }>;
@@ -235,7 +236,7 @@ export interface DiscoveryRepository {
   getMerchantById(merchantId: string, citySlug: string, latitude: number | null, longitude: number | null): Promise<MerchantDetailRecord | null>;
   listProducts(input: Readonly<{ merchantId: string; query: string | null; limit: number; offset: number }>): Promise<{ items: readonly ProductRecord[]; total: number }>;
   search(input: SearchInput): Promise<SearchResultRecord>;
-  searchSuggestions(input: Readonly<{ citySlug: string; query: string; limit: number }>): Promise<readonly SearchSuggestionRecord[]>;
+  searchSuggestions(input: Readonly<{ citySlug: string; query: string; limit: number; latitude: number | null; longitude: number | null }>): Promise<readonly SearchSuggestionRecord[]>;
   getHome(input: Readonly<{ citySlug: string; userId: string | null; latitude: number | null; longitude: number | null }>): Promise<DiscoveryHomeRecord>;
   listFavorites(userId: string, citySlug: string, latitude: number | null, longitude: number | null): Promise<readonly MerchantSummaryRecord[]>;
   addFavorite(userId: string, merchantId: string): Promise<boolean>;

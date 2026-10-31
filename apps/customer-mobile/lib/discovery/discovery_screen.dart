@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -119,14 +119,16 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
       error = null;
     });
     try {
+      Future<dynamic> safeGet(String path) => widget.client.get(path).catchError((_) => <String, dynamic>{});
       final results = await Future.wait<dynamic>([
-        widget.client.get('/v1/discovery/home?lat=$latitude&lng=$longitude'),
-        widget.client.get('/v1/merchants?${_merchantQuery()}'),
-        if (widget.client.session != null) widget.client.get('/v1/favorites?lat=$latitude&lng=$longitude'),
-        if (widget.client.session != null) widget.client.get('/v1/search/recent'),
+        safeGet('/v1/discovery/home?lat=$latitude&lng=$longitude'),
+        safeGet('/v1/merchants?${_merchantQuery()}'),
+        if (widget.client.session != null) safeGet('/v1/favorites?lat=$latitude&lng=$longitude'),
+        if (widget.client.session != null) safeGet('/v1/search/recent'),
       ]);
       if (!mounted || generation != _feedGeneration) return;
       final feed = asMap(results[0]);
+      if (feed.isEmpty) throw StateError('Could not load the home feed.');
       final indexOffset = 2;
       setState(() {
         home = feed;
@@ -231,7 +233,7 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     }
     try {
       final result = asMap(await widget.client.get(
-        '/v1/search/suggestions?q=${Uri.encodeQueryComponent(trimmed)}&limit=8',
+        '/v1/search/suggestions?q=${Uri.encodeQueryComponent(trimmed)}&limit=8&lat=$latitude&lng=$longitude',
       ));
       if (!mounted || generation != _suggestionGeneration) return;
       setState(() => suggestions = asList(result['items']));
@@ -255,7 +257,10 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
       setState(() => searchResult = asMap(result));
     } catch (cause) {
       if (mounted && generation == _searchGeneration) {
-        setState(() => searchError = cause.toString());
+        setState(() {
+          searchError = cause.toString();
+          searchResult = <String, dynamic>{};
+        });
       }
     } finally {
       if (mounted && generation == _searchGeneration) setState(() => searchLoading = false);
@@ -306,6 +311,7 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         await widget.client.delete('/v1/favorites/$merchantId');
       }
     } catch (_) {
+      await widget.client.storage.toggleFavoriteMerchant(merchantId);
       if (!mounted) return;
       setState(() {
         if (added) {
@@ -952,9 +958,21 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         const SizedBox(width: 10),
         Expanded(child: _statTile('Open now', stats['openNowCount']?.toString() ?? '—', Icons.bolt_rounded)),
         const SizedBox(width: 10),
-        Expanded(child: _statTile('Delivery', '25-40 min', Icons.delivery_dining_rounded)),
+        Expanded(child: _statTile('Delivery', _deliveryWindow(), Icons.delivery_dining_rounded)),
       ],
     );
+  }
+
+  String _deliveryWindow() {
+    final values = <int>[];
+    for (final merchant in [...featured, ...recommendations]) {
+      for (final key in ['etaMinMinutes', 'etaMaxMinutes']) {
+        final value = (asMap(merchant)[key] as num?)?.toInt();
+        if (value != null) values.add(value);
+      }
+    }
+    if (values.isEmpty) return '—';
+    return '${values.reduce((a, b) => a < b ? a : b)}-${values.reduce((a, b) => a > b ? a : b)} min';
   }
 
   Widget _statTile(String labelText, String value, IconData icon) {
@@ -1294,7 +1312,17 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                   child: ListTile(
                     leading: CircleAvatar(
                       backgroundColor: const Color(0xFFF0EAD9),
-                      child: const Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D), size: 20),
+                      child: product['imageUrl'] != null
+                          ? ClipOval(
+                              child: Image.network(
+                                product['imageUrl'].toString(),
+                                width: 44,
+                                height: 44,
+                                fit: BoxFit.cover,
+                                errorBuilder: (context, error, stack) => const Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D), size: 20),
+                              ),
+                            )
+                          : const Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D), size: 20),
                     ),
                     title: Text(product['displayName']?.toString() ?? 'Item', style: const TextStyle(fontWeight: FontWeight.w700)),
                     subtitle: Text(asMap(product['merchant'])['displayName']?.toString() ?? 'Merchant'),

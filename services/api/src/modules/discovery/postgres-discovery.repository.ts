@@ -1,4 +1,4 @@
-﻿import { Injectable, ServiceUnavailableException } from "@nestjs/common";
+import { Injectable, ServiceUnavailableException } from "@nestjs/common";
 import { Pool } from "pg";
 import { readRuntimeConfig } from "../../config/runtime-config.js";
 import type {
@@ -256,7 +256,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
           sort: input.sort,
           openNow: input.openNow,
           featuredOnly: false,
-          favoritesUserId: null,
+          favoritesUserId: input.favoritesUserId,
           recommendationUserId: null,
           latitude: input.latitude,
           longitude: input.longitude
@@ -284,7 +284,9 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     const suggestions = [...new Set((await this.searchSuggestions({
       citySlug: input.citySlug,
       query: input.query,
-      limit: 6
+      limit: 6,
+      latitude: input.latitude,
+      longitude: input.longitude
     })).map((suggestion) => suggestion.label))].slice(0, 6);
 
     return {
@@ -298,7 +300,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     };
   }
 
-  async searchSuggestions(input: Readonly<{ citySlug: string; query: string; limit: number }>): Promise<readonly SearchSuggestionRecord[]> {
+  async searchSuggestions(input: Readonly<{ citySlug: string; query: string; limit: number; latitude: number | null; longitude: number | null }>): Promise<readonly SearchSuggestionRecord[]> {
     const result = await this.getPool().query<SuggestionRow>(
       `WITH matches AS (
          SELECT 'merchant'::text AS kind, m.display_name AS label,
@@ -312,7 +314,8 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
          FROM merchants m
          WHERE m.status = 'active' AND (m.display_name ILIKE $3 OR m.tags::text ILIKE $3)
            AND EXISTS (SELECT 1 FROM merchant_locations ml JOIN cities c ON c.id = ml.city_id
-                       WHERE ml.merchant_id = m.id AND ml.is_active = true AND c.slug = $1 AND c.is_active = true)
+                       WHERE ml.merchant_id = m.id AND ml.is_active = true AND c.slug = $1 AND c.is_active = true
+                         AND discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km, $7, $6))
          UNION ALL
          SELECT 'product', p.display_name, m.display_name,
                 (SELECT sc.slug FROM merchant_service_categories msc
@@ -322,18 +325,27 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
          FROM products p
          JOIN merchants m ON m.id = p.merchant_id AND m.status = 'active'
          WHERE p.is_available = true AND (p.display_name ILIKE $3 OR p.sku ILIKE $3)
+           AND EXISTS (SELECT 1 FROM merchant_locations ml JOIN cities c ON c.id = ml.city_id
+                       WHERE ml.merchant_id = m.id AND ml.is_active = true AND c.slug = $1 AND c.is_active = true
+                         AND discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km, $7, $6))
          UNION ALL
          SELECT 'service', sc.display_name, COALESCE(sc.description, 'Service'), sc.slug, sc.id::text,
                 similarity(sc.display_name, $2)
          FROM service_categories sc
          WHERE sc.is_active = true AND (sc.display_name ILIKE $3 OR sc.slug ILIKE $3)
+           AND EXISTS (SELECT 1 FROM merchant_service_categories msc
+                       JOIN merchants m ON m.id = msc.merchant_id AND m.status = 'active'
+                       JOIN merchant_locations ml ON ml.merchant_id = m.id AND ml.is_active = true
+                       JOIN cities c ON c.id = ml.city_id AND c.slug = $1 AND c.is_active = true
+                       WHERE msc.service_category_id = sc.id
+                         AND discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km, $7, $6))
        )
        SELECT kind, label, subtitle, category_slug, target_id
        FROM matches
        WHERE label IS NOT NULL
        ORDER BY (label ILIKE $4) DESC, score DESC, label ASC
        LIMIT $5`,
-      [input.citySlug, input.query, `%${escapeLike(input.query)}%`, `${escapeLike(input.query)}%`, input.limit]
+      [input.citySlug, input.query, `%${escapeLike(input.query)}%`, `${escapeLike(input.query)}%`, input.limit, input.longitude, input.latitude]
     );
     return result.rows.map((row) => ({
       type: row.kind,
@@ -398,7 +410,8 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
   }
 
   async getHome(input: Readonly<{ citySlug: string; userId: string | null; latitude: number | null; longitude: number | null }>): Promise<DiscoveryHomeRecord> {
-    const categories = await this.availableCategories(input.citySlug, input.latitude, input.longitude);
+    const categories = (await this.availableCategories(input.citySlug, input.latitude, input.longitude))
+      .filter((category) => category.merchantCount > 0);
     const banners = await this.listBanners();
     const offers = await this.listOffers(input);
     const featuredResult = await this.listMerchants({
@@ -433,8 +446,8 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     const recommendations = recommendationResult.items.filter((merchant) => !featuredIds.has(merchant.id)).slice(0, 8);
     const [popularProducts, recentlyOrdered, recentlyOrderedProducts, stats] = await Promise.all([
       this.listPopularProducts(input.citySlug, input.latitude, input.longitude),
-      input.userId ? this.listRecentlyOrdered(input.userId) : Promise.resolve([]),
-      input.userId ? this.listRecentlyOrderedProducts(input.userId) : Promise.resolve([]),
+      input.userId ? this.listRecentlyOrdered(input.userId, input.citySlug, input.latitude, input.longitude) : Promise.resolve([]),
+      input.userId ? this.listRecentlyOrderedProducts(input.userId, input.citySlug, input.latitude, input.longitude) : Promise.resolve([]),
       this.homeStats(input.citySlug, input.latitude, input.longitude)
     ]);
     return {
@@ -470,7 +483,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     }));
   }
 
-  private async listRecentlyOrderedProducts(userId: string): Promise<readonly SearchProductRecord[]> {
+  private async listRecentlyOrderedProducts(userId: string, citySlug: string, latitude: number | null, longitude: number | null): Promise<readonly SearchProductRecord[]> {
     const result = await this.getPool().query<SearchProductRow>(
       `SELECT p.id, p.merchant_id, p.sku, p.display_name, p.description, p.image_url, p.base_price_minor, p.currency, p.is_available, i.quantity_available,
               catalog_stock_state(p.is_available, i.quantity_available) AS stock_state,
@@ -480,13 +493,19 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
        JOIN orders o ON o.id = oi.order_id AND o.user_id = $1 AND o.status NOT IN ('CANCELLED', 'REFUNDED')
        JOIN products p ON p.id = oi.product_id AND p.is_available = true
        JOIN merchants m ON m.id = p.merchant_id AND m.status = 'active'
+       JOIN LATERAL (
+         SELECT ml.* FROM merchant_locations ml JOIN cities c ON c.id = ml.city_id
+         WHERE ml.merchant_id = m.id AND ml.is_active = true AND c.slug = $2 AND c.is_active = true
+         ORDER BY ${this.branchOrder(latitude, longitude)} LIMIT 1
+       ) ml ON true
        LEFT JOIN inventory i ON i.product_id = p.id
-       WHERE i.quantity_available IS NULL OR i.quantity_available > 0
+       WHERE (i.quantity_available IS NULL OR i.quantity_available > 0)
+         AND discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km, $4, $3)
        GROUP BY p.id, p.merchant_id, p.sku, p.display_name, p.description, p.image_url, p.base_price_minor, p.currency, p.is_available,
                 i.quantity_available, m.slug, m.display_name, m.logo_url, m.cover_image_url, m.rating
        ORDER BY max(o.created_at) DESC
        LIMIT 8`,
-      [userId]
+      [userId, citySlug, longitude, latitude]
     );
     return result.rows.map(mapSearchProduct);
   }
@@ -558,20 +577,26 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     return [...unique.values()].map(mapSearchProduct);
   }
 
-  private async listRecentlyOrdered(userId: string): Promise<readonly RecentlyOrderedRecord[]> {
+  private async listRecentlyOrdered(userId: string, citySlug: string, latitude: number | null, longitude: number | null): Promise<readonly RecentlyOrderedRecord[]> {
     const result = await this.getPool().query<RecentOrderRow>(
       `SELECT o.id, o.order_number, o.status, o.created_at,
               m.id AS merchant_id, m.slug AS merchant_slug, m.display_name AS merchant_name,
               m.logo_url AS merchant_logo_url, m.cover_image_url AS merchant_cover_image_url,
               json_agg(json_build_object('displayName', oi.display_name, 'quantity', oi.quantity) ORDER BY oi.display_name) AS items
        FROM orders o
-       JOIN merchants m ON m.id = o.merchant_id
+       JOIN merchants m ON m.id = o.merchant_id AND m.status = 'active'
+       JOIN LATERAL (
+         SELECT ml.* FROM merchant_locations ml JOIN cities c ON c.id = ml.city_id
+         WHERE ml.merchant_id = m.id AND ml.is_active = true AND c.slug = $2 AND c.is_active = true
+         ORDER BY ${this.branchOrder(latitude, longitude)} LIMIT 1
+       ) ml ON true
        JOIN order_items oi ON oi.order_id = o.id
        WHERE o.user_id = $1 AND o.status NOT IN ('CANCELLED', 'REFUNDED')
+         AND discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km, $4, $3)
        GROUP BY o.id, o.order_number, o.status, o.created_at, m.id, m.slug, m.display_name, m.logo_url, m.cover_image_url
        ORDER BY o.created_at DESC
        LIMIT 5`,
-      [userId]
+      [userId, citySlug, longitude, latitude]
     );
     return result.rows.map((row) => ({
       orderId: row.id,
@@ -1018,7 +1043,7 @@ function orderBy(sort: MerchantSort): string {
     case "rating":
       return "m.rating DESC, m.rating_count DESC, distance_km ASC NULLS LAST";
     case "eta":
-      return "m.eta_max_minutes ASC, distance_km ASC NULLS LAST";
+      return "eta_max_minutes ASC, eta_min_minutes ASC, distance_km ASC NULLS LAST";
     case "name":
       return "m.display_name ASC";
     default:

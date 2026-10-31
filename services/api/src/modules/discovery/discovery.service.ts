@@ -33,8 +33,10 @@ export type SearchQueryInput = Readonly<{
   offset?: number | undefined;
   sort?: string | undefined;
   openNow?: boolean | undefined;
+  favoritesOnly?: boolean | undefined;
   latitude?: number | undefined;
   longitude?: number | undefined;
+  userId?: string | undefined;
 }>;
 
 @Injectable()
@@ -105,6 +107,7 @@ export class DiscoveryService {
     const type = SEARCH_TYPES.includes(input.type as (typeof SEARCH_TYPES)[number])
       ? (input.type as SearchInput["type"])
       : "all";
+    if (input.favoritesOnly && !input.userId) throw new UnauthorizedException("Sign in to search your favorites.");
     return this.repository.search({
       citySlug: this.config.launchCitySlug,
       query,
@@ -114,12 +117,14 @@ export class DiscoveryService {
       offset: clampOffset(input.offset),
       sort: parseSort(input.sort),
       openNow: input.openNow === true,
+      favoritesUserId: input.favoritesOnly === true ? input.userId ?? null : null,
       latitude: parseCoordinate(input.latitude, 90),
       longitude: parseCoordinate(input.longitude, 180)
     });
   }
 
   async suggestions(input: SearchQueryInput & Readonly<{ userId?: string | undefined }>) {
+    validateLocation(input.latitude, input.longitude);
     const query = normalizeQuery(input.q);
     const userId = input.userId ?? null;
     const recent = userId ? await this.repository.listRecentSearches(userId, 8) : [];
@@ -133,7 +138,9 @@ export class DiscoveryService {
     const items = await this.repository.searchSuggestions({
       citySlug: this.config.launchCitySlug,
       query,
-      limit: clampLimit(input.limit ?? 8)
+      limit: clampLimit(input.limit ?? 8),
+      latitude: parseCoordinate(input.latitude, 90),
+      longitude: parseCoordinate(input.longitude, 180)
     });
     const matchingRecent = recent
       .map((item) => item.term)
