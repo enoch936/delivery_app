@@ -14,20 +14,21 @@ class LoyaltyScreen extends StatefulWidget {
 
 class _LoyaltyScreenState extends State<LoyaltyScreen> {
   Map<String, dynamic>? _account;
+  List<Map<String, dynamic>> _rewards = [];
   bool loading = true;
   bool redeeming = false;
   String? _error;
-  final TextEditingController _pointsController = TextEditingController();
+  String? _selectedRewardId;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _loadRewards();
   }
 
   @override
   void dispose() {
-    _pointsController.dispose();
     super.dispose();
   }
 
@@ -46,21 +47,28 @@ class _LoyaltyScreenState extends State<LoyaltyScreen> {
     }
   }
 
-  Future<void> _redeem() async {
-    final points = int.tryParse(_pointsController.text.trim());
-    if (points == null || points < 1) {
-      setState(() => _error = 'Enter the number of points you want to redeem.');
-      return;
+  Future<void> _loadRewards() async {
+    try {
+      final result = asMap(await widget.client.get('/v1/loyalty/rewards'));
+      final items = asList(result['items']);
+      if (mounted) setState(() => _rewards = items.map((item) => Map<String, dynamic>.from(item)).toList());
+    } catch (cause) {
+      if (mounted) setState(() => _error = cause.toString());
     }
+  }
+
+  Future<void> _redeemReward(Map<String, dynamic> reward) async {
+    final rewardId = reward['id']?.toString();
+    if (rewardId == null) return;
     setState(() {
       redeeming = true;
       _error = null;
     });
     try {
-      final result = asMap(await widget.client.post('/v1/loyalty/redeem', {'points': points}));
-      _pointsController.clear();
+      final result = asMap(await widget.client.post('/v1/loyalty/rewards/redeem', {'rewardId': rewardId}));
       await _load();
-      if (mounted) showAccountMessage(context, 'Redeemed ${(result['redeemed'] as num?)?.toInt() ?? points} points. Remaining balance: ${(result['balance'] as num?)?.toInt() ?? 0}.');
+      await _loadRewards();
+      if (mounted) showAccountMessage(context, 'Redeemed ${reward['title']}. Remaining balance: ${(result['balance'] as num?)?.toInt() ?? 0}.');
     } catch (cause) {
       if (mounted) setState(() => _error = cause.toString());
     } finally {
@@ -76,7 +84,10 @@ class _LoyaltyScreenState extends State<LoyaltyScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Loyalty rewards')),
       body: RefreshIndicator(
-        onRefresh: _load,
+        onRefresh: () async {
+          await _load();
+          await _loadRewards();
+        },
         child: loading
             ? const AccountLoading()
             : _error != null
@@ -138,26 +149,69 @@ class _LoyaltyScreenState extends State<LoyaltyScreen> {
                       ),
                     ),
                   const SizedBox(height: 20),
-                  Text('Redeem rewards', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+                  Text('Redeemable rewards', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
                   const SizedBox(height: 10),
-                  TextField(
-                    controller: _pointsController,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Points to redeem', border: OutlineInputBorder()),
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton(
-                    onPressed: redeeming ? null : _redeem,
-                    child: redeeming
-                        ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Text('Redeem points'),
-                  ),
-                  if (_error != null) ...[
-                    const SizedBox(height: 12),
-                    Text(_error!, style: const TextStyle(color: Color(0xFFA63A32), fontSize: 13)),
-                  ],
+                  if (_rewards.isEmpty)
+                    const AccountEmpty(
+                      icon: Icons.card_giftcard_outlined,
+                      title: 'No rewards available right now',
+                      message: 'New rewards appear here once the merchant publishes them.',
+                    )
+                  else
+                    ..._rewards.map((reward) => _buildRewardCard(context, reward, points)),
                 ],
               ),
+      ),
+    );
+  }
+
+  Widget _buildRewardCard(BuildContext context, Map<String, dynamic> reward, int points) {
+    final rewardId = reward['id']?.toString() ?? '';
+    final title = reward['title']?.toString() ?? 'Reward';
+    final description = reward['description']?.toString() ?? '';
+    final pointsCost = (reward['pointsCost'] as num?)?.toInt() ?? 0;
+    final rewardValueMinor = (reward['rewardValueMinor'] as num?)?.toInt() ?? 0;
+    final currency = reward['currency']?.toString() ?? 'ETB';
+    final stock = (reward['stock'] as num?)?.toInt() ?? 0;
+    final affordable = points >= pointsCost;
+    final selected = _selectedRewardId == rewardId;
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(title, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+                ),
+                if (!affordable)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(color: const Color(0xFFF7E8E4), borderRadius: BorderRadius.circular(999)),
+                    child: Text('${pointsCost - points} more pts', style: const TextStyle(color: Color(0xFFA63A32), fontSize: 11, fontWeight: FontWeight.w800)),
+                  ),
+              ],
+            ),
+            if (description.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(description, style: const TextStyle(color: Color(0xFF6B7468), fontSize: 13)),
+            ],
+            const SizedBox(height: 10),
+            Text('$pointsCost pts · value $rewardValueMinor $currency', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
+            const SizedBox(height: 4),
+            Text('Stock: $stock', style: const TextStyle(color: Color(0xFF6B7468), fontSize: 12)),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: redeeming || selected || stock <= 0 || !affordable ? null : () => _redeemReward(reward),
+              child: redeeming && selected
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                  : Text(stock > 0 && affordable ? 'Redeem reward' : stock > 0 ? 'Not enough points' : 'Out of stock'),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -14,12 +14,12 @@ Account is a hub with dedicated screens:
 - Preferences (English/Amharic, accessibility: text scale, reduce motion, high contrast, screen-reader hints)
 - Help & support, sign out
 - Support tickets (history, new ticket, thread with replies)
-- Loyalty rewards (balance, tier, points activity, redemption)
-- Referrals (referral code, copy/share, referral history)
+- Loyalty rewards (balance, tier, points activity, redeemable rewards catalog, redemption)
+- Referrals (referral code, copy/share, referral history, expiry handling)
 
 Support tickets: `Help & support (info) → Support tickets (history, new ticket, thread with replies)`. Order-specific help also reaches the support team through the order chat, refund requests and issue reports surfaced in the order detail experience.
 
-Discovery and catalogue coverage: home feed, category browsing, full-text/typed search, typeahead suggestions, recents, merchant + product favorites (`GET|POST|DELETE /v1/favorites[...]`), open-now/favorites/sort filters, personalized recommendations and offers. Loyalty points are awarded to customers when a delivery completes; referrals credit both the referrer and the referred customer.
+Discovery and catalogue coverage: home feed, category browsing, full-text/typed search, typeahead suggestions, recents, merchant + product favorites (`GET|POST|DELETE /v1/favorites[...]`), open-now/favorites/sort filters, personalized recommendations and offers. Loyalty points are awarded to customers when a delivery completes; the redeemable rewards catalog (`loyalty_rewards`) exposes point-priced rewards to the customer, redemption debits the wallet and records a `loyalty_redemptions` row; referrals credit both the referrer and the referred customer and carry a 30-day expiry window (`referral_codes.expires_at`).
 
 Session, locale and accessibility settings persist locally (`AppStorage`); accessibility overrides the app-wide `MediaQuery` (text scaling, animations, contrast) and syncs to `user_profiles`. Base URL is supplied with `--dart-define=API_BASE_URL`.
 

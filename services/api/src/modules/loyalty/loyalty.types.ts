@@ -39,3 +39,30 @@ export type ReferralQuoteRecord = Readonly<{
   referrerUserId: string;
   rewardPoints: number;
 }>;
+
+export type LoyaltyRewardRecord = Readonly<{
+  id: string;
+  code: string;
+  title: string;
+  description: string;
+  pointsCost: number;
+  rewardValueMinor: number;
+  currency: string;
+  stock: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}>;
+
+export type LoyaltyRedemptionStatus = "PENDING" | "REDEEMED" | "CANCELLED" | "EXPIRED";
+
+export type LoyaltyRedemptionRecord = Readonly<{
+  id: string;
+  userId: string;
+  rewardId: string;
+  rewardCode: string;
+  points: number;
+  status: LoyaltyRedemptionStatus;
+  createdAt: string;
+  decidedAt: string | null;
+}>;
