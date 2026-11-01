@@ -50,6 +50,7 @@ export type CheckoutQuoteRecord = Readonly<{
   fulfillment: QuoteFulfillment;
   lines: readonly QuoteLine[];
   breakdown: QuoteBreakdown;
+  deliveryInstructions: string | null;
   promotionCode: string | null;
   expiresAt: string;
   createdAt: string;

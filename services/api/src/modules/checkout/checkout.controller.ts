@@ -13,6 +13,7 @@ class CreateQuoteDto {
   @IsOptional() @IsUUID() pickupLocationId?: string;
   @IsOptional() @IsString() @Length(3, 40) @Matches(/^[A-Za-z0-9-]+$/) promotionCode?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(1_000_000) tipMinor?: number;
+  @IsOptional() @IsString() @Length(0, 500) deliveryInstructions?: string;
   @IsOptional() @IsISO8601() scheduledFor?: string;
 }
 

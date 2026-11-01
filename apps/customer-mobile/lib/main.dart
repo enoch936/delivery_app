@@ -2803,13 +2803,18 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   final addressController = TextEditingController();
   final instructionsController = TextEditingController();
   final promoController = TextEditingController();
+  final orderInstructionsController = TextEditingController();
 
   int tipMinor = 0;
   String? appliedPromoCode;
+  String? paymentMethod;
+  late final String _orderKey;
+  List<Map<String, dynamic>> payments = [];
 
   @override
   void initState() {
     super.initState();
+    _orderKey = 'mobile-${DateTime.now().microsecondsSinceEpoch}-${identityHashCode(this)}';
     _loadAddresses();
     _loadMerchant();
   }
@@ -2858,6 +2863,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     addressController.dispose();
     instructionsController.dispose();
     promoController.dispose();
+    orderInstructionsController.dispose();
     super.dispose();
   }
 
@@ -2932,9 +2938,17 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         if (fulfillmentType == 'pickup') 'pickupLocationId': pickupLocationId,
         if (scheduledFor != null) 'scheduledFor': scheduledFor!.toUtc().toIso8601String(),
         'tipMinor': tipMinor,
-        if (appliedPromoCode != null && appliedPromoCode!.isNotEmpty) 'promoCode': appliedPromoCode,
+        if (orderInstructionsController.text.trim().isNotEmpty)
+          'deliveryInstructions': orderInstructionsController.text.trim(),
+        if (appliedPromoCode != null && appliedPromoCode!.isNotEmpty) 'promotionCode': appliedPromoCode,
       });
-      if (mounted) setState(() => quote = asMap(result));
+      if (mounted) {
+        setState(() {
+          quote = asMap(result);
+          final provider = asMap(asMap(result)['breakdown'])['paymentProvider']?.toString();
+          paymentMethod ??= provider == null || provider == 'disabled' ? 'cash' : provider;
+        });
+      }
     } catch (cause) {
       if (mounted) setState(() => error = cause.toString());
     } finally {
@@ -2953,7 +2967,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       final result = asMap(await widget.client.postQueued(
         '/v1/orders',
         {'quoteId': currentQuote['quoteId']},
-        {'Idempotency-Key': 'mobile-${DateTime.now().microsecondsSinceEpoch}'},
+        {'Idempotency-Key': _orderKey},
       ));
       if (!mounted) return;
       if (result['queued'] == true) {
@@ -2961,10 +2975,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           SnackBar(content: Text(AppLocalizations.of(context).savedOffline)),
         );
       } else {
-        setState(() {
-          order = result;
-          quote = null;
-        });
+        setState(() => order = result);
+        if (result['status'] == 'AWAITING_PAYMENT' && paymentMethod != null) {
+          await _pay(paymentMethod!);
+        }
       }
     } catch (cause) {
       if (mounted) setState(() => error = cause.toString());
@@ -2984,6 +2998,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       final payment = asMap(await widget.client.post(
         '/v1/payments/orders/${currentOrder['id']}/initiate',
         {'method': method},
+        {'Idempotency-Key': 'mobile-${currentOrder['id']}-$method'},
       ));
       if (method == 'sandbox') {
         await widget.client.post(
@@ -2991,7 +3006,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           {'outcome': 'succeeded'},
         );
       }
-      if (method == 'stripe' || method == 'telebirr') {
+      if (method == 'stripe' || method == 'telebirr' || method == 'chapa') {
         final checkoutUrl = payment['checkoutUrl']?.toString();
         if (checkoutUrl == null || checkoutUrl.isEmpty) {
           throw StateError('The payment provider did not return a checkout URL.');
@@ -3008,6 +3023,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       }
       final refreshed = await widget.client.get('/v1/orders/${currentOrder['id']}');
       if (mounted) setState(() => order = asMap(refreshed));
+      await _loadPayments(currentOrder['id'].toString());
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(method == 'cash' ? 'Cash payment selected. Pay the courier on delivery.' : 'Sandbox payment completed.')),
@@ -3016,6 +3032,16 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       if (mounted) setState(() => error = cause.toString());
     } finally {
       if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> _loadPayments(String orderId) async {
+    try {
+      final result = await widget.client.get('/v1/payments/orders/$orderId');
+      if (!mounted) return;
+      setState(() => payments = asList(asMap(result)['items']));
+    } catch (_) {
+      // Payment history is supplementary to the order confirmation.
     }
   }
 
@@ -3029,6 +3055,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     try {
       final refreshed = await widget.client.get('/v1/orders/${currentOrder['id']}');
       if (mounted) setState(() => order = asMap(refreshed));
+      await _loadPayments(currentOrder['id'].toString());
     } catch (cause) {
       if (mounted) setState(() => error = cause.toString());
     } finally {
@@ -3176,7 +3203,79 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               ],
             ),
           ],
-          const SizedBox(height: 22),
+          const SizedBox(height: 18),
+          Text('Promotion, tip and notes', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: promoController,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: InputDecoration(
+                    labelText: 'Promo code',
+                    hintText: 'WELCOME20',
+                    suffixIcon: appliedPromoCode == null
+                        ? null
+                        : IconButton(
+                            tooltip: 'Remove promo code',
+                            onPressed: busy
+                                ? null
+                                : () => setState(() {
+                                      promoController.clear();
+                                      appliedPromoCode = null;
+                                      quote = null;
+                                    }),
+                            icon: const Icon(Icons.close),
+                          ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.tonal(
+                onPressed: busy
+                    ? null
+                    : () => setState(() {
+                          final code = promoController.text.trim().toUpperCase();
+                          appliedPromoCode = code.isEmpty ? null : code;
+                          quote = null;
+                        }),
+                child: const Text('Apply'),
+              ),
+            ],
+          ),
+          if (appliedPromoCode != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text('Promo $appliedPromoCode will be validated in the total.',
+                  style: const TextStyle(fontSize: 11, color: Color(0xFF2F6B4F))),
+            ),
+          const SizedBox(height: 12),
+          Text('Courier tip', style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 8,
+            children: [0, 1000, 2000, 3000, 5000]
+                .map((amount) => ChoiceChip(
+                      label: Text(amount == 0 ? 'No tip' : 'ETB ${amount ~/ 100}'),
+                      selected: tipMinor == amount,
+                      onSelected: (_) => setState(() {
+                        tipMinor = amount;
+                        quote = null;
+                      }),
+                    ))
+                .toList(),
+          ),
+          if (fulfillmentType == 'delivery') ...[
+            const SizedBox(height: 12),
+            TextField(
+              controller: orderInstructionsController,
+              maxLength: 500,
+              decoration: const InputDecoration(labelText: 'Delivery instructions (optional)'),
+              onChanged: (_) => setState(() => quote = null),
+            ),
+          ],
+          const SizedBox(height: 16),
           if (quote == null)
             FilledButton(
               onPressed: busy || (fulfillmentType == 'delivery' ? selectedAddress == null : pickupLocationId == null)
@@ -3268,6 +3367,20 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           ),
         ),
         const SizedBox(height: 14),
+        Text('Payment method', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: _paymentOptions(breakdown).entries
+              .map((entry) => ChoiceChip(
+                    label: Text(entry.value),
+                    selected: paymentMethod == entry.key,
+                    onSelected: (_) => setState(() => paymentMethod = entry.key),
+                  ))
+              .toList(),
+        ),
+        const SizedBox(height: 14),
         FilledButton(
           onPressed: busy ? null : _placeOrder,
           child: Text(busy ? 'Placing order…' : 'Place order'),
@@ -3279,6 +3392,21 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         ),
       ],
     );
+  }
+
+  Map<String, String> _paymentOptions(Map<String, dynamic> breakdown) {
+    final provider = breakdown['paymentProvider']?.toString();
+    return {
+      'cash': 'Cash on delivery',
+      if (provider != null && provider != 'disabled' && provider != 'cash')
+        provider: switch (provider) {
+          'sandbox' => 'Sandbox card',
+          'stripe' => 'Card (Stripe)',
+          'telebirr' => 'Telebirr',
+          'chapa' => 'Chapa',
+          _ => provider,
+        },
+    };
   }
 
   Widget _paymentTile({
@@ -3350,34 +3478,41 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           if (awaitingPayment) ...[
             Text('Select Payment Method', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
             const SizedBox(height: 10),
-            _paymentTile(
-              icon: Icons.money_rounded,
-              title: 'Cash on Delivery',
-              subtitle: 'Pay the courier when your order arrives',
-              color: const Color(0xFF2F6B4F),
-              onTap: busy ? null : () => _pay('cash'),
+            ..._paymentOptions(asMap(quote?['breakdown'])).entries.map(
+              (entry) => _paymentTile(
+                icon: switch (entry.key) {
+                  'cash' => Icons.money_rounded,
+                  'telebirr' => Icons.phone_android_rounded,
+                  'stripe' => Icons.credit_card_rounded,
+                  'sandbox' => Icons.science_outlined,
+                  _ => Icons.account_balance_wallet_outlined,
+                },
+                title: entry.value,
+                subtitle: switch (entry.key) {
+                  'cash' => 'Pay the courier when your order arrives',
+                  'telebirr' => 'Instant mobile payment via Telebirr',
+                  'stripe' => 'Pay securely with Visa or Mastercard',
+                  'sandbox' => 'Simulate an instant payment',
+                  _ => 'Complete payment in the provider checkout',
+                },
+                color: switch (entry.key) {
+                  'cash' => const Color(0xFF2F6B4F),
+                  'telebirr' => const Color(0xFF1E88E5),
+                  'stripe' => const Color(0xFF6772E5),
+                  _ => const Color(0xFFE8613D),
+                },
+                onTap: busy ? null : () => _pay(entry.key),
+              ),
             ),
-            _paymentTile(
-              icon: Icons.phone_android_rounded,
-              title: 'Telebirr Mobile Wallet',
-              subtitle: 'Instant mobile payment via Telebirr H5',
-              color: const Color(0xFF1E88E5),
-              onTap: busy ? null : () => _pay('telebirr'),
-            ),
-            _paymentTile(
-              icon: Icons.credit_card_rounded,
-              title: 'Credit / Debit Card',
-              subtitle: 'Pay securely with Visa or Mastercard via Stripe',
-              color: const Color(0xFF6772E5),
-              onTap: busy ? null : () => _pay('stripe'),
-            ),
-            _paymentTile(
-              icon: Icons.science_outlined,
-              title: 'Sandbox Test Payment',
-              subtitle: 'Simulate instant payment for development',
-              color: const Color(0xFFE8613D),
-              onTap: busy ? null : () => _pay('sandbox'),
-            ),
+            if (payments.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  'Latest payment: ${label(payments.first['status']?.toString())}'
+                  '${payments.first['failureReason'] == null ? '' : ' · ${payments.first['failureReason']}'}',
+                  style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468)),
+                ),
+              ),
             const SizedBox(height: 12),
             Center(
               child: TextButton.icon(
@@ -3387,6 +3522,39 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               ),
             ),
           ],
+          const SizedBox(height: 16),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Receipt', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 10),
+                  _amountRow('Items', totals['itemsSubtotalMinor'] as num?, current['currency']?.toString()),
+                  _amountRow('Delivery', totals['deliveryFeeMinor'] as num?, current['currency']?.toString()),
+                  _amountRow('Service fee', totals['serviceFeeMinor'] as num?, current['currency']?.toString()),
+                  if ((totals['discountMinor'] as num? ?? 0) > 0)
+                    _amountRow('Discount', -(totals['discountMinor'] as num), current['currency']?.toString()),
+                  _amountRow('Tax', totals['taxMinor'] as num?, current['currency']?.toString()),
+                  if ((totals['tipMinor'] as num? ?? 0) > 0)
+                    _amountRow('Courier tip', totals['tipMinor'] as num?, current['currency']?.toString()),
+                  const Divider(height: 22),
+                  _amountRow('Total', totals['totalMinor'] as num?, current['currency']?.toString(), bold: true),
+                  if (current['deliveryInstructions'] != null) ...[
+                    const SizedBox(height: 10),
+                    Text('Instructions: ${current['deliveryInstructions']}',
+                        style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468))),
+                  ],
+                  if (current['scheduledFor'] != null) ...[
+                    const SizedBox(height: 6),
+                    Text('Scheduled: ${formatSchedule(DateTime.parse(current['scheduledFor'].toString()))}',
+                        style: const TextStyle(fontSize: 12, color: Color(0xFF2E7D32))),
+                  ],
+                ],
+              ),
+            ),
+          ),
           const SizedBox(height: 16),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),

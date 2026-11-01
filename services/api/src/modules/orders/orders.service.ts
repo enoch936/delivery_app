@@ -90,6 +90,7 @@ type QuoteRow = {
   fulfillment_type: "delivery" | "pickup";
   scheduled_for: Date | null;
   pickup_location_id: string | null;
+  delivery_instructions: string | null;
   currency: string;
   items_subtotal_minor: string;
   delivery_fee_minor: string;
@@ -229,7 +230,7 @@ export class OrdersService {
           "MERCHANT_DELIVERY", initialStatus, quote.currency,
           quote.items_subtotal_minor, quote.delivery_fee_minor, quote.service_fee_minor, quote.discount_minor, quote.total_minor,
           input.idempotencyKey, quote.tip_minor, quote.tax_minor,
-          paymentRequired ? "PENDING" : "UNPAID", snapshot?.deliveryInstructions ?? null, snapshot?.latitude ?? null, snapshot?.longitude ?? null,
+          paymentRequired ? "PENDING" : "UNPAID", quote.delivery_instructions ?? snapshot?.deliveryInstructions ?? null, snapshot?.latitude ?? null, snapshot?.longitude ?? null,
           snapshot ? JSON.stringify(snapshot) : null, merchant.display_name,
           quote.scheduled_for, quote.distance_meters, quote.delivery_estimate_minutes, this.config.deliveryProofOtpRequired, quote.promotion_id,
           quote.fulfillment_type ?? "delivery", isPickup ? quote.pickup_location_id : null

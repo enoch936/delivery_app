@@ -42,6 +42,7 @@ type MerchantRow = {
   is_available: boolean;
   eta_min_minutes: number;
   eta_max_minutes: number;
+  delivery_fee_minor: string;
   supports_pickup: boolean;
   allows_scheduling: boolean;
   min_schedule_lead_minutes: number;
@@ -60,6 +61,7 @@ export type CreateQuoteInput = Readonly<{
   promotionCode?: string;
   tipMinor?: number;
   scheduledFor?: string;
+  deliveryInstructions?: string | null;
 }>;
 
 @Injectable()
@@ -79,6 +81,7 @@ export class CheckoutService {
       throw new BadRequestException("Choose the store you will collect from.");
     }
     const scheduledFor = parseScheduledFor(input.scheduledFor);
+    const deliveryInstructions = input.deliveryInstructions?.trim().slice(0, 500) || null;
 
     const cartResult = await this.database.query<{ id: string; merchant_id: string }>(
       "SELECT id, merchant_id FROM carts WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1",
@@ -196,7 +199,7 @@ export class CheckoutService {
     const delivery = fulfillmentType === "delivery" && merchant.distance_meters !== null
       ? calculateDeliveryPrice({
           rule: {
-            baseFeeMinor: BigInt(pricing?.base_delivery_fee_minor ?? this.config.deliveryFeeMinor.toString()),
+            baseFeeMinor: BigInt(pricing?.base_delivery_fee_minor ?? merchant.delivery_fee_minor ?? this.config.deliveryFeeMinor.toString()),
             perKilometerMinor: BigInt(pricing?.per_km_fee_minor ?? "0"),
             minimumFeeMinor: BigInt(pricing?.minimum_delivery_fee_minor ?? "0"),
             maximumFeeMinor: BigInt(pricing?.maximum_delivery_fee_minor ?? "1000000"),
@@ -232,15 +235,15 @@ export class CheckoutService {
          user_id, merchant_id, delivery_address_id, currency, items_subtotal_minor, delivery_fee_minor,
          service_fee_minor, discount_minor, total_minor, line_items, expires_at, tip_minor, tax_minor,
          distance_meters, distance_source, delivery_estimate_minutes, promotion_id, pricing_rule_id, service_category_slug,
-         fulfillment_type, scheduled_for, pickup_location_id
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'straight_line',$15,$16,$17,$18,$19,$20,$21)
+         fulfillment_type, scheduled_for, pickup_location_id, delivery_instructions
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'straight_line',$15,$16,$17,$18,$19,$20,$21,$22)
        RETURNING id, created_at`,
       [
         input.userId, merchant.id, fulfillmentType === "delivery" ? input.deliveryAddressId : null, currency, itemsSubtotalMinor,
         deliveryFeeMinor, serviceFeeMinor, discountMinor, totalMinor,
         JSON.stringify(lineItemsJson), expiresAt, tipMinor, taxMinor, distanceMeters,
         estimateMinutes, promotion?.id ?? null, pricing?.id ?? null, merchant.category_slug,
-        fulfillmentType, scheduledFor, fulfillmentType === "pickup" ? merchant.pickup_location_id : null
+        fulfillmentType, scheduledFor, fulfillmentType === "pickup" ? merchant.pickup_location_id : null, deliveryInstructions
       ]
     );
     const created = result.rows[0];
@@ -280,6 +283,7 @@ export class CheckoutService {
         paymentProvider: this.config.paymentsProvider,
         paymentRequired: this.config.paymentsProvider !== "disabled"
       },
+      deliveryInstructions,
       promotionCode: promotion?.code ?? null,
       expiresAt: expiresAt.toISOString(),
       createdAt: created.created_at.toISOString(),
@@ -304,7 +308,7 @@ export class CheckoutService {
                 m.eta_min_minutes, m.eta_max_minutes))[1] AS eta_min_minutes,
               (discovery_eta(ST_DistanceSphere(ml.location::geometry, ca.location::geometry)::float8 / 1000.0,
                 m.eta_min_minutes, m.eta_max_minutes))[2] AS eta_max_minutes,
-              m.supports_pickup, m.allows_scheduling, m.min_schedule_lead_minutes, m.max_schedule_days,
+              m.supports_pickup, m.allows_scheduling, m.min_schedule_lead_minutes, m.max_schedule_days, m.delivery_fee_minor,
               NULL::uuid AS pickup_location_id, NULL::text AS pickup_location_name, NULL::text AS pickup_address_line
        FROM carts c
        JOIN merchants m ON m.id = c.merchant_id
@@ -329,7 +333,7 @@ export class CheckoutService {
               true AS is_available,
               (discovery_eta(0::float8, m.eta_min_minutes, m.eta_max_minutes))[1] AS eta_min_minutes,
               (discovery_eta(0::float8, m.eta_min_minutes, m.eta_max_minutes))[2] AS eta_max_minutes,
-              m.supports_pickup, m.allows_scheduling, m.min_schedule_lead_minutes, m.max_schedule_days,
+              m.supports_pickup, m.allows_scheduling, m.min_schedule_lead_minutes, m.max_schedule_days, m.delivery_fee_minor,
               ml.id AS pickup_location_id, ml.name AS pickup_location_name, ml.address_line AS pickup_address_line
        FROM carts c
        JOIN merchants m ON m.id = c.merchant_id

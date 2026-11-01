@@ -76,6 +76,7 @@ export class PaymentsService {
       if (!order) throw new NotFoundException("Order not found.");
       if (order.payment_status === "PAID") throw new ConflictException("This order is already paid.");
       if (order.status !== "AWAITING_PAYMENT" && order.status !== "CONFIRMED") throw new ConflictException("This order is not awaiting payment.");
+      await client.query("UPDATE payments SET status = 'EXPIRED', updated_at = now() WHERE order_id = $1 AND status = 'PENDING' AND expires_at IS NOT NULL AND expires_at < now()", [order.id]);
       let cashPaymentId: string | null = null;
       if (method === "cash") {
         const existingCash = await client.query<{ id: string }>("SELECT id FROM payments WHERE order_id = $1 AND provider = 'cash' AND status = 'PENDING' LIMIT 1", [order.id]);
@@ -125,6 +126,7 @@ export class PaymentsService {
   }
 
   async get(userId: string, paymentId: string) {
+    await this.expirePending(userId);
     const result = await this.database.query<PaymentRow>("SELECT * FROM payments WHERE id = $1 AND user_id = $2", [paymentId, userId]);
     const row = result.rows[0];
     if (!row) throw new NotFoundException("Payment not found.");
@@ -132,8 +134,16 @@ export class PaymentsService {
   }
 
   async listForOrder(userId: string, orderId: string) {
+    await this.expirePending(userId, orderId);
     const result = await this.database.query<PaymentRow>("SELECT * FROM payments WHERE order_id = $1 AND user_id = $2 ORDER BY created_at DESC", [orderId, userId]);
     return { items: result.rows.map((row) => this.toPaymentView(row)) };
+  }
+
+  private async expirePending(userId: string, orderId?: string): Promise<void> {
+    await this.database.query(
+      "UPDATE payments SET status = 'EXPIRED', updated_at = now() WHERE user_id = $1 AND status = 'PENDING' AND expires_at IS NOT NULL AND expires_at < now() AND ($2::uuid IS NULL OR order_id = $2)",
+      [userId, orderId ?? null]
+    );
   }
 
   async sandboxComplete(userId: string, paymentId: string, outcome: "succeeded" | "failed", requestId: string | null): Promise<void> {
