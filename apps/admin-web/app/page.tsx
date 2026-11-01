@@ -5,6 +5,7 @@ import {
   api, downloadCsv, loadSession, logout, money, requestOtp, saveSession, shortDate,
   verifyOtp, type Session
 } from "../lib/api";
+import { FloatingCategoryBar, FloatingDock, FloatingNav, type FloatingItem } from "./floating-bar";
 
 type Dashboard = {
   ordersToday: number; gmvTodayMinor: number; activeOrders: number; onlineCouriers: number;
@@ -110,6 +111,57 @@ type Tab = (typeof TABS)[number][0];
 
 const ROLES = ["customer", "courier", "merchant_staff", "admin", "support", "operations", "finance", "business_admin"];
 const USER_STATUSES = ["active", "suspended", "disabled", "pending", "deletion_requested"];
+
+const ADMIN_NAV: FloatingItem[] = [
+  { value: "overview", label: "Overview", icon: "overview" },
+  { value: "orders", label: "Orders", icon: "orders" },
+  { value: "merchants", label: "Merchants", icon: "merchants" },
+  { value: "couriers", label: "Couriers", icon: "couriers" },
+  { value: "users", label: "Users", icon: "users" },
+  { value: "settlements", label: "Settlements", icon: "settlements" },
+  { value: "payout-batches", label: "Batches", icon: "batches" },
+  { value: "cod", label: "COD", icon: "cod" },
+  { value: "subscriptions", label: "Subscriptions", icon: "subscriptions" },
+  { value: "ledger", label: "Ledger", icon: "ledger" },
+  { value: "reconciliation", label: "Reconciliation", icon: "reconciliation" },
+  { value: "config", label: "Config", icon: "config" },
+  { value: "audit", label: "Audit", icon: "audit" }
+];
+
+const STATUS_FILTERS: Partial<Record<Tab, FloatingItem[]>> = {
+  orders: [
+    { value: "", label: "All", icon: "all" },
+    { value: "PENDING_CONFIRMATION", label: "New", icon: "new" },
+    { value: "AWAITING_PAYMENT", label: "Awaiting", icon: "pending" },
+    { value: "CONFIRMED", label: "Confirmed", icon: "accepted" },
+    { value: "PREPARING", label: "Preparing", icon: "preparing" },
+    { value: "READY_FOR_PICKUP", label: "Ready", icon: "ready" },
+    { value: "PICKED_UP", label: "Picked up", icon: "delivered" },
+    { value: "DELIVERED", label: "Delivered", icon: "delivered" },
+    { value: "CANCELLED", label: "Cancelled", icon: "cancelled" }
+  ],
+  merchants: [
+    { value: "", label: "All", icon: "all" },
+    { value: "pending", label: "Pending", icon: "pending" },
+    { value: "active", label: "Active", icon: "accepted" },
+    { value: "suspended", label: "Suspended", icon: "cancelled" },
+    { value: "closed", label: "Closed", icon: "failed" }
+  ],
+  couriers: [
+    { value: "", label: "All", icon: "all" },
+    { value: "pending", label: "Pending", icon: "pending" },
+    { value: "approved", label: "Approved", icon: "approved" },
+    { value: "rejected", label: "Rejected", icon: "cancelled" },
+    { value: "suspended", label: "Suspended", icon: "failed" }
+  ],
+  settlements: [
+    { value: "", label: "All", icon: "all" },
+    { value: "PENDING", label: "Pending", icon: "pending" },
+    { value: "APPROVED", label: "Approved", icon: "approved" },
+    { value: "PAID", label: "Paid", icon: "paid" },
+    { value: "FAILED", label: "Failed", icon: "failed" }
+  ]
+};
 
 function inputDate(daysAgo = 0): string {
   const date = new Date();
@@ -493,16 +545,18 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
   const maxDaily = Math.max(1, ...daily.map((day) => day.gmvMinor));
 
   return <div className="app-shell">
-    <aside className="sidebar">
-      <div className="brand"><span className="brand-mark">d</span><div><strong>delivery_app</strong><small>operations</small></div></div>
-      <nav>{TABS.map(([key, label]) => <button key={key} className={tab === key ? "active" : ""} onClick={() => { setTab(key); setStatusFilter(""); setError(""); }}>{label}</button>)}</nav>
-      <div className="sidebar-foot">
-        <span className="avatar">{(session.user.displayName ?? session.user.phoneE164 ?? "OP").slice(0, 2).toUpperCase()}</span>
-        <div><strong>{session.user.displayName ?? session.user.phoneE164 ?? "Staff"}</strong><small>{session.user.roles.join(", ")}</small></div>
-        <button className="sign-out" onClick={() => void signOut()}>Sign out</button>
-      </div>
-    </aside>
     <main className="workspace">
+      <header className="workspace-topbar">
+        <div className="brand"><span className="brand-mark">d</span><div><strong>delivery_app</strong><small>operations</small></div></div>
+        <div className="workspace-user">
+          <span className="avatar">{(session.user.displayName ?? session.user.phoneE164 ?? "OP").slice(0, 2).toUpperCase()}</span>
+          <div className="workspace-user-text">
+            <strong>{session.user.displayName ?? session.user.phoneE164 ?? "Staff"}</strong>
+            <small>{session.user.roles.join(", ")}</small>
+          </div>
+          <button className="ghost" onClick={() => void signOut()}>Sign out</button>
+        </div>
+      </header>
       <header className="workspace-head">
         <div><p className="eyebrow">{TABS.find(([key]) => key === tab)?.[1]}</p><h1>{tab === "overview" ? "City pulse" : tab === "config" ? "System controls" : tab === "audit" ? "Audit trail" : TABS.find(([key]) => key === tab)?.[1]}</h1></div>
         <button className="ghost" onClick={() => void load()} disabled={loading}>{loading ? "Loading…" : "Refresh"}</button>
@@ -520,7 +574,6 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
           <div className="toolbar">
             <label>From<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
             <label>To<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
-            <label>Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All statuses</option>{["PENDING_CONFIRMATION", "AWAITING_PAYMENT", "CONFIRMED", "PREPARING", "READY_FOR_PICKUP", "PICKED_UP", "DELIVERED", "CANCELLED"].map((status) => <option key={status} value={status}>{status.replaceAll("_", " ")}</option>)}</select></label>
           </div>
         </div>
         {summary && <div className="metric-grid">
@@ -543,9 +596,6 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
       </section>}
 
       {tab === "merchants" && <section className="stack">
-        <div className="toolbar-inline">
-          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All merchants</option>{["pending", "active", "suspended", "closed"].map((status) => <option key={status} value={status}>{status}</option>)}</select>
-        </div>
         <div className="panel table-wrap">
           <table><thead><tr><th>Merchant</th><th>Owner</th><th>Orders</th><th>Rating</th><th>Status</th><th>Joined</th><th /></tr></thead>
             <tbody>{merchants.map((merchant) => <tr key={merchant.id}>
@@ -565,9 +615,6 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
       </section>}
 
       {tab === "couriers" && <section className="stack">
-        <div className="toolbar-inline">
-          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All couriers</option>{["pending", "approved", "rejected", "suspended"].map((status) => <option key={status} value={status}>{status}</option>)}</select>
-        </div>
         <div className="panel table-wrap">
           <table><thead><tr><th>Courier</th><th>Vehicle</th><th>Rating</th><th>Deliveries</th><th>Docs</th><th>Status</th><th /></tr></thead>
             <tbody>{couriers.map((courier) => <tr key={courier.userId}>
@@ -636,7 +683,6 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
           <div className="toolbar">
             <label>From<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
             <label>To<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
-            <label>Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All statuses</option>{["PENDING", "APPROVED", "PAID", "FAILED"].map((status) => <option key={status} value={status}>{status}</option>)}</select></label>
           </div>
           <div className="metric-grid">
             <Metric label="Merchant payable" value={money(merchantPreview?.items.reduce((sum, item) => sum + item.netPayableMinor, 0) ?? 0)} note={`${merchantPreview?.items.length ?? 0} merchants ready`} accent />
@@ -946,6 +992,22 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
         {audit.length === 0 && <p className="empty">No audit entries yet.</p>}
       </div>}
     </main>
+
+    <FloatingDock>
+      {STATUS_FILTERS[tab] ? <FloatingCategoryBar
+        items={STATUS_FILTERS[tab] ?? []}
+        value={statusFilter}
+        onChange={setStatusFilter}
+        label="Status filters"
+      /> : null}
+      <FloatingNav
+        items={ADMIN_NAV}
+        value={tab}
+        onChange={(value) => { setTab(value as Tab); setStatusFilter(""); setError(""); }}
+        label="Operations sections"
+      />
+    </FloatingDock>
+
     {toast && <div className="toast">{toast}</div>}
   </div>;
 }

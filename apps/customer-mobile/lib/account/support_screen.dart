@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import '../design/floating_bars.dart';
 import '../main.dart';
 import 'account_ui.dart';
 
@@ -16,6 +19,12 @@ class _SupportScreenState extends State<SupportScreen> {
   List<Map<String, dynamic>> tickets = [];
   bool loading = true;
   String? error;
+  String statusFilter = 'all';
+
+  List<Map<String, dynamic>> get filteredTickets {
+    if (statusFilter == 'all') return tickets;
+    return tickets.where((ticket) => ticket['status']?.toString() == statusFilter).toList();
+  }
 
   @override
   void initState() {
@@ -44,8 +53,62 @@ class _SupportScreenState extends State<SupportScreen> {
     if (mounted) _load();
   }
 
+  Future<void> _newTicket() async {
+    final created = await Navigator.of(context).push<dynamic>(
+      MaterialPageRoute<void>(builder: (_) => SupportNewTicketScreen(client: widget.client, orderId: null)),
+    );
+    if (created is String && created.isNotEmpty && mounted) {
+      await _openTicket(created);
+    }
+  }
+
+  int _statusCount(String status) => tickets.where((ticket) => ticket['status']?.toString() == status).length;
+
+  Widget _ticketFilterBar() {
+    const values = ['all', 'OPEN', 'IN_PROGRESS', 'RESOLVED'];
+    final selected = values.indexOf(statusFilter);
+    return FloatingBarDock(
+      primary: FloatingCategoryBar(
+        semanticsLabel: 'Support ticket filters',
+        selectedIndex: selected < 0 ? 0 : selected,
+        minItemWidth: 88,
+        onSelected: (index) {
+          if (index == values.length) {
+            unawaited(_newTicket());
+            return;
+          }
+          setState(() => statusFilter = values[index]);
+        },
+        items: [
+          FloatingBarItem(
+            icon: Icons.inbox_outlined,
+            label: 'All',
+            badge: tickets.isEmpty ? null : '${tickets.length}',
+          ),
+          FloatingBarItem(
+            icon: Icons.mark_email_unread_outlined,
+            label: 'Open',
+            badge: _statusCount('OPEN') > 0 ? '${_statusCount('OPEN')}' : null,
+          ),
+          FloatingBarItem(
+            icon: Icons.pending_actions_outlined,
+            label: 'In progress',
+            badge: _statusCount('IN_PROGRESS') > 0 ? '${_statusCount('IN_PROGRESS')}' : null,
+          ),
+          FloatingBarItem(
+            icon: Icons.task_alt_rounded,
+            label: 'Resolved',
+            badge: _statusCount('RESOLVED') > 0 ? '${_statusCount('RESOLVED')}' : null,
+          ),
+          const FloatingBarItem(icon: Icons.add_rounded, label: 'New ticket'),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final visible = filteredTickets;
     return Scaffold(
       appBar: AppBar(title: const Text('Support')),
       body: RefreshIndicator(
@@ -72,29 +135,30 @@ class _SupportScreenState extends State<SupportScreen> {
                   const SizedBox(height: 20),
                 ],
               )
+            : visible.isEmpty
+            ? ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                children: [
+                  AccountEmpty(
+                    icon: Icons.filter_alt_off_outlined,
+                    title: 'No ${statusFilter.toLowerCase().replaceAll('_', ' ')} tickets',
+                    message: 'Choose another filter or open a new ticket.',
+                  ),
+                  const SizedBox(height: 20),
+                ],
+              )
             : ListView.separated(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
-                itemCount: tickets.length,
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 104),
+                itemCount: visible.length,
                 separatorBuilder: (_, _) => const SizedBox(height: 10),
                 itemBuilder: (context, index) {
-                  final ticket = tickets[index];
+                  final ticket = visible[index];
                   return _SupportTicketCard(ticket: ticket, onOpen: () => _openTicket(ticket['id']?.toString() ?? ''));
                 },
               ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () async {
-          final created = await Navigator.of(context).push<dynamic>(
-            MaterialPageRoute<void>(builder: (_) => SupportNewTicketScreen(client: widget.client, orderId: null)),
-          );
-          if (created is String && created.isNotEmpty && mounted) {
-            await _openTicket(created);
-          }
-        },
-        icon: const Icon(Icons.add_rounded),
-        label: const Text('New ticket'),
-      ),
+      bottomNavigationBar: _ticketFilterBar(),
     );
   }
 }

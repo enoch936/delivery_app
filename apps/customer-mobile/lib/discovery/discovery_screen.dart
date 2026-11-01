@@ -1,9 +1,10 @@
-import 'dart:async';
+﻿import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../account/address_book_screen.dart';
+import '../design/floating_bars.dart';
 import '../main.dart';
 
 class DiscoveryScreen extends StatefulWidget {
@@ -563,33 +564,32 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return RefreshIndicator(
-      onRefresh: _refresh,
-      child: ListView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 36),
-        children: [
-          _locationHeader(),
-          const SizedBox(height: 14),
-          _searchBar(),
-          if (searching) ...[
-            const SizedBox(height: 12),
-            _searchTypeChips(),
-            const SizedBox(height: 12),
-            _searchBody(),
-          ] else ...[
-            if (recentSearches.isNotEmpty) ...[
-              const SizedBox(height: 14),
-              _recentSearches(),
-            ],
-            const SizedBox(height: 16),
-            _categoryStrip(),
-            const SizedBox(height: 18),
-            if (loading && banners.isEmpty)
-              _homeSkeleton()
-            else if (error != null && home.isEmpty)
-              _errorState()
-            else ...[
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: RefreshIndicator(
+            onRefresh: _refresh,
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: EdgeInsets.fromLTRB(20, 8, 20, searching ? 150 : 96),
+              children: [
+                _locationHeader(),
+                const SizedBox(height: 14),
+                _searchBar(),
+                if (searching) ...[
+                  const SizedBox(height: 12),
+                  _searchBody(),
+                ] else ...[
+                  if (recentSearches.isNotEmpty) ...[
+                    const SizedBox(height: 14),
+                    _recentSearches(),
+                  ],
+                  const SizedBox(height: 18),
+                  if (loading && banners.isEmpty)
+                    _homeSkeleton()
+                  else if (error != null && home.isEmpty)
+                    _errorState()
+                  else ...[
               if (banners.isNotEmpty) ...[
                 _bannerCarousel(),
                 const SizedBox(height: 18),
@@ -656,10 +656,28 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
               _merchantsSection(),
               if (merchants.length < merchantTotal && !loadingList)
                 OutlinedButton(onPressed: () => _loadMerchants(append: true), child: const Text('Load more stores')),
+                  ],
+                ],
+              ],
+            ),
+          ),
+        ),
+        Positioned(
+          left: 12,
+          right: 12,
+          bottom: 8,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (searching) ...[
+                _floatingSearchTypeBar(),
+                const SizedBox(height: 8),
+              ],
+              _floatingCategoryBar(),
             ],
-          ],
-        ],
-      ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -717,81 +735,61 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
   }
 
   Widget _searchBar() {
-    return Row(
-      children: [
-        Expanded(
-          child: TextField(
-            controller: searchController,
-            textInputAction: TextInputAction.search,
-            onChanged: _onSearchChanged,
-            onSubmitted: _commitSearch,
-            decoration: InputDecoration(
-              hintText: 'Search restaurants, groceries, services...',
-              prefixIcon: const Icon(Icons.search_rounded),
-              suffixIcon: searchController.text.isEmpty
-                  ? null
-                  : IconButton(
-                      tooltip: 'Clear search',
-                      icon: const Icon(Icons.close_rounded),
-                      onPressed: () {
-                        searchController.clear();
-                        _searchGeneration++;
-                        setState(() {
-                          searching = false;
-                          searchResult = <String, dynamic>{};
-                        });
-                      },
-                    ),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
-              filled: true,
-              fillColor: const Color(0xFFFFFDF7),
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        SizedBox(
-          width: 52,
-          height: 52,
-          child: FilledButton(
-            onPressed: _openFilters,
-            style: FilledButton.styleFrom(
-              padding: EdgeInsets.zero,
-              backgroundColor: (openNow || favoritesOnly || sort != 'recommended') ? const Color(0xFFE8613D) : const Color(0xFF20261F),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            ),
-            child: const Icon(Icons.tune_rounded),
-          ),
-        ),
-      ],
+    return TextField(
+      controller: searchController,
+      textInputAction: TextInputAction.search,
+      onChanged: _onSearchChanged,
+      onSubmitted: _commitSearch,
+      decoration: InputDecoration(
+        hintText: 'Search restaurants, groceries, services...',
+        prefixIcon: const Icon(Icons.search_rounded),
+        suffixIcon: searchController.text.isEmpty
+            ? null
+            : IconButton(
+                tooltip: 'Clear search',
+                icon: const Icon(Icons.close_rounded),
+                onPressed: () {
+                  searchController.clear();
+                  _searchGeneration++;
+                  setState(() {
+                    searching = false;
+                    searchResult = <String, dynamic>{};
+                  });
+                },
+              ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
+        filled: true,
+        fillColor: const Color(0xFFFFFDF7),
+      ),
     );
   }
 
-  Widget _searchTypeChips() {
+  Widget _floatingSearchTypeBar() {
     const options = <String, String>{
       'all': 'Everything',
       'merchant': 'Stores',
       'product': 'Products',
       'service': 'Services',
     };
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        children: [
-          for (final option in options.entries) ...[
-            ChoiceChip(
-              label: Text(option.value),
-              selected: searchType == option.key,
-              onSelected: (_) {
-                setState(() => searchType = option.key);
-                final term = searchController.text.trim();
-                if (term.isNotEmpty) _runSearch(term);
-              },
-            ),
-            const SizedBox(width: 6),
-          ],
-        ],
-      ),
+    final keys = options.keys.toList();
+    final selected = keys.indexOf(searchType);
+    return FloatingCategoryBar(
+      semanticsLabel: 'Search result types',
+      selectedIndex: selected < 0 ? 0 : selected,
+      onSelected: (index) {
+        final key = keys[index];
+        if (key == searchType) return;
+        setState(() => searchType = key);
+        final term = searchController.text.trim();
+        if (term.isNotEmpty) _runSearch(term);
+      },
+      items: [
+        const FloatingBarItem(icon: Icons.grid_view_rounded, label: 'Everything'),
+        const FloatingBarItem(icon: Icons.storefront_outlined, label: 'Stores'),
+        const FloatingBarItem(icon: Icons.shopping_basket_outlined, label: 'Products'),
+        const FloatingBarItem(icon: Icons.build_circle_outlined, label: 'Services'),
+      ],
     );
   }
 
@@ -848,28 +846,43 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     );
   }
 
-  Widget _categoryStrip() {
-    return SizedBox(
-      height: 84,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        children: [
-          _CategoryTile(
-            icon: Icons.apps_rounded,
-            label: 'All',
-            selected: selectedCategory == null,
-            onTap: () => _selectCategory(null),
-          ),
-          for (final category in categories)
-            _CategoryTile(
-              icon: _categoryIcons[category['slug']?.toString()] ?? Icons.storefront_rounded,
-              label: category['displayName']?.toString() ?? 'Category',
-              badge: category['merchantCount']?.toString(),
-              selected: selectedCategory == category['slug']?.toString(),
-              onTap: () => _selectCategory(category['slug']?.toString()),
-            ),
-        ],
+  Widget _floatingCategoryBar() {
+    final items = <FloatingBarItem>[
+      const FloatingBarItem(icon: Icons.apps_rounded, label: 'All'),
+      for (final category in categories)
+        FloatingBarItem(
+          icon: _categoryIcons[category['slug']?.toString()] ?? Icons.storefront_rounded,
+          label: category['displayName']?.toString() ?? 'Category',
+          badge: category['merchantCount']?.toString(),
+        ),
+      FloatingBarItem(
+        icon: Icons.tune_rounded,
+        label: 'Filters',
+        badge: (openNow || favoritesOnly || sort != 'recommended') ? 'ON' : null,
       ),
+    ];
+    final selectedSlug = selectedCategory;
+    var selectedIndex = 0;
+    if (selectedSlug != null) {
+      final categoryIndex = categories.indexWhere((category) => category['slug']?.toString() == selectedSlug);
+      if (categoryIndex >= 0) selectedIndex = categoryIndex + 1;
+    }
+    return FloatingCategoryBar(
+      semanticsLabel: 'Service categories and filters',
+      selectedIndex: selectedIndex,
+      minItemWidth: 82,
+      onSelected: (index) {
+        if (index == items.length - 1) {
+          _openFilters();
+          return;
+        }
+        if (index == 0) {
+          _selectCategory(null);
+          return;
+        }
+        _selectCategory(categories[index - 1]['slug']?.toString());
+      },
+      items: items,
     );
   }
 
@@ -1158,42 +1171,14 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
   }
 
   Widget _allMerchantsHeader() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _sectionHeader('All near you', '${merchants.length} merchants · ${location.split(',').first}'),
-        const SizedBox(height: 8),
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(
-            children: [
-              FilterChip(
-                label: const Text('Open now'),
-                selected: openNow,
-                onSelected: (value) {
-                  setState(() => openNow = value);
-                  _loadMerchants();
-                },
-              ),
-              const SizedBox(width: 6),
-              FilterChip(
-                label: const Text('Favorites'),
-                selected: favoritesOnly,
-                onSelected: (value) {
-                  setState(() => favoritesOnly = value);
-                  _loadMerchants();
-                },
-              ),
-              const SizedBox(width: 6),
-              FilterChip(
-                label: Text('Sort: ${_sortLabel(sort)}'),
-                selected: sort != 'recommended',
-                onSelected: (_) => _openFilters(),
-              ),
-            ],
-          ),
-        ),
-      ],
+    final activeFilters = <String>[
+      if (openNow) 'Open now',
+      if (favoritesOnly) 'Favorites',
+      if (sort != 'recommended') 'Sort: ${_sortLabel(sort)}',
+    ];
+    return _sectionHeader(
+      'All near you',
+      '${merchants.length} merchants · ${location.split(',').first}${activeFilters.isEmpty ? '' : ' · ${activeFilters.join(' · ')}'}',
     );
   }
 
@@ -1440,68 +1425,6 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     if (hex.length != 6) return null;
     final parsed = int.tryParse(hex, radix: 16);
     return parsed == null ? null : Color(0xFF000000 | parsed);
-  }
-}
-
-class _CategoryTile extends StatelessWidget {
-  const _CategoryTile({required this.icon, required this.label, required this.selected, required this.onTap, this.badge});
-
-  final IconData icon;
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  final String? badge;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(right: 10),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Column(
-          children: [
-            Stack(
-              clipBehavior: Clip.none,
-              children: [
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 180),
-                  width: 54,
-                  height: 54,
-                  decoration: BoxDecoration(
-                    color: selected ? const Color(0xFF20261F) : const Color(0xFFFFFDF7),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: selected ? const Color(0xFF20261F) : const Color(0xFFD9D5C7)),
-                  ),
-                  child: Icon(icon, color: selected ? Colors.white : const Color(0xFF20261F), size: 24),
-                ),
-                if (badge != null && badge != '0')
-                  Positioned(
-                    right: -4,
-                    top: -4,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                      decoration: BoxDecoration(color: const Color(0xFFE8613D), borderRadius: BorderRadius.circular(8)),
-                      child: Text(badge!, style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w800)),
-                    ),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 5),
-            SizedBox(
-              width: 62,
-              child: Text(
-                label,
-                textAlign: TextAlign.center,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 10, fontWeight: selected ? FontWeight.w800 : FontWeight.w500),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 }
 

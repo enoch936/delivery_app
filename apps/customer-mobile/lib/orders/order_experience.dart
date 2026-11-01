@@ -1,4 +1,4 @@
-part of '../main.dart';
+﻿part of '../main.dart';
 
 const _oxActiveStatuses = {
   'PENDING_CONFIRMATION',
@@ -250,69 +250,45 @@ class _OrdersScreenState extends State<OrdersScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: ListView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 30),
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: RefreshIndicator(
+            onRefresh: _load,
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 96),
+              children: [
+                Row(
                   children: [
-                    Text(
-                      'Your orders',
-                      style: theme.textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Your orders',
+                            style: theme.textTheme.headlineSmall?.copyWith(
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Track deliveries, manage refunds and chat with the store.',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Track deliveries, manage refunds and chat with the store.',
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
+                    IconButton(
+                      tooltip: 'Refresh',
+                      onPressed: _load,
+                      icon: const Icon(Icons.refresh_rounded),
                     ),
                   ],
                 ),
-              ),
-              IconButton(
-                tooltip: 'Refresh',
-                onPressed: _load,
-                icon: const Icon(Icons.refresh_rounded),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                for (final bucket in _buckets)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: ChoiceChip(
-                      label: Text(
-                        '${label(bucket)}${_count(bucket) > 0 ? ' ${_count(bucket)}' : ''}',
-                      ),
-                      selected: _bucket == bucket,
-                      onSelected: (_) {
-                        if (_bucket == bucket) return;
-                        setState(() {
-                          _bucket = bucket;
-                          _orders = [];
-                          _loading = true;
-                        });
-                        _load();
-                      },
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 14),
+                const SizedBox(height: 14),
           if (_error != null && _error!.contains('401')) ...[
             Card(
               child: Padding(
@@ -391,8 +367,51 @@ class _OrdersScreenState extends State<OrdersScreen> {
               ),
             ),
           ),
-        ],
-      ),
+              ],
+            ),
+          ),
+        ),
+        Positioned(
+          left: 12,
+          right: 12,
+          bottom: 8,
+          child: _ordersBucketBar(),
+        ),
+      ],
+    );
+  }
+
+  Widget _ordersBucketBar() {
+    const icons = <String, IconData>{
+      'active': Icons.local_shipping_outlined,
+      'past': Icons.history_rounded,
+      'cancelled': Icons.cancel_outlined,
+      'failed': Icons.error_outline_rounded,
+      'all': Icons.receipt_long_outlined,
+    };
+    final selected = _buckets.indexOf(_bucket);
+    return FloatingCategoryBar(
+      semanticsLabel: 'Order status filters',
+      selectedIndex: selected < 0 ? 0 : selected,
+      minItemWidth: 86,
+      onSelected: (index) {
+        final bucket = _buckets[index];
+        if (_bucket == bucket) return;
+        setState(() {
+          _bucket = bucket;
+          _orders = [];
+          _loading = true;
+        });
+        _load();
+      },
+      items: [
+        for (final bucket in _buckets)
+          FloatingBarItem(
+            icon: icons[bucket] ?? Icons.receipt_long_outlined,
+            label: label(bucket),
+            badge: _count(bucket) > 0 ? '${_count(bucket)}' : null,
+          ),
+      ],
     );
   }
 }
@@ -940,21 +959,62 @@ class _OrderDetailScreenState extends State<OrderDetailScreen>
                     const SizedBox(height: 12),
                     _OxResolutionCard(order: order),
                   ],
-                  const SizedBox(height: 16),
-                  _OxActions(
-                    order: order,
-                    busy: _busy,
-                    onRefresh: _refreshOrder,
-                    onCancel: _cancel,
-                    onRefund: _requestRefund,
-                    onReportIssue: _reportIssue,
-                    onChat: () => _openChat(title: 'Order chat'),
-                    onRate: _rateOrder,
-                    onOrderAgain: _orderAgain,
-                  ),
                 ],
               ),
             ),
+      bottomNavigationBar: order == null ? null : _floatingActions(order),
+    );
+  }
+
+  Widget _floatingActions(Map<String, dynamic> order) {
+    final capabilities = asMap(order['capabilities']);
+    final status = order['status']?.toString();
+    final actions = <(FloatingBarItem, Future<void> Function())>[
+      (
+        const FloatingBarItem(icon: Icons.refresh_rounded, label: 'Refresh'),
+        _refreshOrder,
+      ),
+      (
+        const FloatingBarItem(icon: Icons.chat_bubble_outline_rounded, label: 'Message'),
+        () async => _openChat(title: 'Order chat'),
+      ),
+      if (capabilities['canCancel'] == true)
+        (
+          const FloatingBarItem(icon: Icons.close_rounded, label: 'Cancel'),
+          _cancel,
+        ),
+      if (capabilities['canRequestRefund'] == true)
+        (
+          const FloatingBarItem(icon: Icons.currency_exchange_rounded, label: 'Refund'),
+          _requestRefund,
+        ),
+      if (capabilities['canReportIssue'] == true)
+        (
+          const FloatingBarItem(icon: Icons.report_problem_outlined, label: 'Report'),
+          _reportIssue,
+        ),
+      if (capabilities['canReview'] == true)
+        (
+          const FloatingBarItem(icon: Icons.star_rounded, label: 'Rate'),
+          _rateOrder,
+        ),
+      if (status != 'CANCELLED' && status != 'FAILED')
+        (
+          const FloatingBarItem(icon: Icons.replay_rounded, label: 'Order again'),
+          _orderAgain,
+        ),
+    ];
+    return FloatingBarDock(
+      primary: FloatingCategoryBar(
+        semanticsLabel: 'Order actions',
+        selectedIndex: -1,
+        minItemWidth: 88,
+        onSelected: (index) {
+          if (_busy) return;
+          unawaited(actions[index].$2());
+        },
+        items: actions.map((action) => action.$1).toList(),
+      ),
     );
   }
 }
@@ -2106,94 +2166,6 @@ class _OxResolutionCard extends StatelessWidget {
   }
 }
 
-class _OxActions extends StatelessWidget {
-  const _OxActions({
-    required this.order,
-    required this.busy,
-    required this.onRefresh,
-    required this.onCancel,
-    required this.onRefund,
-    required this.onReportIssue,
-    required this.onChat,
-    required this.onRate,
-    required this.onOrderAgain,
-  });
-
-  final Map<String, dynamic> order;
-  final bool busy;
-  final Future<void> Function() onRefresh;
-  final VoidCallback onCancel;
-  final VoidCallback onRefund;
-  final VoidCallback onReportIssue;
-  final VoidCallback onChat;
-  final Future<void> Function() onRate;
-  final Future<void> Function() onOrderAgain;
-
-  @override
-  Widget build(BuildContext context) {
-    final capabilities = asMap(order['capabilities']);
-    final canCancel = capabilities['canCancel'] == true;
-    final canRefund = capabilities['canRequestRefund'] == true;
-    final canReport = capabilities['canReportIssue'] == true;
-    final canReview = capabilities['canReview'] == true;
-    final status = order['status']?.toString();
-    return Wrap(
-      spacing: 10,
-      runSpacing: 10,
-      children: [
-        FilledButton.tonalIcon(
-          onPressed: onChat,
-          icon: const Icon(Icons.chat_bubble_outline_rounded),
-          label: const Text('Message store'),
-        ),
-        if (canCancel)
-          OutlinedButton.icon(
-            onPressed: busy ? null : onCancel,
-            icon: const Icon(Icons.close_rounded),
-            label: const Text('Cancel order'),
-          ),
-        if (canRefund)
-          OutlinedButton.icon(
-            onPressed: busy ? null : onRefund,
-            icon: const Icon(Icons.currency_exchange_rounded),
-            label: const Text('Request refund'),
-          ),
-        if (canReport)
-          OutlinedButton.icon(
-            onPressed: busy ? null : onReportIssue,
-            icon: const Icon(Icons.report_problem_outlined),
-            label: const Text('Report an issue'),
-          ),
-        if (canReview)
-          FilledButton.icon(
-            onPressed: busy ? null : onRate,
-            icon: const Icon(Icons.star_rounded),
-            label: const Text('Rate this order'),
-          ),
-        if (status != 'CANCELLED' && status != 'FAILED')
-          OutlinedButton.icon(
-            onPressed: busy ? null : onOrderAgain,
-            icon: const Icon(Icons.replay_rounded),
-            label: const Text('Order again'),
-          ),
-        TextButton.icon(
-          onPressed: busy ? null : () => onRefresh(),
-          icon: const Icon(Icons.refresh_rounded),
-          label: const Text('Refresh'),
-        ),
-        if (busy)
-          const Padding(
-            padding: EdgeInsets.all(12),
-            child: SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-          ),
-      ],
-    );
-  }
-}
 
 class _OxRefundDialog extends StatefulWidget {
   const _OxRefundDialog();
@@ -2664,6 +2636,13 @@ class _OrderChatScreenState extends State<OrderChatScreen> {
     }
   }
 
+  void _sendQuick(String message) {
+    if (_sending) return;
+    _input.text = message;
+    _input.selection = TextSelection.collapsed(offset: message.length);
+    unawaited(_send());
+  }
+
   String _senderName(Map<String, dynamic> message) {
     final userId = message['senderUserId']?.toString();
     final member = _members[userId];
@@ -2760,6 +2739,27 @@ class _OrderChatScreenState extends State<OrderChatScreen> {
                       );
                     },
                   ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+            child: FloatingCategoryBar(
+              semanticsLabel: 'Quick replies',
+              selectedIndex: -1,
+              minItemWidth: 104,
+              onSelected: (index) {
+                const replies = [
+                  'On my way',
+                  'Please call me when you arrive',
+                  'Thank you!',
+                ];
+                _sendQuick(replies[index]);
+              },
+              items: const [
+                FloatingBarItem(icon: Icons.directions_bike_rounded, label: 'On my way'),
+                FloatingBarItem(icon: Icons.phone_in_talk_outlined, label: 'Call me'),
+                FloatingBarItem(icon: Icons.favorite_outline_rounded, label: 'Thank you'),
+              ],
+            ),
           ),
           SafeArea(
             top: false,

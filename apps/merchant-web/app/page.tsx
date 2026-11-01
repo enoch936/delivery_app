@@ -11,8 +11,26 @@ import {
   verifyOtp,
   type Session
 } from "../lib/api";
+import { FloatingCategoryBar, FloatingDock, FloatingNav, type FloatingItem } from "./floating-bar";
 
 type Tab = "overview" | "orders" | "menu" | "settlements" | "finance";
+
+const NAV_ITEMS: FloatingItem[] = [
+  { value: "overview", label: "Overview", icon: "overview" },
+  { value: "orders", label: "Orders", icon: "orders" },
+  { value: "menu", label: "Menu", icon: "menu" },
+  { value: "settlements", label: "Settlements", icon: "settlements" },
+  { value: "finance", label: "Finance", icon: "finance" }
+];
+
+const ORDER_FILTERS: FloatingItem[] = [
+  { value: "", label: "All", icon: "all" },
+  { value: "PENDING_CONFIRMATION", label: "New", icon: "new" },
+  { value: "ACCEPTED_BY_MERCHANT", label: "Accepted", icon: "accepted" },
+  { value: "PREPARING", label: "Preparing", icon: "preparing" },
+  { value: "READY_FOR_PICKUP", label: "Ready", icon: "ready" },
+  { value: "DELIVERED", label: "Delivered", icon: "delivered" }
+];
 
 type MerchantLocation = {
   id: string; name: string; addressLine: string; latitude: number | null; longitude: number | null;
@@ -124,6 +142,7 @@ function Login({ onAuthenticated }: { onAuthenticated: (session: Session) => voi
 
 function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
   const [tab, setTab] = useState<Tab>("overview");
+  const [orderStatus, setOrderStatus] = useState("");
   const [me, setMe] = useState<MerchantMe | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -149,30 +168,29 @@ function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => 
 
   const name = me?.merchant.displayName ?? session.user.displayName ?? "Merchant";
   const initials = name.split(/\s+/).map((word) => word[0]).join("").slice(0, 2).toUpperCase();
+  const navItems = NAV_ITEMS.map((item) => item.value === "orders" && me?.stats.pendingOrders
+    ? { ...item, badge: me.stats.pendingOrders }
+    : item
+  );
 
   return <div className="app-shell">
-    <aside className="sidebar">
-      <div className="brand"><span className="brand-mark">d</span><div><strong>delivery_app</strong><small>merchant</small></div></div>
-      <nav>
-        {([
-          ["overview", "Overview"],
-          ["orders", "Orders"],
-          ["menu", "Menu & stock"],
-          ["settlements", "Settlements"],
-          ["finance", "Finance"]
-        ] as const).map(([value, label]) => <button key={value} className={tab === value ? "active" : ""} onClick={() => setTab(value)}>{label}</button>)}
-      </nav>
-      <div className="sidebar-foot">
-        <div className="avatar">{initials}</div>
-        <div><strong>{session.user.displayName ?? session.user.phoneE164}</strong><small>{me?.membership.role ?? "staff"}</small></div>
-        <button className="sign-out" onClick={onSignOut}>Sign out</button>
-      </div>
-    </aside>
     <main className="workspace">
+      <header className="workspace-topbar">
+        <div className="brand"><span className="brand-mark">d</span><div><strong>delivery_app</strong><small>merchant</small></div></div>
+        <div className="workspace-user">
+          <div className="avatar">{initials}</div>
+          <div className="workspace-user-text">
+            <strong>{session.user.displayName ?? session.user.phoneE164}</strong>
+            <small>{me?.membership.role ?? "staff"}</small>
+          </div>
+          <button className="ghost" onClick={onSignOut}>Sign out</button>
+        </div>
+      </header>
+
       <header className="workspace-head">
         <div>
           <p className="eyebrow">{tab.toUpperCase()}</p>
-          <h1>{tab === "overview" ? name : tab === "orders" ? "Order queue" : tab === "menu" ? "Menu & stock" : "Settlement history"}</h1>
+          <h1>{tab === "overview" ? name : tab === "orders" ? "Order queue" : tab === "menu" ? "Menu & stock" : tab === "settlements" ? "Settlement history" : "Finance & payouts"}</h1>
         </div>
         {me ? <div className={`status-pill ${me.merchant.status}`}>{me.merchant.status}</div> : null}
       </header>
@@ -186,11 +204,22 @@ function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => 
       </div> : null}
 
       {me && tab === "overview" ? <Overview me={me} reload={refresh} notify={setToast} /> : null}
-      {me && tab === "orders" ? <Orders notify={setToast} /> : null}
+      {me && tab === "orders" ? <Orders notify={setToast} status={orderStatus} /> : null}
       {me && tab === "menu" ? <Menu me={me} reload={refresh} notify={setToast} /> : null}
       {me && tab === "settlements" ? <Settlements /> : null}
       {me && tab === "finance" ? <Finance /> : null}
     </main>
+
+    <FloatingDock>
+      {tab === "orders" ? <FloatingCategoryBar
+        items={ORDER_FILTERS}
+        value={orderStatus}
+        onChange={setOrderStatus}
+        label="Order status filters"
+      /> : null}
+      <FloatingNav items={navItems} value={tab} onChange={(value) => setTab(value as Tab)} label="Merchant sections" />
+    </FloatingDock>
+
     {toast ? <div className="toast">{toast}</div> : null}
   </div>;
 }
@@ -270,10 +299,9 @@ function Overview({ me, reload, notify }: { me: MerchantMe; reload: () => Promis
   </>;
 }
 
-function Orders({ notify }: { notify: (message: string) => void }) {
+function Orders({ notify, status }: { notify: (message: string) => void; status: string }) {
   const [orders, setOrders] = useState<MerchantOrder[]>([]);
   const [total, setTotal] = useState(0);
-  const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -311,17 +339,11 @@ function Orders({ notify }: { notify: (message: string) => void }) {
     }
   }
 
-  const filters: Array<[string, string]> = [
-    ["", "All"], ["PENDING_CONFIRMATION", "New"], ["ACCEPTED_BY_MERCHANT", "Accepted"],
-    ["PREPARING", "Preparing"], ["READY_FOR_PICKUP", "Ready"], ["DELIVERED", "Delivered"]
-  ];
-
   return <section className="panel">
     <div className="panel-head">
       <div><p className="eyebrow">FULFILMENT</p><h2>{total} orders</h2></div>
       <button className="ghost" onClick={() => void load()}>Refresh</button>
     </div>
-    <div className="filter-row">{filters.map(([value, label]) => <button key={label} className={status === value ? "chip active" : "chip"} onClick={() => setStatus(value)}>{label}</button>)}</div>
     {loading ? <p className="muted">Loading orders…</p> : error ? <p className="form-error">{error}</p> : orders.length === 0 ? <div className="empty"><h3>No orders here</h3><p>The queue is clear for this filter.</p></div> : <div className="order-list">
       {orders.map((order) => <article key={order.id} className="order-card">
         <div className="order-head">

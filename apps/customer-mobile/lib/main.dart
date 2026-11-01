@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
+
+import 'design/floating_bars.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -952,6 +954,19 @@ class CustomerHome extends StatefulWidget {
 
 class _CustomerHomeState extends State<CustomerHome> {
   int index = 0;
+  late final PageController _pageController;
+
+  @override
+  void initState() {
+    super.initState();
+    _pageController = PageController(initialPage: 0);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
 
   Future<void> openCart() async {
     await Navigator.of(context).push(
@@ -963,6 +978,15 @@ class _CustomerHomeState extends State<CustomerHome> {
 
   Future<void> signOut() async {
     widget.onSignedOut();
+  }
+
+  void _onTabTapped(int value) {
+    setState(() => index = value);
+    _pageController.animateToPage(
+      value,
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.fastOutSlowIn,
+    );
   }
 
   @override
@@ -1001,8 +1025,9 @@ class _CustomerHomeState extends State<CustomerHome> {
           ),
         ],
       ),
-      body: IndexedStack(
-        index: index,
+      body: PageView(
+        controller: _pageController,
+        onPageChanged: (value) => setState(() => index = value),
         children: [
           DiscoveryScreen(client: widget.client),
           OrdersScreen(client: widget.client),
@@ -1015,26 +1040,29 @@ class _CustomerHomeState extends State<CustomerHome> {
           ),
         ],
       ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: index,
-        onDestinationSelected: (value) => setState(() => index = value),
-        destinations: [
-          NavigationDestination(
-            icon: const Icon(Icons.explore_outlined),
-            selectedIcon: const Icon(Icons.explore),
-            label: l10n.discover,
-          ),
-          NavigationDestination(
-            icon: const Icon(Icons.receipt_long_outlined),
-            selectedIcon: const Icon(Icons.receipt_long),
-            label: l10n.orders,
-          ),
-          NavigationDestination(
-            icon: const Icon(Icons.person_outline),
-            selectedIcon: const Icon(Icons.person),
-            label: l10n.profile,
-          ),
-        ],
+      bottomNavigationBar: FloatingBarDock(
+        primary: FloatingNavigationBar(
+          semanticsLabel: 'Customer sections',
+          selectedIndex: index,
+          onSelected: _onTabTapped,
+          items: [
+            FloatingBarItem(
+              icon: Icons.explore_outlined,
+              selectedIcon: Icons.explore,
+              label: l10n.discover,
+            ),
+            FloatingBarItem(
+              icon: Icons.receipt_long_outlined,
+              selectedIcon: Icons.receipt_long,
+              label: l10n.orders,
+            ),
+            FloatingBarItem(
+              icon: Icons.person_outline,
+              selectedIcon: Icons.person,
+              label: l10n.profile,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2409,10 +2437,12 @@ class _MerchantScreenState extends State<MerchantScreen> {
                                             ),
                                             if (asList(product['optionGroups']).isNotEmpty) ...[
                                               const SizedBox(width: 6),
-                                              Container(
-                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                decoration: BoxDecoration(color: const Color(0xFFF0EBE1), borderRadius: BorderRadius.circular(6)),
-                                                child: const Text('Customisable', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Color(0xFF6B7468))),
+                                              Flexible(
+                                                child: Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                  decoration: BoxDecoration(color: const Color(0xFFF0EBE1), borderRadius: BorderRadius.circular(6)),
+                                                  child: const Text('Customisable', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Color(0xFF6B7468)), overflow: TextOverflow.ellipsis),
+                                                ),
                                               ),
                                             ],
                                           ],
@@ -3853,6 +3883,163 @@ class _LegacyOrderDetailScreenState extends State<LegacyOrderDetailScreen> {
     }
   }
 
+  Future<void> _reportIssue() async {
+    String selectedCategory = 'delivery_issue';
+    final messageController = TextEditingController();
+    final categories = {
+      'delivery_issue': 'Delivery Issue / Delay',
+      'missing_item': 'Missing or Wrong Items',
+      'damaged_item': 'Damaged Package',
+      'payment_issue': 'Payment or Billing Question',
+    };
+
+    final submitted = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            return Padding(
+              padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + MediaQuery.of(sheetContext).viewInsets.bottom),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Report Delivery Issue', style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 6),
+                  const Text('Select an issue category and describe what happened.', style: TextStyle(color: Color(0xFF6B7468), fontSize: 13)),
+                  const SizedBox(height: 14),
+                  DropdownButtonFormField<String>(
+                    initialValue: selectedCategory,
+                    decoration: const InputDecoration(labelText: 'Issue Category'),
+                    items: categories.entries.map((entry) => DropdownMenuItem(value: entry.key, child: Text(entry.value))).toList(),
+                    onChanged: (val) {
+                      if (val != null) setSheetState(() => selectedCategory = val);
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: messageController,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                      labelText: 'Describe the issue',
+                      hintText: 'Provide details to help support resolve your issue…',
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: () => Navigator.pop(sheetContext, true),
+                      child: const Text('Submit Ticket'),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    if (submitted == true && mounted) {
+      final msg = messageController.text.trim();
+      messageController.dispose();
+      if (msg.isEmpty) return;
+      setState(() => busy = true);
+      try {
+        await widget.client.post('/v1/support/tickets', {
+          'subject': 'Issue report for order ${order?['orderNumber'] ?? ''}',
+          'category': selectedCategory,
+          'orderId': widget.orderId,
+          'priority': 'NORMAL',
+          'message': msg,
+        });
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Support ticket created. Our team will review your report.')),
+        );
+      } catch (cause) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(cause.toString())),
+        );
+      } finally {
+        if (mounted) setState(() => busy = false);
+      }
+    }
+  }
+
+  Future<void> _openChat() async {
+    final chatController = TextEditingController();
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return Padding(
+          padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + MediaQuery.of(sheetContext).viewInsets.bottom),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.chat_bubble_outline, color: Color(0xFFE8613D)),
+                  const SizedBox(width: 8),
+                  Text('Customer-Courier Chat', style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+                ],
+              ),
+              const SizedBox(height: 6),
+              const Text('Send instructions or notes directly to your assigned courier.', style: TextStyle(color: Color(0xFF6B7468), fontSize: 13)),
+              const SizedBox(height: 14),
+              TextField(
+                controller: chatController,
+                decoration: InputDecoration(
+                  hintText: 'Type a message to your courier…',
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.send, color: Color(0xFFE8613D)),
+                    onPressed: () async {
+                      final msg = chatController.text.trim();
+                      if (msg.isEmpty) return;
+                      try {
+                        await widget.client.post('/v1/support/tickets', {
+                          'subject': 'Courier message regarding order ${order?['orderNumber'] ?? ''}',
+                          'category': 'delivery_instructions',
+                          'orderId': widget.orderId,
+                          'message': msg,
+                        });
+                        chatController.clear();
+                        if (mounted) {
+                          if (sheetContext.mounted) Navigator.pop(sheetContext);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Message sent to courier.')),
+                          );
+                        }
+                      } catch (err) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text(err.toString())),
+                          );
+                        }
+                      }
+                    },
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    chatController.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -3948,12 +4135,35 @@ class _LegacyOrderDetailScreenState extends State<LegacyOrderDetailScreen> {
                           ),
                         ),
                       ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: busy ? null : _openChat,
+                              icon: const Icon(Icons.chat_outlined, size: 18),
+                              label: const Text('Contact Courier'),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: busy ? null : _reportIssue,
+                              icon: const Icon(Icons.report_problem_outlined, size: 18),
+                              label: const Text('Report Issue'),
+                            ),
+                          ),
+                        ],
+                      ),
                       if (asMap(order!['capabilities'])['canCancel'] == true) ...[
-                        const SizedBox(height: 20),
-                        OutlinedButton(
-                          onPressed: busy ? null : _cancel,
-                          style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFA63A32)),
-                          child: const Text('Cancel order'),
+                        const SizedBox(height: 10),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton(
+                            onPressed: busy ? null : _cancel,
+                            style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFA63A32)),
+                            child: const Text('Cancel order'),
+                          ),
                         ),
                       ],
                     ],

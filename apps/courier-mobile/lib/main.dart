@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
+
+import 'design/floating_bars.dart';
 import 'package:geolocator/geolocator.dart';
 
 import 'app_localizations.dart';
@@ -679,6 +681,8 @@ class _CourierHomeState extends State<CourierHome> {
   bool busy = false;
   String? error;
   bool _sendingLocation = false;
+  String _todayFilter = 'all';
+  String _earningsFilter = 'all';
   final LocationService _location = LocationService();
 
   @override
@@ -1014,15 +1018,75 @@ class _CourierHomeState extends State<CourierHome> {
           _profileView(roles),
         ],
       ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: index,
-        onDestinationSelected: (value) => setState(() => index = value),
-        destinations: [
-          NavigationDestination(icon: const Icon(Icons.two_wheeler_outlined), selectedIcon: const Icon(Icons.two_wheeler), label: l10n.today),
-          NavigationDestination(icon: const Icon(Icons.payments_outlined), selectedIcon: const Icon(Icons.payments), label: l10n.earnings),
-          NavigationDestination(icon: const Icon(Icons.person_outline), selectedIcon: const Icon(Icons.person), label: l10n.profile),
-        ],
+      bottomNavigationBar: FloatingBarDock(
+        contextual: index == 0
+            ? _todayFilterBar()
+            : index == 1
+            ? _earningsFilterBar()
+            : null,
+        primary: FloatingNavigationBar(
+          semanticsLabel: 'Courier navigation',
+          selectedIndex: index,
+          onSelected: (value) => setState(() => index = value),
+          items: [
+            FloatingBarItem(icon: Icons.two_wheeler_outlined, selectedIcon: Icons.two_wheeler, label: l10n.today, badge: activeDelivery == null ? null : '1'),
+            FloatingBarItem(icon: Icons.payments_outlined, selectedIcon: Icons.payments, label: l10n.earnings),
+            FloatingBarItem(icon: Icons.person_outline, selectedIcon: Icons.person, label: l10n.profile),
+          ],
+        ),
       ),
+    );
+  }
+
+  Widget _todayFilterBar() {
+    const values = ['all', 'status', 'active', 'offers'];
+    final selected = values.indexOf(_todayFilter);
+    return FloatingCategoryBar(
+      semanticsLabel: 'Today view filters',
+      selectedIndex: selected < 0 ? 0 : selected,
+      minItemWidth: 86,
+      onSelected: (value) => setState(() => _todayFilter = values[value]),
+      items: [
+        const FloatingBarItem(icon: Icons.dashboard_outlined, label: 'All'),
+        const FloatingBarItem(icon: Icons.toggle_on_outlined, label: 'Status'),
+        FloatingBarItem(
+          icon: Icons.local_shipping_outlined,
+          label: 'Active',
+          badge: activeDelivery == null ? null : '1',
+        ),
+        FloatingBarItem(
+          icon: Icons.notifications_active_outlined,
+          label: 'Offers',
+          badge: offers.isEmpty ? null : '${offers.length}',
+        ),
+      ],
+    );
+  }
+
+  Widget _earningsFilterBar() {
+    const values = ['all', 'summary', 'deliveries', 'payouts'];
+    final selected = values.indexOf(_earningsFilter);
+    final data = earnings ?? <String, dynamic>{};
+    final payouts = asList(data['payouts']);
+    return FloatingCategoryBar(
+      semanticsLabel: 'Earnings view filters',
+      selectedIndex: selected < 0 ? 0 : selected,
+      minItemWidth: 86,
+      onSelected: (value) => setState(() => _earningsFilter = values[value]),
+      items: [
+        const FloatingBarItem(icon: Icons.pie_chart_outline_rounded, label: 'All'),
+        const FloatingBarItem(icon: Icons.summarize_outlined, label: 'Summary'),
+        FloatingBarItem(
+          icon: Icons.receipt_long_outlined,
+          label: 'Deliveries',
+          badge: (data['recentDeliveries'] as List? ?? const []).isEmpty ? null : '${(data['recentDeliveries'] as List).length}',
+        ),
+        FloatingBarItem(
+          icon: Icons.account_balance_wallet_outlined,
+          label: 'Payouts',
+          badge: payouts.isEmpty ? null : '${payouts.length}',
+        ),
+      ],
     );
   }
 
@@ -1030,6 +1094,9 @@ class _CourierHomeState extends State<CourierHome> {
     final theme = Theme.of(context);
     final status = profile?['status']?.toString() ?? 'pending';
     final approved = status == 'approved';
+    final showStatus = _todayFilter == 'all' || _todayFilter == 'status';
+    final showActive = _todayFilter == 'all' || _todayFilter == 'active';
+    final showOffers = _todayFilter == 'all' || _todayFilter == 'offers';
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView(
@@ -1037,7 +1104,7 @@ class _CourierHomeState extends State<CourierHome> {
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 30),
         children: [
           if (error != null) ...[ErrorBanner(message: error!), const SizedBox(height: 12)],
-          if (!approved)
+          if (showStatus && !approved)
             Container(
               margin: const EdgeInsets.only(bottom: 12),
               padding: const EdgeInsets.all(14),
@@ -1059,7 +1126,8 @@ class _CourierHomeState extends State<CourierHome> {
                 ],
               ),
             ),
-          Container(
+          if (showStatus)
+            Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
               color: const Color(0xFF1E2A24),
@@ -1120,7 +1188,8 @@ class _CourierHomeState extends State<CourierHome> {
             ),
           ),
           const SizedBox(height: 12),
-          Row(
+          if (showStatus)
+            Row(
             children: [
               Expanded(child: _statCard('Rating', (profile?['ratingAverage'] as num? ?? 0).toStringAsFixed(1), Icons.star_outline)),
               const SizedBox(width: 10),
@@ -1128,32 +1197,42 @@ class _CourierHomeState extends State<CourierHome> {
             ],
           ),
           const SizedBox(height: 20),
-          if (activeDelivery != null) ...[
+          if (showActive) ...[
             Text('Active delivery', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
             const SizedBox(height: 10),
-            _activeDeliveryCard(activeDelivery!),
+            if (activeDelivery == null)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 20),
+                child: Center(
+                  child: Text('No active delivery right now.', style: TextStyle(color: Color(0xFF6B7468))),
+                ),
+              )
+            else
+              _activeDeliveryCard(activeDelivery!),
             const SizedBox(height: 20),
           ],
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text('Offers for you', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
-              if (busy) const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
-            ],
-          ),
-          const SizedBox(height: 10),
-          if (offers.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 32),
-              child: Center(
-                child: Text(
-                  'No offers right now. Stay online near busy merchants.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Color(0xFF6B7468)),
+          if (showOffers) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Offers for you', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+                if (busy) const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+              ],
+            ),
+            const SizedBox(height: 10),
+            if (offers.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 32),
+                child: Center(
+                  child: Text(
+                    'No offers right now. Stay online near busy merchants.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Color(0xFF6B7468)),
+                  ),
                 ),
               ),
-            ),
-          ...offers.map(_offerCard),
+            ...offers.map(_offerCard),
+          ],
         ],
       ),
     );
@@ -1349,6 +1428,9 @@ class _CourierHomeState extends State<CourierHome> {
     final data = earnings ?? <String, dynamic>{};
     final payouts = asList(data['payouts']);
     final recent = asList(data['recentDeliveries']);
+    final showSummary = _earningsFilter == 'all' || _earningsFilter == 'summary';
+    final showDeliveries = _earningsFilter == 'all' || _earningsFilter == 'deliveries';
+    final showPayouts = _earningsFilter == 'all' || _earningsFilter == 'payouts';
     return RefreshIndicator(
       onRefresh: _refreshData,
       child: ListView(
@@ -1356,60 +1438,65 @@ class _CourierHomeState extends State<CourierHome> {
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 30),
         children: [
           if (error != null) ...[ErrorBanner(message: error!), const SizedBox(height: 12)],
-          Container(
-            padding: const EdgeInsets.all(22),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1E2A24),
-              borderRadius: BorderRadius.circular(22),
+          if (showSummary) ...[
+            Container(
+              padding: const EdgeInsets.all(22),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E2A24),
+                borderRadius: BorderRadius.circular(22),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('LIFETIME EARNINGS', style: TextStyle(color: Color(0xFF98A59A), fontSize: 11, letterSpacing: 1.5, fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 8),
+                  Text(
+                    money(data['lifetimeEarningsMinor'] as num?),
+                    style: const TextStyle(color: Color(0xFFEEF0E6), fontSize: 34, fontWeight: FontWeight.w800, letterSpacing: -1),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(child: _darkStat('Tips', money(data['tipsMinor'] as num?))),
+                      Expanded(child: _darkStat('Pending payout', money(data['pendingPayoutMinor'] as num?))),
+                    ],
+                  ),
+                ],
+              ),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            const SizedBox(height: 14),
+            Row(
               children: [
-                const Text('LIFETIME EARNINGS', style: TextStyle(color: Color(0xFF98A59A), fontSize: 11, letterSpacing: 1.5, fontWeight: FontWeight.w800)),
-                const SizedBox(height: 8),
-                Text(
-                  money(data['lifetimeEarningsMinor'] as num?),
-                  style: const TextStyle(color: Color(0xFFEEF0E6), fontSize: 34, fontWeight: FontWeight.w800, letterSpacing: -1),
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Expanded(child: _darkStat('Tips', money(data['tipsMinor'] as num?))),
-                    Expanded(child: _darkStat('Pending payout', money(data['pendingPayoutMinor'] as num?))),
-                  ],
-                ),
+                Expanded(child: _statCard('Completed', '${data['completedDeliveries'] ?? 0}', Icons.check_circle_outline)),
+                const SizedBox(width: 10),
+                Expanded(child: _statCard('Payouts', '${payouts.length}', Icons.account_balance_wallet_outlined)),
               ],
             ),
-          ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(child: _statCard('Completed', '${data['completedDeliveries'] ?? 0}', Icons.check_circle_outline)),
-              const SizedBox(width: 10),
-              Expanded(child: _statCard('Payouts', '${payouts.length}', Icons.account_balance_wallet_outlined)),
-            ],
-          ),
-          const SizedBox(height: 22),
-          Text('Recent deliveries', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
-          const SizedBox(height: 8),
-          if (recent.isEmpty) const Text('Delivered orders will appear here.', style: TextStyle(color: Color(0xFF6B7468))),
-          ...recent.map(
-            (item) => Card(
-              margin: const EdgeInsets.only(bottom: 8),
-              child: ListTile(
-                title: Text(item['orderNumber']?.toString() ?? ''),
-                subtitle: Text(shortDate(item['deliveredAt']?.toString())),
-                trailing: Text(
-                  money((item['earningMinor'] as num? ?? 0) + (item['tipMinor'] as num? ?? 0), item['currency']?.toString()),
-                  style: const TextStyle(fontWeight: FontWeight.w800),
+            const SizedBox(height: 22),
+          ],
+          if (showDeliveries) ...[
+            Text('Recent deliveries', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 8),
+            if (recent.isEmpty) const Text('Delivered orders will appear here.', style: TextStyle(color: Color(0xFF6B7468))),
+            ...recent.map(
+              (item) => Card(
+                margin: const EdgeInsets.only(bottom: 8),
+                child: ListTile(
+                  title: Text(item['orderNumber']?.toString() ?? ''),
+                  subtitle: Text(shortDate(item['deliveredAt']?.toString())),
+                  trailing: Text(
+                    money((item['earningMinor'] as num? ?? 0) + (item['tipMinor'] as num? ?? 0), item['currency']?.toString()),
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
                 ),
               ),
             ),
-          ),
-          if (payouts.isNotEmpty) ...[
             const SizedBox(height: 20),
+          ],
+          if (showPayouts) ...[
             Text('Payouts', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
             const SizedBox(height: 8),
+            if (payouts.isEmpty) const Text('Payout statements will appear here.', style: TextStyle(color: Color(0xFF6B7468))),
             ...payouts.map(
               (payout) => Card(
                 margin: const EdgeInsets.only(bottom: 8),
