@@ -66,7 +66,6 @@ export class PaymentsService {
     if (method === "stripe" && this.config.paymentsProvider !== "stripe") throw new ServiceUnavailableException("Stripe card payments are not enabled.");
     if (method === "sandbox" && this.config.paymentsProvider !== "sandbox") throw new ServiceUnavailableException("The sandbox payment provider is not enabled.");
     if (method === "telebirr" && this.config.paymentsProvider !== "telebirr") throw new ServiceUnavailableException("Telebirr payments are not enabled.");
-    const provider = this.providerFor(method);
     return this.database.withTransaction(async (client) => {
       const orderResult = await client.query<{ id: string; user_id: string; status: string; payment_status: string; total_minor: string; currency: string; order_number: string }>(
         "SELECT id, user_id, status, payment_status, total_minor, currency, order_number FROM orders WHERE id = $1 AND user_id = $2 FOR UPDATE",
@@ -95,6 +94,7 @@ export class PaymentsService {
         }
         return { paymentId: cashPaymentId, method, checkoutUrl: null, providerReference: null, status: "PENDING" as const };
       }
+      const provider = this.providerFor(method);
       const user = await client.query<{ phone_e164: string | null; email: string | null }>("SELECT phone_e164, email FROM users WHERE id = $1", [order.user_id]);
       const idempotencyKey = input.idempotencyKey ?? `pay-${randomUUID()}`;
       const existing = await client.query<PaymentRow>("SELECT * FROM payments WHERE user_id = $1 AND idempotency_key = $2", [order.user_id, idempotencyKey]);
