@@ -10,6 +10,7 @@ import 'notifications_screen.dart';
 import 'personal_info_screen.dart';
 import 'privacy_screen.dart';
 import 'security_screen.dart';
+import 'support_screen.dart';
 
 class AccountScreen extends StatefulWidget {
   const AccountScreen({
@@ -421,6 +422,12 @@ class _AccountScreenState extends State<AccountScreen> {
                 title: l10n.helpAndSupport,
                 subtitle: l10n.helpSubtitle,
                 onTap: _help,
+              ),
+              AccountTile(
+                icon: Icons.support_agent_outlined,
+                title: 'Support tickets',
+                subtitle: 'Open a ticket and track its status',
+                onTap: () => _open(SupportScreen(client: widget.client)),
               ),
               AccountTile(
                 icon: Icons.logout,

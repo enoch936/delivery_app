@@ -42,12 +42,38 @@ export type OrderDeliveryRecord = Readonly<{
   lastLocation: { latitude: number; longitude: number; recordedAt: string; stale: boolean } | null;
 }>;
 
+export type OrderProofRecord = Readonly<{
+  id: string;
+  type: string;
+  storageKey: string | null;
+  recipientName: string | null;
+  notes: string | null;
+  capturedBy: string | null;
+  createdAt: string;
+}>;
+
+export type OrderIssueStatus = "OPEN" | "UNDER_REVIEW" | "RESOLVED" | "REJECTED";
+
+export type OrderIssueRecord = Readonly<{
+  id: string;
+  category: string;
+  description: string;
+  status: OrderIssueStatus;
+  priority: string;
+  resolution: string | null;
+  refundId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+}>;
+
 export type OrderDetailRecord = Readonly<{
   id: string;
   orderNumber: string;
   status: string;
   kind: string;
   paymentStatus: string;
+  paymentMethod: string | null;
   currency: string;
   merchant: { id: string; displayName: string };
   totals: OrderTotals;
@@ -61,13 +87,28 @@ export type OrderDetailRecord = Readonly<{
   distanceMeters: number | null;
   timeline: readonly OrderEventRecord[];
   delivery: OrderDeliveryRecord;
+  proofOfDelivery: readonly OrderProofRecord[];
+  issues: readonly OrderIssueRecord[];
   refunds: readonly { id: string; status: string; amountMinor: number; reason: string; createdAt: string }[];
-  capabilities: Readonly<{ canCancel: boolean; canReview: boolean; canRate: boolean; isOwner: boolean; isMerchant: boolean; isCourier: boolean; isAdmin: boolean }>;
+  cancellationReason: string | null;
+  capabilities: Readonly<{
+    canCancel: boolean;
+    canReview: boolean;
+    canRate: boolean;
+    canRequestRefund: boolean;
+    canReportIssue: boolean;
+    isOwner: boolean;
+    isMerchant: boolean;
+    isCourier: boolean;
+    isAdmin: boolean;
+  }>;
   deliveryCode: string | null;
   version: number;
   createdAt: string;
   updatedAt: string;
 }>;
+
+export type OrderListCounts = Readonly<{ all: number; active: number; past: number; cancelled: number; failed: number }>;
 
 export type OrderSummaryRecord = Readonly<{
   id: string;
@@ -78,6 +119,7 @@ export type OrderSummaryRecord = Readonly<{
   totalMinor: number;
   merchantName: string;
   itemCount: number;
+  deliveryEstimateMinutes: number | null;
   createdAt: string;
   updatedAt: string;
 }>;

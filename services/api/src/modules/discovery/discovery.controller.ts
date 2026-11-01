@@ -241,4 +241,30 @@ export class DiscoveryController {
     const favorite = await this.discoveryService.removeFavorite(requireUser(request).id, merchantId);
     return { favorite, removed: favorite };
   }
+
+  @Get("favorites/products")
+  @ApiBearerAuth()
+  @UseGuards(SessionGuard)
+  @ApiOkResponse({ description: "Products the customer marked as favorites." })
+  async favoriteProducts(@Req() request: AuthenticatedRequest, @Query() query: LocationQuery) {
+    const items = await this.discoveryService.listFavoriteProducts(requireUser(request).id, query.lat, query.lng);
+    return { items };
+  }
+
+  @Post("favorites/products/:productId")
+  @ApiBearerAuth()
+  @UseGuards(SessionGuard)
+  @HttpCode(HttpStatus.OK)
+  async addProductFavorite(@Req() request: AuthenticatedRequest, @Param("productId", ParseUUIDPipe) productId: string) {
+    const favorite = await this.discoveryService.addProductFavorite(requireUser(request).id, productId);
+    return { favorite, added: favorite };
+  }
+
+  @Delete("favorites/products/:productId")
+  @ApiBearerAuth()
+  @UseGuards(SessionGuard)
+  async removeProductFavorite(@Req() request: AuthenticatedRequest, @Param("productId", ParseUUIDPipe) productId: string) {
+    const favorite = await this.discoveryService.removeProductFavorite(requireUser(request).id, productId);
+    return { favorite, removed: favorite };
+  }
 }

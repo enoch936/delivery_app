@@ -176,6 +176,18 @@ export class DiscoveryService {
     return this.repository.removeFavorite(userId, merchantId);
   }
 
+  listFavoriteProducts(userId: string, latitude?: number | undefined, longitude?: number | undefined) {
+    return this.repository.listFavoriteProducts(userId, this.config.launchCitySlug, latitude ?? null, longitude ?? null);
+  }
+
+  addProductFavorite(userId: string, productId: string) {
+    return this.repository.addProductFavorite(userId, productId);
+  }
+
+  removeProductFavorite(userId: string, productId: string) {
+    return this.repository.removeProductFavorite(userId, productId);
+  }
+
   listRecentSearches(userId: string) {
     return this.repository.listRecentSearches(userId, 10);
   }

@@ -15,9 +15,36 @@ import { DatabaseService } from "../../database/database.service.js";
 import { AuditService } from "../../common/audit.service.js";
 import { NotificationsService } from "../notifications/notifications.service.js";
 import { LedgerService } from "../ledger/ledger.service.js";
-import type { OrderDetailRecord, OrderEventRecord, OrderItemRecord, OrderSummaryRecord, OrderViewer } from "./orders.types.js";
+import type {
+  OrderDetailRecord,
+  OrderEventRecord,
+  OrderIssueRecord,
+  OrderItemRecord,
+  OrderListCounts,
+  OrderProofRecord,
+  OrderSummaryRecord,
+  OrderViewer
+} from "./orders.types.js";
 
 type Queryable = Pool | PoolClient;
+
+type OrderBucket = "all" | "active" | "past" | "cancelled" | "failed";
+
+const ACTIVE_ORDER_STATUSES = [
+  "PENDING_CONFIRMATION",
+  "AWAITING_PAYMENT",
+  "CONFIRMED",
+  "ACCEPTED_BY_MERCHANT",
+  "PREPARING",
+  "READY_FOR_PICKUP",
+  "COURIER_ASSIGNED",
+  "COURIER_ARRIVING_PICKUP",
+  "PICKED_UP",
+  "IN_TRANSIT"
+] as const;
+const PAST_ORDER_STATUSES = ["DELIVERED", "REFUNDED"] as const;
+const CANCELLED_ORDER_STATUSES = ["CANCELLED"] as const;
+const FAILED_ORDER_STATUSES = ["FAILED", "REFUND_PENDING"] as const;
 
 type OrderRow = {
   id: string;
@@ -29,7 +56,9 @@ type OrderRow = {
   status: string;
   kind: string;
   payment_status: string;
+  payment_method: string | null;
   currency: string;
+  cancellation_reason: string | null;
   items_subtotal_minor: string;
   delivery_fee_minor: string;
   service_fee_minor: string;
@@ -262,32 +291,71 @@ export class OrdersService {
     });
   }
 
-  async list(input: Readonly<{ userId: string; status?: string | undefined; limit: number; offset: number }>): Promise<{ items: OrderSummaryRecord[]; total: number }> {
+  async list(input: Readonly<{
+    userId: string;
+    status?: string | undefined;
+    bucket?: string | undefined;
+    limit: number;
+    offset: number;
+  }>): Promise<{ items: OrderSummaryRecord[]; total: number; counts: OrderListCounts }> {
+    const bucket = parseBucket(input.bucket);
     const params: unknown[] = [input.userId];
-    let statusFilter = "";
+    let filter = "";
     if (input.status) {
       params.push(input.status);
-      statusFilter = `AND o.status = $${params.length}`;
+      filter = `AND o.status = $${params.length}`;
+    } else if (bucket !== "all") {
+      params.push(orderStatusesForBucket(bucket));
+      filter = `AND o.status = ANY($${params.length}::text[])`;
     }
-    const count = await this.database.query<{ count: string }>(`SELECT count(*)::text AS count FROM orders o WHERE o.user_id = $1 ${statusFilter}`, params);
+    const [count, counts] = await Promise.all([
+      this.database.query<{ count: string }>(`SELECT count(*)::text AS count FROM orders o WHERE o.user_id = $1 ${filter}`, params),
+      this.database.query<{
+        all: string; active: string; past: string; cancelled: string; failed: string;
+      }>(
+        `SELECT count(*)::text AS all,
+                count(*) FILTER (WHERE o.status = ANY($2::text[]))::text AS active,
+                count(*) FILTER (WHERE o.status = ANY($3::text[]))::text AS past,
+                count(*) FILTER (WHERE o.status = ANY($4::text[]))::text AS cancelled,
+                count(*) FILTER (WHERE o.status = ANY($5::text[]))::text AS failed
+         FROM orders o WHERE o.user_id = $1`,
+        [
+          input.userId,
+          [...ACTIVE_ORDER_STATUSES],
+          [...PAST_ORDER_STATUSES],
+          [...CANCELLED_ORDER_STATUSES],
+          [...FAILED_ORDER_STATUSES]
+        ]
+      )
+    ]);
     params.push(input.limit, input.offset);
-    const result = await this.database.query<{ id: string; order_number: string; status: string; payment_status: string; currency: string; total_minor: string; merchant_name: string; item_count: string; created_at: Date; updated_at: Date }>(
+    const result = await this.database.query<{ id: string; order_number: string; status: string; payment_status: string; currency: string; total_minor: string; merchant_name: string; item_count: string; delivery_estimate_minutes: number | null; created_at: Date; updated_at: Date }>(
       `SELECT o.id, o.order_number, o.status, o.payment_status, o.currency, o.total_minor,
               COALESCE(o.merchant_name_snapshot, m.display_name) AS merchant_name,
               (SELECT COALESCE(sum(oi.quantity), 0)::text FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
+              o.delivery_estimate_minutes,
               o.created_at, o.updated_at
        FROM orders o JOIN merchants m ON m.id = o.merchant_id
-       WHERE o.user_id = $1 ${statusFilter}
+       WHERE o.user_id = $1 ${filter}
        ORDER BY o.created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );
+    const countRow = counts.rows[0];
     return {
       items: result.rows.map((row) => ({
         id: row.id, orderNumber: row.order_number, status: row.status, paymentStatus: row.payment_status,
         currency: row.currency, totalMinor: Number(row.total_minor), merchantName: row.merchant_name,
-        itemCount: Number(row.item_count), createdAt: row.created_at.toISOString(), updatedAt: row.updated_at.toISOString()
+        itemCount: Number(row.item_count), deliveryEstimateMinutes: row.delivery_estimate_minutes,
+        createdAt: row.created_at.toISOString(), updatedAt: row.updated_at.toISOString()
       })),
-      total: Number(count.rows[0]?.count ?? "0")
+      total: Number(count.rows[0]?.count ?? "0"),
+      counts: {
+        all: Number(countRow?.all ?? "0"),
+        active: Number(countRow?.active ?? "0"),
+        past: Number(countRow?.past ?? "0"),
+        cancelled: Number(countRow?.cancelled ?? "0"),
+        failed: Number(countRow?.failed ?? "0")
+      }
     };
   }
 
@@ -349,6 +417,238 @@ export class OrdersService {
       await this.audit.record({ actorUserId: input.userId, action: "order.cancelled", entityType: "order", entityId: order.id, requestId: input.requestId, ipHash: input.ipHash, metadata: { reason: input.reason, refundId } }, client);
     });
     return this.detail(input.orderId, { userId: input.userId, roles: ["customer"] });
+  }
+
+  async requestRefund(input: Readonly<{
+    orderId: string;
+    userId: string;
+    reason: string;
+    requestId: string | null;
+    ipHash: string | null;
+  }>): Promise<OrderDetailRecord> {
+    await this.database.withTransaction(async (client) => {
+      const orderResult = await client.query<OrderRow>(
+        `SELECT o.*, COALESCE(o.merchant_name_snapshot, m.display_name) AS merchant_name
+         FROM orders o JOIN merchants m ON m.id = o.merchant_id
+         WHERE o.id = $1 AND o.user_id = $2 FOR UPDATE OF o`,
+        [input.orderId, input.userId]
+      );
+      const order = orderResult.rows[0];
+      if (!order) throw new NotFoundException("Order not found.");
+      if (!["PAID", "PARTIALLY_REFUNDED"].includes(order.payment_status)) {
+        throw new ConflictException("This order has no captured payment to refund. Report the delivery issue instead.");
+      }
+      if (["PENDING_CONFIRMATION", "AWAITING_PAYMENT"].includes(order.status)) {
+        throw new ConflictException("Finish payment before requesting a refund.");
+      }
+      const existing = await client.query<{ status: string }>(
+        "SELECT status FROM refunds WHERE order_id = $1 ORDER BY created_at DESC",
+        [order.id]
+      );
+      if (existing.rows.some((refund) => ["PENDING", "APPROVED", "PROCESSING"].includes(refund.status))) {
+        throw new ConflictException("A refund for this order is already under review.");
+      }
+      const payment = await client.query<{ id: string; amount_minor: string }>(
+        "SELECT id, amount_minor FROM payments WHERE order_id = $1 AND status IN ('SUCCEEDED','PARTIALLY_REFUNDED') ORDER BY created_at DESC LIMIT 1",
+        [order.id]
+      );
+      if (!payment.rows[0]) throw new ConflictException("No captured payment was found for this order.");
+      const alreadyRefunded = await client.query<{ amount: string }>(
+        `SELECT COALESCE(sum(amount_minor), 0)::text AS amount FROM refunds
+         WHERE order_id = $1 AND status IN ('APPROVED','PROCESSING','SUCCEEDED')`,
+        [order.id]
+      );
+      const refundable = Number(payment.rows[0].amount_minor) - Number(alreadyRefunded.rows[0]?.amount ?? "0");
+      if (refundable <= 0) throw new ConflictException("This order has already been fully refunded.");
+      const refund = await client.query<{ id: string }>(
+        `INSERT INTO refunds (payment_id, order_id, amount_minor, currency, status, reason, requested_by, provider_merchant_reference)
+         VALUES ($1,$2,$3,$4,'PENDING',$5,$6,$7) RETURNING id`,
+        [
+          payment.rows[0].id,
+          order.id,
+          refundable,
+          order.currency,
+          input.reason,
+          input.userId,
+          `RF-${randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase()}`
+        ]
+      );
+      const refundId = refund.rows[0]?.id ?? null;
+      await this.notifications.create({
+        userId: order.user_id,
+        type: "order.refund_requested",
+        title: "Refund request received",
+        body: `Your refund request for order ${order.order_number} is under review.`,
+        data: { orderId: order.id, refundId }
+      }, client);
+      await client.query(
+        "INSERT INTO outbox_events (event_type, aggregate_type, aggregate_id, payload) VALUES ('order.refund_requested','order',$1,$2)",
+        [order.id, JSON.stringify({ orderId: order.id, refundId, amountMinor: refundable })]
+      );
+      await this.audit.record({
+        actorUserId: input.userId,
+        action: "order.refund_requested",
+        entityType: "order",
+        entityId: order.id,
+        requestId: input.requestId,
+        ipHash: input.ipHash,
+        metadata: { reason: input.reason, refundId, amountMinor: refundable }
+      }, client);
+    });
+    return this.detail(input.orderId, { userId: input.userId, roles: ["customer"] });
+  }
+
+  async reportIssue(input: Readonly<{
+    orderId: string;
+    userId: string;
+    category: string;
+    description: string;
+    priority?: string | undefined;
+    requestId: string | null;
+    ipHash: string | null;
+  }>): Promise<OrderIssueRecord> {
+    return this.database.withTransaction(async (client) => {
+      const orderResult = await client.query<{ id: string; user_id: string; order_number: string; status: string }>(
+        "SELECT id, user_id, order_number, status FROM orders WHERE id = $1 AND user_id = $2 FOR UPDATE",
+        [input.orderId, input.userId]
+      );
+      const order = orderResult.rows[0];
+      if (!order) throw new NotFoundException("Order not found.");
+      if (["CANCELLED", "REFUNDED"].includes(order.status)) {
+        throw new ConflictException("A new issue cannot be filed for this order. Contact support if you need more help.");
+      }
+      const open = await client.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM order_issues WHERE order_id = $1 AND status IN ('OPEN','UNDER_REVIEW')",
+        [order.id]
+      );
+      if (Number(open.rows[0]?.count ?? "0") >= 3) {
+        throw new ConflictException("You already have open issues for this order. Our team is reviewing them.");
+      }
+      const result = await client.query<{
+        id: string; category: string; description: string; status: string; priority: string;
+        resolution: string | null; refund_id: string | null; created_at: Date; updated_at: Date; resolved_at: Date | null;
+      }>(
+        `INSERT INTO order_issues (order_id, user_id, category, description, priority)
+         VALUES ($1,$2,$3,$4,$5)
+         RETURNING id, category, description, status, priority, resolution, refund_id, created_at, updated_at, resolved_at`,
+        [order.id, input.userId, input.category, input.description, input.priority ?? "NORMAL"]
+      );
+      const issue = result.rows[0];
+      if (!issue) throw new Error("Issue creation failed.");
+      await this.notifications.create({
+        userId: order.user_id,
+        type: "order.issue_reported",
+        title: "Issue reported",
+        body: `We received your report for order ${order.order_number}. Support will follow up.`,
+        data: { orderId: order.id, issueId: issue.id }
+      }, client);
+      await client.query(
+        "INSERT INTO outbox_events (event_type, aggregate_type, aggregate_id, payload) VALUES ('order.issue_reported','order',$1,$2)",
+        [order.id, JSON.stringify({ orderId: order.id, issueId: issue.id, category: input.category })]
+      );
+      await this.audit.record({
+        actorUserId: input.userId,
+        action: "order.issue_reported",
+        entityType: "order",
+        entityId: order.id,
+        requestId: input.requestId,
+        ipHash: input.ipHash,
+        metadata: { issueId: issue.id, category: input.category, priority: input.priority ?? "NORMAL" }
+      }, client);
+      return {
+        id: issue.id,
+        category: issue.category,
+        description: issue.description,
+        status: issue.status as OrderIssueRecord["status"],
+        priority: issue.priority,
+        resolution: issue.resolution,
+        refundId: issue.refund_id,
+        createdAt: issue.created_at.toISOString(),
+        updatedAt: issue.updated_at.toISOString(),
+        resolvedAt: issue.resolved_at?.toISOString() ?? null
+      };
+    });
+  }
+
+  async listIssues(orderId: string, viewer: OrderViewer): Promise<readonly OrderIssueRecord[]> {
+    return (await this.detail(orderId, viewer)).issues;
+  }
+
+  async adminListIssues(input: Readonly<{ status?: string | undefined; limit: number; offset: number }>) {
+    const result = await this.database.query(
+      `SELECT i.id, i.order_id, i.category, i.description, i.status, i.priority, i.resolution, i.refund_id,
+              i.assigned_to, i.created_at, i.updated_at, i.resolved_at, o.order_number, u.phone_e164 AS customer_phone
+       FROM order_issues i
+       JOIN orders o ON o.id = i.order_id
+       JOIN users u ON u.id = i.user_id
+       WHERE ($1::text IS NULL OR i.status = $1)
+       ORDER BY CASE i.priority WHEN 'URGENT' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'NORMAL' THEN 2 ELSE 3 END, i.created_at ASC
+       LIMIT $2 OFFSET $3`,
+      [input.status ?? null, input.limit, input.offset]
+    );
+    return {
+      items: result.rows.map((row) => ({
+        id: row.id as string,
+        orderId: row.order_id as string,
+        orderNumber: row.order_number as string,
+        category: row.category as string,
+        description: row.description as string,
+        status: row.status as string,
+        priority: row.priority as string,
+        resolution: row.resolution as string | null,
+        refundId: row.refund_id as string | null,
+        assignedTo: row.assigned_to as string | null,
+        customerPhone: row.customer_phone as string | null,
+        createdAt: (row.created_at as Date).toISOString(),
+        updatedAt: (row.updated_at as Date).toISOString(),
+        resolvedAt: (row.resolved_at as Date | null)?.toISOString() ?? null
+      }))
+    };
+  }
+
+  async resolveIssue(input: Readonly<{
+    issueId: string;
+    actorUserId: string;
+    status: "OPEN" | "UNDER_REVIEW" | "RESOLVED" | "REJECTED";
+    resolution?: string | undefined;
+    requestId: string | null;
+    ipHash: string | null;
+  }>): Promise<{ id: string; status: string }> {
+    return this.database.withTransaction(async (client) => {
+      const issue = await client.query<{ id: string; order_id: string; user_id: string; status: string }>(
+        "SELECT id, order_id, user_id, status FROM order_issues WHERE id = $1 FOR UPDATE",
+        [input.issueId]
+      );
+      const row = issue.rows[0];
+      if (!row) throw new NotFoundException("Issue not found.");
+      if ((input.status === "RESOLVED" || input.status === "REJECTED") && !input.resolution?.trim()) {
+        throw new BadRequestException("A resolution note is required to close an issue.");
+      }
+      await client.query(
+        `UPDATE order_issues
+         SET status = $2, resolution = COALESCE($3, resolution), assigned_to = $4,
+             resolved_at = CASE WHEN $2 IN ('RESOLVED','REJECTED') THEN now() ELSE NULL END
+         WHERE id = $1`,
+        [input.issueId, input.status, input.resolution ?? null, input.actorUserId]
+      );
+      await this.notifications.create({
+        userId: row.user_id,
+        type: "order.issue_updated",
+        title: input.status === "RESOLVED" ? "Issue resolved" : input.status === "REJECTED" ? "Issue update" : "Issue under review",
+        body: input.resolution?.trim() || `Your order issue is now ${input.status.toLowerCase().replace(/_/g, " ")}.`,
+        data: { orderId: row.order_id, issueId: input.issueId }
+      }, client);
+      await this.audit.record({
+        actorUserId: input.actorUserId,
+        action: "order.issue_updated",
+        entityType: "order_issue",
+        entityId: input.issueId,
+        requestId: input.requestId,
+        ipHash: input.ipHash,
+        metadata: { status: input.status, resolution: input.resolution ?? null }
+      }, client);
+      return { id: input.issueId, status: input.status };
+    });
   }
 
   async merchantTransition(input: Readonly<{ orderId: string; actorUserId: string; action: "accept" | "prepare" | "ready" | "reject"; reason?: string | undefined; requestId: string | null; ipHash: string | null }>): Promise<OrderDetailRecord> {
@@ -438,6 +738,7 @@ export class OrdersService {
         );
         await client.query("UPDATE courier_profiles SET completed_deliveries = completed_deliveries + 1 WHERE user_id = $1", [input.courierUserId]);
         await client.query("UPDATE courier_availability SET active_order_id = NULL, updated_at = now() WHERE courier_user_id = $1", [input.courierUserId]);
+        await this.awardLoyaltyPoints(client, order.user_id, Number(order.items_subtotal_minor), `order:${order.id}`);
       }
       if (input.action === "failed") {
         await client.query("UPDATE delivery_assignments SET status = 'failed', cancelled_at = now(), cancellation_reason = $2 WHERE id = $1", [active.id, input.notes ?? "Delivery failed"]);
@@ -555,6 +856,22 @@ export class OrdersService {
       "SELECT id, status, amount_minor, reason, created_at FROM refunds WHERE order_id = $1 ORDER BY created_at DESC",
       [orderId]
     );
+    const proofs = await executor.query<{
+      id: string; proof_type: string; storage_key: string | null; recipient_name: string | null;
+      notes: string | null; captured_by: string | null; created_at: Date;
+    }>(
+      `SELECT id, proof_type, storage_key, recipient_name, notes, captured_by, created_at
+       FROM delivery_proofs WHERE order_id = $1 ORDER BY created_at DESC`,
+      [orderId]
+    );
+    const issues = await executor.query<{
+      id: string; category: string; description: string; status: string; priority: string;
+      resolution: string | null; refund_id: string | null; created_at: Date; updated_at: Date; resolved_at: Date | null;
+    }>(
+      `SELECT id, category, description, status, priority, resolution, refund_id, created_at, updated_at, resolved_at
+       FROM order_issues WHERE order_id = $1 ORDER BY created_at DESC`,
+      [orderId]
+    );
     const review = await executor.query("SELECT 1 FROM reviews WHERE order_id = $1", [orderId]);
     const assignmentPickedUp = assignment?.picked_up_at ?? null;
     const decision = decideCancellation({
@@ -577,12 +894,21 @@ export class OrdersService {
     const deliveryCode = isOwner && ["COURIER_ASSIGNED", "COURIER_ARRIVING_PICKUP", "PICKED_UP", "IN_TRANSIT"].includes(order.status)
       ? this.deliveryCodeForOrder(order)
       : null;
+    const refundInFlight = refunds.rows.some((refund) =>
+      ["PENDING", "APPROVED", "PROCESSING"].includes(refund.status)
+    );
+    const canRequestRefund = isOwner
+      && ["PAID", "PARTIALLY_REFUNDED"].includes(order.payment_status)
+      && !refundInFlight
+      && !["PENDING_CONFIRMATION", "AWAITING_PAYMENT"].includes(order.status);
+    const canReportIssue = isOwner && !["CANCELLED", "REFUNDED"].includes(order.status);
     return {
       id: order.id,
       orderNumber: order.order_number,
       status: order.status,
       kind: order.kind,
       paymentStatus: order.payment_status,
+      paymentMethod: order.payment_method ?? null,
       currency: order.currency,
       merchant: { id: order.merchant_id, displayName: order.merchant_name },
       totals: {
@@ -620,11 +946,35 @@ export class OrdersService {
           ? { latitude: Number(assignment.latitude), longitude: Number(assignment.longitude), recordedAt: assignment.last_seen_at.toISOString(), stale: !locationFresh }
           : null
       },
+      proofOfDelivery: proofs.rows.map((proof): OrderProofRecord => ({
+        id: proof.id,
+        type: proof.proof_type,
+        storageKey: proof.storage_key,
+        recipientName: proof.recipient_name,
+        notes: proof.notes,
+        capturedBy: proof.captured_by,
+        createdAt: proof.created_at.toISOString()
+      })),
+      issues: issues.rows.map((issue): OrderIssueRecord => ({
+        id: issue.id,
+        category: issue.category,
+        description: issue.description,
+        status: issue.status as OrderIssueRecord["status"],
+        priority: issue.priority,
+        resolution: issue.resolution,
+        refundId: issue.refund_id,
+        createdAt: issue.created_at.toISOString(),
+        updatedAt: issue.updated_at.toISOString(),
+        resolvedAt: issue.resolved_at?.toISOString() ?? null
+      })),
       refunds: refunds.rows.map((refund) => ({ id: refund.id, status: refund.status, amountMinor: Number(refund.amount_minor), reason: refund.reason, createdAt: refund.created_at.toISOString() })),
+      cancellationReason: order.cancellation_reason ?? null,
       capabilities: {
         canCancel: isOwner && decision.allowed,
         canReview: isOwner && order.status === "DELIVERED" && review.rowCount === 0,
         canRate: isOwner && order.status === "DELIVERED" && review.rowCount === 0,
+        canRequestRefund,
+        canReportIssue,
         isOwner, isMerchant, isCourier, isAdmin
       },
       deliveryCode,
@@ -655,6 +1005,40 @@ export class OrdersService {
       "INSERT INTO order_status_events (order_id, from_status, to_status, actor_user_id, metadata) VALUES ($1,$2,$3,$4,$5)",
       [orderId, fromStatus, toStatus, actorUserId, JSON.stringify({ note })]
     );
+  }
+
+  private async awardLoyaltyPoints(client: Queryable, userId: string, orderTotalMinor: number, reference: string): Promise<void> {
+    const points = Math.max(5, Math.floor(orderTotalMinor / 100));
+    await client.query(
+      `INSERT INTO loyalty_accounts (user_id, points) VALUES ($1, $2)
+       ON CONFLICT (user_id) DO UPDATE SET points = loyalty_accounts.points + $2, updated_at = now()`,
+      [userId, points]
+    );
+    await client.query(
+      `INSERT INTO loyalty_transactions (user_id, points, type, source, reference) VALUES ($1, $2, 'earn', 'order_delivery', $3)`,
+      [userId, points, reference]
+    );
+  }
+}
+
+function parseBucket(value: string | undefined): OrderBucket {
+  return value === "active" || value === "past" || value === "cancelled" || value === "failed"
+    ? value
+    : "all";
+}
+
+function orderStatusesForBucket(bucket: OrderBucket): readonly string[] {
+  switch (bucket) {
+    case "active":
+      return ACTIVE_ORDER_STATUSES;
+    case "past":
+      return PAST_ORDER_STATUSES;
+    case "cancelled":
+      return CANCELLED_ORDER_STATUSES;
+    case "failed":
+      return FAILED_ORDER_STATUSES;
+    default:
+      return [];
   }
 }
 

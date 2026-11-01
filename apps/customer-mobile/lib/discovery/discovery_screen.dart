@@ -32,6 +32,7 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
   Map<String, dynamic> searchResult = <String, dynamic>{};
 
   Set<String> favorites = {};
+  Set<String> favoriteProducts = <String>{};
   List<String> recentSearches = [];
   List<Map<String, dynamic>> suggestions = [];
   String location = 'Bole, Addis Ababa';
@@ -125,11 +126,14 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         safeGet('/v1/merchants?${_merchantQuery()}'),
         if (widget.client.session != null) safeGet('/v1/favorites?lat=$latitude&lng=$longitude'),
         if (widget.client.session != null) safeGet('/v1/search/recent'),
+        if (widget.client.session != null) safeGet('/v1/favorites/products?lat=$latitude&lng=$longitude'),
       ]);
       if (!mounted || generation != _feedGeneration) return;
       final feed = asMap(results[0]);
       if (feed.isEmpty) throw StateError('Could not load the home feed.');
-      final indexOffset = 2;
+      final favoritesIndex = 2;
+      final recentIndex = 3;
+      final productFavoritesIndex = 4;
       setState(() {
         home = feed;
         banners = asList(feed['banners']);
@@ -142,18 +146,25 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         recentlyOrderedProducts = asList(feed['recentlyOrderedProducts']);
         merchants = asList(asMap(results[1])['items']);
         merchantTotal = (asMap(results[1])['total'] as num?)?.toInt() ?? merchants.length;
-        if (results.length > indexOffset) {
+        if (widget.client.session != null && results.length > favoritesIndex) {
           favorites = {};
-          for (final merchant in asList(asMap(results[indexOffset])['items'])) {
+          for (final merchant in asList(asMap(results[favoritesIndex])['items'])) {
             final id = merchant['id']?.toString();
             if (id != null) favorites.add(id);
           }
         }
-        if (results.length > indexOffset + 1) {
-          final serverTerms = asList(asMap(results[indexOffset + 1])['items'])
+        if (widget.client.session != null && results.length > recentIndex) {
+          final serverTerms = asList(asMap(results[recentIndex])['items'])
               .map((item) => item['term']?.toString())
               .whereType<String>();
           recentSearches = {...serverTerms, ...recentSearches}.take(8).toList();
+        }
+        if (widget.client.session != null && results.length > productFavoritesIndex) {
+          favoriteProducts = {};
+          for (final product in asList(asMap(results[productFavoritesIndex])['items'])) {
+            final id = product['id']?.toString();
+            if (id != null) favoriteProducts.add(id);
+          }
         }
       });
     } catch (cause) {
@@ -318,6 +329,37 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
           favorites.remove(merchantId);
         } else {
           favorites.add(merchantId);
+        }
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not sync favorites. Try again.')),
+      );
+    }
+  }
+
+  Future<void> _toggleFavoriteProduct(String productId) async {
+    final added = !favoriteProducts.contains(productId);
+    setState(() {
+      if (added) {
+        favoriteProducts.add(productId);
+      } else {
+        favoriteProducts.remove(productId);
+      }
+    });
+    if (widget.client.session == null) return;
+    try {
+      if (added) {
+        await widget.client.post('/v1/favorites/products/$productId');
+      } else {
+        await widget.client.delete('/v1/favorites/products/$productId');
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        if (added) {
+          favoriteProducts.remove(productId);
+        } else {
+          favoriteProducts.add(productId);
         }
       });
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1026,6 +1068,8 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
           final product = items[index];
           final merchant = asMap(product['merchant']);
           final image = product['imageUrl']?.toString();
+          final productId = product['id']?.toString() ?? '';
+          final isFavorite = productId.isNotEmpty && favoriteProducts.contains(productId);
           return SizedBox(
             width: 150,
             child: Card(
@@ -1038,9 +1082,28 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                     SizedBox(
                       height: 92,
                       width: double.infinity,
-                      child: image == null
-                          ? const ColoredBox(color: Color(0xFFF0EAD9), child: Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D)))
-                          : Image.network(image, fit: BoxFit.cover, errorBuilder: (_, _, _) => const ColoredBox(color: Color(0xFFF0EAD9), child: Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D)))),
+                      child: Stack(
+                        children: [
+                          image == null
+                              ? const ColoredBox(color: Color(0xFFF0EAD9), child: Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D)))
+                              : Image.network(image, fit: BoxFit.cover, errorBuilder: (_, _, _) => const ColoredBox(color: Color(0xFFF0EAD9), child: Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D)))),
+                          Positioned(
+                            top: 6,
+                            right: 6,
+                            child: IconButton(
+                              iconSize: 22,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                              tooltip: isFavorite ? 'Remove from favorites' : 'Add to favorites',
+                              icon: Icon(
+                                isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                                color: isFavorite ? const Color(0xFFE8613D) : const Color(0xFF9E9E9E),
+                              ),
+                              onPressed: () => _toggleFavoriteProduct(product['id']?.toString() ?? ''),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),

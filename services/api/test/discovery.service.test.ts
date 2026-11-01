@@ -5,6 +5,7 @@ import { DiscoveryService } from "../src/modules/discovery/discovery.service.js"
 import type {
   DiscoveryHomeRecord,
   DiscoveryRepository,
+  FavoriteProductRecord,
   MerchantDetailRecord,
   MerchantListInput,
   MerchantSummaryRecord,
@@ -131,6 +132,9 @@ class MemoryDiscoveryRepository implements DiscoveryRepository {
   async listFavorites(): Promise<readonly MerchantSummaryRecord[]> { return this.favorites.has(merchant.id) ? [merchant] : []; }
   async addFavorite(_userId: string, merchantId: string): Promise<boolean> { this.favorites.add(merchantId); return true; }
   async removeFavorite(_userId: string, merchantId: string): Promise<boolean> { return this.favorites.delete(merchantId); }
+  async listFavoriteProducts(): Promise<{ items: readonly FavoriteProductRecord[] }> { return { items: [] }; }
+  async addProductFavorite(_userId: string, productId: string): Promise<boolean> { return true; }
+  async removeProductFavorite(_userId: string, productId: string): Promise<boolean> { return true; }
   async listRecentSearches(): Promise<readonly RecentSearchRecord[]> { return this.recent; }
   async recordRecentSearch(_userId: string, term: string): Promise<void> { this.recent = [{ term, lastSearchedAt: new Date().toISOString() }]; }
   async clearRecentSearches(): Promise<void> { this.recent = []; }

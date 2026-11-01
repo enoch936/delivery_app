@@ -14,6 +14,8 @@ Account is a hub with dedicated screens:
 - Preferences (English/Amharic, accessibility: text scale, reduce motion, high contrast, screen-reader hints)
 - Help & support, sign out
 
+Support tickets: `Help & support (info) → Support tickets (history, new ticket, thread with replies)`. Order-specific help also reaches the support team through the order chat, refund requests and issue reports surfaced in the order detail experience.
+
 Session, locale and accessibility settings persist locally (`AppStorage`); accessibility overrides the app-wide `MediaQuery` (text scaling, animations, contrast) and syncs to `user_profiles`. Base URL is supplied with `--dart-define=API_BASE_URL`.
 
 ## Courier mobile (implemented)

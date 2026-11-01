@@ -22,6 +22,7 @@ import { TrackingModule } from "./modules/tracking/tracking.module.js";
 import { ConfigModule } from "./modules/config/config.module.js";
 import { DispatchModule } from "./modules/dispatch/dispatch.module.js";
 import { LedgerModule } from "./modules/ledger/ledger.module.js";
+import { LoyaltyModule } from "./modules/loyalty/loyalty.module.js";
 import { ReportsModule } from "./modules/reports/reports.module.js";
 import { PromotionsModule } from "./modules/promotions/promotions.module.js";
 import { ReviewsModule } from "./modules/reviews/reviews.module.js";
@@ -58,6 +59,7 @@ import { SubscriptionsModule } from "./modules/subscriptions/subscriptions.modul
     ConfigModule,
     DispatchModule,
     LedgerModule,
+    LoyaltyModule,
     ReportsModule,
     PromotionsModule,
     ReviewsModule,

@@ -104,6 +104,19 @@ export type ProductOptionGroupRecord = Readonly<{
 
 export type ProductStockState = "in_stock" | "low_stock" | "out_of_stock";
 
+export type FavoriteProductRecord = Readonly<{
+  id: string;
+  merchantId: string;
+  merchantName: string;
+  displayName: string;
+  imageUrl: string | null;
+  basePriceMinor: number;
+  currency: string;
+  isAvailable: boolean;
+  quantityAvailable: number | null;
+  stockState: ProductStockState;
+}>;
+
 export type ProductRecord = Readonly<{
   id: string;
   merchantId: string;
@@ -241,6 +254,9 @@ export interface DiscoveryRepository {
   listFavorites(userId: string, citySlug: string, latitude: number | null, longitude: number | null): Promise<readonly MerchantSummaryRecord[]>;
   addFavorite(userId: string, merchantId: string): Promise<boolean>;
   removeFavorite(userId: string, merchantId: string): Promise<boolean>;
+  listFavoriteProducts(userId: string, citySlug: string, latitude: number | null, longitude: number | null): Promise<{ items: readonly FavoriteProductRecord[] }>;
+  addProductFavorite(userId: string, productId: string): Promise<boolean>;
+  removeProductFavorite(userId: string, productId: string): Promise<boolean>;
   listRecentSearches(userId: string, limit: number): Promise<readonly RecentSearchRecord[]>;
   recordRecentSearch(userId: string, term: string): Promise<void>;
   clearRecentSearches(userId: string): Promise<void>;

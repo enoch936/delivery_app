@@ -6,6 +6,7 @@ import type {
   DiscoveryHomeRecord,
   DiscoveryOfferRecord,
   DiscoveryRepository,
+  FavoriteProductRecord,
   MerchantDayHours,
   MerchantDetailRecord,
   MerchantListInput,
@@ -672,6 +673,51 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
     return (result.rowCount ?? 0) > 0;
   }
 
+  async listFavoriteProducts(userId: string, citySlug: string, latitude: number | null, longitude: number | null): Promise<{ items: readonly FavoriteProductRecord[] }> {
+    const result = await this.getPool().query<FavoriteProductRow>(
+      `SELECT p.id, p.merchant_id, p.display_name, p.image_url, p.base_price_minor, p.currency, p.is_available, i.quantity_available,
+              catalog_stock_state(p.is_available, i.quantity_available) AS stock_state, m.display_name AS merchant_display_name
+         FROM favorites f
+         JOIN products p ON p.id = f.product_id AND p.merchant_id = f.merchant_id
+         JOIN merchants m ON m.id = p.merchant_id AND m.status = 'active'
+         LEFT JOIN inventory i ON i.product_id = p.id
+        WHERE f.user_id = $1 AND f.product_id IS NOT NULL
+        ORDER BY m.display_name ASC, p.display_name ASC
+        LIMIT 50`,
+      [userId]
+    );
+    const items = result.rows.map((row) => ({
+      id: row.id as string,
+      merchantId: row.merchant_id as string,
+      merchantName: row.merchant_display_name as string,
+      displayName: row.display_name as string,
+      imageUrl: row.image_url as string | null,
+      basePriceMinor: Number(row.base_price_minor),
+      currency: row.currency as string,
+      isAvailable: row.is_available as boolean,
+      quantityAvailable: row.quantity_available === null ? null : Number(row.quantity_available),
+      stockState: row.stock_state as FavoriteProductRecord["stockState"]
+    }));
+    return { items };
+  }
+
+  async addProductFavorite(userId: string, productId: string): Promise<boolean> {
+    const result = await this.getPool().query(
+      `INSERT INTO favorites (user_id, merchant_id, product_id)
+       SELECT $1, p.merchant_id, p.id FROM products p
+       JOIN merchants m ON m.id = p.merchant_id AND m.status = 'active'
+       WHERE p.id = $2
+       ON CONFLICT DO NOTHING`,
+      [userId, productId]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async removeProductFavorite(userId: string, productId: string): Promise<boolean> {
+    const result = await this.getPool().query("DELETE FROM favorites WHERE user_id = $1 AND product_id = $2", [userId, productId]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
   async listRecentSearches(userId: string, limit: number): Promise<readonly RecentSearchRecord[]> {
     const result = await this.getPool().query<{ term: string; last_searched_at: Date }>(
       `SELECT term, last_searched_at FROM user_recent_searches
@@ -880,6 +926,10 @@ type ProductRow = {
   is_available: boolean;
   quantity_available: number | null;
   stock_state: ProductStockState;
+};
+
+type FavoriteProductRow = ProductRow & {
+  merchant_display_name: string;
 };
 
 type SearchProductRow = ProductRow & {

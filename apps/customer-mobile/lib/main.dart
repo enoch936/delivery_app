@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'account/accessibility_controller.dart';
@@ -12,6 +14,8 @@ import 'app_localizations.dart';
 import 'app_storage.dart';
 import 'discovery/discovery_screen.dart';
 import 'push_service.dart';
+
+part 'orders/order_experience.dart';
 
 const apiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
@@ -418,10 +422,15 @@ class ApiClient {
   }
 
   String _message(dynamic body, int status) {
-    if (body is Map && body['message'] != null) {
-      final message = body['message'];
-      if (message is List) return message.join(', ');
-      return message.toString();
+    if (body is Map) {
+      if (body['error'] is Map && body['error']['message'] != null) {
+        return body['error']['message'].toString();
+      }
+      if (body['message'] != null) {
+        final message = body['message'];
+        if (message is List) return message.join(', ');
+        return message.toString();
+      }
     }
     return 'Request failed ($status)';
   }
@@ -1714,23 +1723,26 @@ class MerchantCard extends StatelessWidget {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.star, size: 16, color: Color(0xFFE8613D)),
-                      const SizedBox(width: 4),
-                      Text(rating, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
-                      const SizedBox(width: 12),
-                      const Icon(Icons.access_time, size: 16, color: Color(0xFF6B7468)),
-                      const SizedBox(width: 4),
-                      Text(estTime, style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468))),
-                      if (distance is num) ...[
-                        const SizedBox(width: 12),
-                        const Icon(Icons.near_me_outlined, size: 16, color: Color(0xFF6B7468)),
+                  Expanded(
+                    child: Row(
+                      children: [
+                        const Icon(Icons.star, size: 16, color: Color(0xFFE8613D)),
                         const SizedBox(width: 4),
-                        Text('${distance.toStringAsFixed(1)} km', style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468))),
+                        Text(rating, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+                        const SizedBox(width: 8),
+                        const Icon(Icons.access_time, size: 16, color: Color(0xFF6B7468)),
+                        const SizedBox(width: 4),
+                        Flexible(child: Text(estTime, style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468)), overflow: TextOverflow.ellipsis)),
+                        if (distance is num) ...[
+                          const SizedBox(width: 8),
+                          const Icon(Icons.near_me_outlined, size: 16, color: Color(0xFF6B7468)),
+                          const SizedBox(width: 4),
+                          Text('${distance.toStringAsFixed(1)} km', style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468))),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
+                  const SizedBox(width: 8),
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
@@ -1770,11 +1782,13 @@ class _MerchantScreenState extends State<MerchantScreen> {
   bool loading = true;
   String? error;
   String? addingId;
+  Set<String> favoriteProducts = <String>{};
 
   @override
   void initState() {
     super.initState();
     _load();
+    _loadFavoriteProducts();
   }
 
   Future<void> _load() async {
@@ -1798,6 +1812,53 @@ class _MerchantScreenState extends State<MerchantScreen> {
       if (mounted) setState(() => error = cause.toString());
     } finally {
       if (mounted) setState(() => loading = false);
+    }
+  }
+
+  Future<void> _loadFavoriteProducts() async {
+    try {
+      final results = await widget.client.get('/v1/favorites/products');
+      final items = asList(asMap(results)['items']);
+      final ids = <String>{};
+      for (final item in items) {
+        final id = item['id']?.toString();
+        if (id != null) ids.add(id);
+      }
+      if (mounted) setState(() => favoriteProducts = ids);
+    } catch (_) {
+      // Favorites are optional; ignore load failures and keep the default empty set.
+    }
+  }
+
+  Future<void> _toggleFavoriteProduct(String productId) async {
+    final added = !favoriteProducts.contains(productId);
+    setState(() {
+      if (added) {
+        favoriteProducts.add(productId);
+      } else {
+        favoriteProducts.remove(productId);
+      }
+    });
+    if (widget.client.session == null) return;
+    try {
+      if (added) {
+        await widget.client.post('/v1/favorites/products/$productId');
+      } else {
+        await widget.client.delete('/v1/favorites/products/$productId');
+      }
+    } catch (_) {
+      if (!mounted) return;
+      if (!mounted) return;
+      setState(() {
+        if (added) {
+          favoriteProducts.remove(productId);
+        } else {
+          favoriteProducts.add(productId);
+        }
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not sync favorites. Try again.')),
+      );
     }
   }
 
@@ -1969,9 +2030,54 @@ class _MerchantScreenState extends State<MerchantScreen> {
                                 Navigator.of(context).pop(true);
                               } catch (cause) {
                                 if (!mounted) return;
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text(cause.toString())),
-                                );
+                                final message = cause.toString();
+                                if (message.toLowerCase().contains('another merchant') || message.contains('409')) {
+                                  final clearAndAdd = await showDialog<bool>(
+                                    context: context,
+                                    builder: (dialogContext) => AlertDialog(
+                                      title: const Text('Start new basket?'),
+                                      content: Text(
+                                        'Your cart contains items from another merchant. Clear your cart and add ${product['displayName']} from ${merchant?['displayName'] ?? 'this store'}?',
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () => Navigator.pop(dialogContext, false),
+                                          child: const Text('Cancel'),
+                                        ),
+                                        FilledButton(
+                                          onPressed: () => Navigator.pop(dialogContext, true),
+                                          child: const Text('Clear cart & add'),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                  if (clearAndAdd == true && mounted) {
+                                    try {
+                                      await widget.client.delete('/v1/cart');
+                                      await widget.client.post('/v1/cart/items', {
+                                        'productId': product['id'],
+                                        'quantity': quantity,
+                                        'optionIds': selected.values.expand((value) => value).toList(),
+                                      });
+                                      if (mounted) {
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(content: Text('${product['displayName']} added to cart')),
+                                        );
+                                        Navigator.of(context).pop(true);
+                                      }
+                                    } catch (err) {
+                                      if (mounted) {
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(content: Text(err.toString())),
+                                        );
+                                      }
+                                    }
+                                  }
+                                } else {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text(message)),
+                                  );
+                                }
                               } finally {
                                 if (mounted) setState(() => addingId = null);
                               }
@@ -2346,6 +2452,14 @@ class _MerchantScreenState extends State<MerchantScreen> {
                                     ),
                                   ),
                                   const SizedBox(width: 12),
+                                  IconButton(
+                                    icon: Icon(
+                                      favoriteProducts.contains(product['id']?.toString() ?? '') ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                                      color: favoriteProducts.contains(product['id']?.toString() ?? '') ? const Color(0xFFE8613D) : const Color(0xFF9E9E9E),
+                                      size: 22,
+                                    ),
+                                    onPressed: () => _toggleFavoriteProduct(product['id']?.toString() ?? ''),
+                                  ),
                                   FilledButton.tonal(
                                     onPressed: product['isAvailable'] == true &&
                                             product['stockState'] != 'out_of_stock' &&
@@ -2688,6 +2802,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   final phoneController = TextEditingController();
   final addressController = TextEditingController();
   final instructionsController = TextEditingController();
+  final promoController = TextEditingController();
+
+  int tipMinor = 0;
+  String? appliedPromoCode;
 
   @override
   void initState() {
@@ -2739,6 +2857,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     phoneController.dispose();
     addressController.dispose();
     instructionsController.dispose();
+    promoController.dispose();
     super.dispose();
   }
 
@@ -2812,7 +2931,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         if (fulfillmentType == 'delivery') 'deliveryAddressId': selectedAddress,
         if (fulfillmentType == 'pickup') 'pickupLocationId': pickupLocationId,
         if (scheduledFor != null) 'scheduledFor': scheduledFor!.toUtc().toIso8601String(),
-        'tipMinor': 0,
+        'tipMinor': tipMinor,
+        if (appliedPromoCode != null && appliedPromoCode!.isNotEmpty) 'promoCode': appliedPromoCode,
       });
       if (mounted) setState(() => quote = asMap(result));
     } catch (cause) {
@@ -3115,8 +3235,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 _amountRow('Items', breakdown['itemsSubtotalMinor'] as num?, breakdown['currency']?.toString()),
                 _amountRow(isPickup ? 'Collection' : 'Delivery', breakdown['deliveryFeeMinor'] as num?, breakdown['currency']?.toString()),
                 _amountRow('Service fee', breakdown['serviceFeeMinor'] as num?, breakdown['currency']?.toString()),
+                if ((breakdown['tipMinor'] as num? ?? 0) > 0)
+                  _amountRow('Courier tip', breakdown['tipMinor'] as num?, breakdown['currency']?.toString()),
                 if ((breakdown['discountMinor'] as num? ?? 0) > 0)
-                  _amountRow('Discount', -(breakdown['discountMinor'] as num), breakdown['currency']?.toString()),
+                  _amountRow('Promo discount', -(breakdown['discountMinor'] as num), breakdown['currency']?.toString()),
                 _amountRow('Tax', breakdown['taxMinor'] as num?, breakdown['currency']?.toString()),
                 const Divider(height: 24),
                 _amountRow('Total', breakdown['totalMinor'] as num?, breakdown['currency']?.toString(), bold: true),
@@ -3159,11 +3281,36 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     );
   }
 
+  Widget _paymentTile({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required Color color,
+    required VoidCallback? onTap,
+  }) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        onTap: onTap,
+        leading: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(icon, color: color, size: 22),
+        ),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+        subtitle: Text(subtitle, style: const TextStyle(fontSize: 11, color: Color(0xFF6B7468))),
+        trailing: const Icon(Icons.chevron_right, size: 18),
+      ),
+    );
+  }
+
   Widget _orderView(ThemeData theme) {
     final current = order!;
     final awaitingPayment = current['status'] == 'AWAITING_PAYMENT';
     final totals = asMap(current['totals']);
-    final provider = (quote == null ? '' : asMap(quote!['breakdown'])['paymentProvider']?.toString()) ?? '';
     return Scaffold(
       appBar: AppBar(
         title: const Text('Order placed'),
@@ -3200,41 +3347,46 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           ),
           const SizedBox(height: 18),
           if (error != null) ...[ErrorBanner(message: error!), const SizedBox(height: 12)],
-          if (awaitingPayment && provider == 'sandbox')
-            FilledButton(
-              onPressed: busy ? null : () => _pay('sandbox'),
-              child: const Text('Pay now (sandbox)'),
+          if (awaitingPayment) ...[
+            Text('Select Payment Method', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 10),
+            _paymentTile(
+              icon: Icons.money_rounded,
+              title: 'Cash on Delivery',
+              subtitle: 'Pay the courier when your order arrives',
+              color: const Color(0xFF2F6B4F),
+              onTap: busy ? null : () => _pay('cash'),
             ),
-          if (awaitingPayment && provider == 'sandbox') const SizedBox(height: 8),
-          if (awaitingPayment && provider == 'stripe')
-            FilledButton.icon(
-              onPressed: busy ? null : () => _pay('stripe'),
-              icon: const Icon(Icons.credit_card),
-              label: const Text('Pay with card (Stripe)'),
+            _paymentTile(
+              icon: Icons.phone_android_rounded,
+              title: 'Telebirr Mobile Wallet',
+              subtitle: 'Instant mobile payment via Telebirr H5',
+              color: const Color(0xFF1E88E5),
+              onTap: busy ? null : () => _pay('telebirr'),
             ),
-          if (awaitingPayment && provider == 'stripe') const SizedBox(height: 8),
-          if (awaitingPayment && provider == 'telebirr')
-            FilledButton.icon(
-              onPressed: busy ? null : () => _pay('telebirr'),
-              icon: const Icon(Icons.phone_android),
-              label: const Text('Pay with Telebirr'),
+            _paymentTile(
+              icon: Icons.credit_card_rounded,
+              title: 'Credit / Debit Card',
+              subtitle: 'Pay securely with Visa or Mastercard via Stripe',
+              color: const Color(0xFF6772E5),
+              onTap: busy ? null : () => _pay('stripe'),
             ),
-          if (awaitingPayment && provider == 'telebirr') const SizedBox(height: 8),
-          OutlinedButton(
-            onPressed: busy ? null : () => _pay('cash'),
-            child: const Text('Pay cash on delivery'),
-          ),
-          if (awaitingPayment && (provider == 'stripe' || provider == 'telebirr'))
-            TextButton.icon(
-              onPressed: busy ? null : _refreshOrder,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Refresh payment status'),
+            _paymentTile(
+              icon: Icons.science_outlined,
+              title: 'Sandbox Test Payment',
+              subtitle: 'Simulate instant payment for development',
+              color: const Color(0xFFE8613D),
+              onTap: busy ? null : () => _pay('sandbox'),
             ),
-          if (awaitingPayment && provider == 'chapa')
-            const Padding(
-              padding: EdgeInsets.only(top: 12),
-              child: Text('Card checkout is enabled on the API. Complete the Chapa redirect on a production build.'),
+            const SizedBox(height: 12),
+            Center(
+              child: TextButton.icon(
+                onPressed: busy ? null : _refreshOrder,
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('Refresh payment status'),
+              ),
             ),
+          ],
           const SizedBox(height: 16),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
@@ -3266,15 +3418,15 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   }
 }
 
-class OrdersScreen extends StatefulWidget {
-  const OrdersScreen({super.key, required this.client});
+class LegacyOrdersScreen extends StatefulWidget {
+  const LegacyOrdersScreen({super.key, required this.client});
   final ApiClient client;
 
   @override
-  State<OrdersScreen> createState() => _OrdersScreenState();
+  State<LegacyOrdersScreen> createState() => _LegacyOrdersScreenState();
 }
 
-class _OrdersScreenState extends State<OrdersScreen> {
+class _LegacyOrdersScreenState extends State<LegacyOrdersScreen> {
   List<Map<String, dynamic>> orders = [];
   bool loading = true;
   String? error;
@@ -3309,7 +3461,38 @@ class _OrdersScreenState extends State<OrdersScreen> {
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 30),
         children: [
-          if (error != null) ErrorBanner(message: error!),
+          if (error != null && error!.contains('401')) ...[
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  children: [
+                    const Icon(Icons.lock_clock_outlined, size: 48, color: Color(0xFFE8613D)),
+                    const SizedBox(height: 12),
+                    const Text('Session Expired', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
+                    const SizedBox(height: 6),
+                    const Text('Please sign in again to view your active orders and delivery history.', textAlign: TextAlign.center, style: TextStyle(color: Color(0xFF6B7468))),
+                    const SizedBox(height: 16),
+                    FilledButton(
+                      onPressed: () async {
+                        await widget.client.signOut();
+                      },
+                      child: const Text('Sign in with Phone'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ] else if (error != null) ...[
+            ErrorBanner(message: error!),
+            const SizedBox(height: 12),
+            Center(
+              child: OutlinedButton(
+                onPressed: _load,
+                child: const Text('Try Again'),
+              ),
+            ),
+          ],
           if (loading && orders.isEmpty)
             const Padding(
               padding: EdgeInsets.only(top: 120),
@@ -3364,17 +3547,17 @@ class _OrdersScreenState extends State<OrdersScreen> {
   }
 }
 
-class OrderDetailScreen extends StatefulWidget {
-  const OrderDetailScreen({super.key, required this.client, required this.orderId});
+class LegacyOrderDetailScreen extends StatefulWidget {
+  const LegacyOrderDetailScreen({super.key, required this.client, required this.orderId});
 
   final ApiClient client;
   final String orderId;
 
   @override
-  State<OrderDetailScreen> createState() => _OrderDetailScreenState();
+  State<LegacyOrderDetailScreen> createState() => _LegacyOrderDetailScreenState();
 }
 
-class _OrderDetailScreenState extends State<OrderDetailScreen> {
+class _LegacyOrderDetailScreenState extends State<LegacyOrderDetailScreen> {
   Map<String, dynamic>? order;
   Map<String, dynamic>? liveTracking;
   WebSocket? _liveSocket;
@@ -3555,7 +3738,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                       ),
                       if (liveTracking != null) ...[
                         const SizedBox(height: 14),
-                        _LiveTrackingCard(tracking: liveTracking!, connected: liveConnected),
+                        LegacyTrackingCard(tracking: liveTracking!, connected: liveConnected),
                       ],
                       const SizedBox(height: 14),
                       Text('Items', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
@@ -3634,8 +3817,8 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   }
 }
 
-class _LiveTrackingCard extends StatelessWidget {
-  const _LiveTrackingCard({required this.tracking, required this.connected});
+class LegacyTrackingCard extends StatelessWidget {
+  const LegacyTrackingCard({super.key, required this.tracking, required this.connected});
 
   final Map<String, dynamic> tracking;
   final bool connected;
