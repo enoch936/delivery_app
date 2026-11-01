@@ -11,6 +11,8 @@ import 'personal_info_screen.dart';
 import 'privacy_screen.dart';
 import 'security_screen.dart';
 import 'support_screen.dart';
+import 'loyalty_screen.dart';
+import 'referral_screen.dart';
 
 class AccountScreen extends StatefulWidget {
   const AccountScreen({
@@ -428,6 +430,18 @@ class _AccountScreenState extends State<AccountScreen> {
                 title: 'Support tickets',
                 subtitle: 'Open a ticket and track its status',
                 onTap: () => _open(SupportScreen(client: widget.client)),
+              ),
+              AccountTile(
+                icon: Icons.star_rounded,
+                title: 'Loyalty rewards',
+                subtitle: 'Points, tiers and redemptions',
+                onTap: () => _open(LoyaltyScreen(client: widget.client)),
+              ),
+              AccountTile(
+                icon: Icons.celebration,
+                title: 'Referrals',
+                subtitle: 'Share a code and earn rewards',
+                onTap: () => _open(ReferralScreen(client: widget.client)),
               ),
               AccountTile(
                 icon: Icons.logout,
