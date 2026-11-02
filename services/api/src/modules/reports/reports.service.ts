@@ -151,4 +151,132 @@ export class ReportsService {
     ].map((value) => `"${String(value).replace(/"/g, '""')}"`).join(","));
     return [header, ...rows].join("\n");
   }
+
+  async zonePerformance(from: Date, to: Date) {
+    const result = await this.database.query(
+      `SELECT sz.id, sz.display_name, c.slug AS city_slug, c.display_name AS city_name,
+              count(o.id)::int AS orders,
+              COALESCE(sum(o.total_minor) FILTER (WHERE o.status NOT IN ('CANCELLED','FAILED')),0)::text AS gmv,
+              COALESCE(avg(EXTRACT(EPOCH FROM (o.delivered_at - o.created_at))/60) FILTER (WHERE o.status = 'DELIVERED'),0)::text AS avg_delivery_minutes,
+              count(*) FILTER (WHERE o.status = 'CANCELLED')::int AS cancelled,
+              count(*) FILTER (WHERE o.status = 'DELIVERED')::int AS delivered
+       FROM service_zones sz
+       JOIN cities c ON c.id = sz.city_id
+       LEFT JOIN merchant_locations ml ON ST_Contains(sz.boundary, ml.location::geometry)
+       LEFT JOIN orders o ON o.merchant_location_id = ml.id AND o.created_at >= $1 AND o.created_at < $2
+       GROUP BY sz.id, c.id ORDER BY orders DESC`,
+      [from, to]
+    );
+    return { items: result.rows.map(r => ({
+      zoneId: r.id as string, zoneName: r.display_name as string,
+      citySlug: r.city_slug as string, cityName: r.city_name as string,
+      orders: r.orders as number, gmvMinor: Number(r.gmv),
+      avgDeliveryMinutes: Math.round(Number(r.avg_delivery_minutes) * 10) / 10,
+      delivered: r.delivered as number, cancelled: r.cancelled as number,
+      cancellationRate: (r.orders as number) > 0 ? Math.round(((r.cancelled as number) / (r.orders as number)) * 1000) / 1000 : 0
+    })) };
+  }
+
+  async categoryPerformance(from: Date, to: Date) {
+    const result = await this.database.query(
+      `SELECT sc.slug, sc.display_name,
+              count(o.id)::int AS orders,
+              COALESCE(sum(o.total_minor) FILTER (WHERE o.status NOT IN ('CANCELLED','FAILED')),0)::text AS gmv,
+              count(*) FILTER (WHERE o.status = 'DELIVERED')::int AS delivered,
+              count(*) FILTER (WHERE o.status = 'CANCELLED')::int AS cancelled,
+              COALESCE(avg(EXTRACT(EPOCH FROM (o.delivered_at - o.created_at))/60) FILTER (WHERE o.status = 'DELIVERED'),0)::text AS avg_minutes
+       FROM service_categories sc
+       LEFT JOIN merchants m ON m.service_category_slug = sc.slug
+       LEFT JOIN orders o ON o.merchant_id = m.id AND o.created_at >= $1 AND o.created_at < $2
+       GROUP BY sc.slug, sc.display_name ORDER BY orders DESC`,
+      [from, to]
+    );
+    return { items: result.rows.map(r => ({
+      categorySlug: r.slug as string, categoryName: r.display_name as string,
+      orders: r.orders as number, gmvMinor: Number(r.gmv),
+      delivered: r.delivered as number, cancelled: r.cancelled as number,
+      avgDeliveryMinutes: Math.round(Number(r.avg_minutes) * 10) / 10,
+      cancellationRate: (r.orders as number) > 0 ? Math.round(((r.cancelled as number) / (r.orders as number)) * 1000) / 1000 : 0
+    })) };
+  }
+
+  async courierUtilization(from: Date, to: Date) {
+    const result = await this.database.query(
+      `SELECT cp.user_id, u.display_name, u.phone_e164,
+              count(da.id) FILTER (WHERE da.status = 'delivered')::int AS deliveries,
+              COALESCE(sum(EXTRACT(EPOCH FROM (da.delivered_at - da.assigned_at))/3600) FILTER (WHERE da.status = 'delivered'),0)::text AS active_hours,
+              COALESCE(avg(EXTRACT(EPOCH FROM (da.delivered_at - da.assigned_at))/60) FILTER (WHERE da.status = 'delivered'),0)::text AS avg_delivery_minutes,
+              count(da.id) FILTER (WHERE da.status = 'rejected')::int AS rejections,
+              cp.rating_average::text AS rating
+       FROM courier_profiles cp
+       JOIN users u ON u.id = cp.user_id
+       LEFT JOIN delivery_assignments da ON da.courier_user_id = cp.user_id AND da.assigned_at >= $1 AND da.assigned_at < $2
+       WHERE cp.status = 'approved'
+       GROUP BY cp.user_id, u.id ORDER BY deliveries DESC LIMIT 200`,
+      [from, to]
+    );
+    return { items: result.rows.map(r => ({
+      courierUserId: r.user_id as string, displayName: r.display_name as string | null,
+      phoneE164: r.phone_e164 as string,
+      deliveries: r.deliveries as number,
+      activeHours: Math.round(Number(r.active_hours) * 10) / 10,
+      avgDeliveryMinutes: Math.round(Number(r.avg_delivery_minutes) * 10) / 10,
+      rejections: r.rejections as number, rating: Number(r.rating)
+    })) };
+  }
+
+  async cancellationBreakdown(from: Date, to: Date) {
+    const result = await this.database.query(
+      `SELECT cancellation_reason, count(*)::int AS count,
+              COALESCE(sum(total_minor),0)::text AS gmv_lost
+       FROM orders
+       WHERE status = 'CANCELLED' AND created_at >= $1 AND created_at < $2
+       GROUP BY cancellation_reason ORDER BY count DESC`,
+      [from, to]
+    );
+    const total = result.rows.reduce((s, r) => s + (r.count as number), 0);
+    return { total, items: result.rows.map(r => ({
+      reason: (r.cancellation_reason as string | null) ?? "unknown",
+      count: r.count as number, gmvLostMinor: Number(r.gmv_lost),
+      share: total > 0 ? Math.round(((r.count as number) / total) * 1000) / 1000 : 0
+    })) };
+  }
+
+  async paymentFailures(from: Date, to: Date) {
+    const result = await this.database.query(
+      `SELECT provider, failure_reason, count(*)::int AS count,
+              COALESCE(sum(amount_minor),0)::text AS total
+       FROM payments
+       WHERE status IN ('FAILED','EXPIRED') AND created_at >= $1 AND created_at < $2
+       GROUP BY provider, failure_reason ORDER BY count DESC`,
+      [from, to]
+    );
+    return { items: result.rows.map(r => ({
+      provider: r.provider as string,
+      reason: (r.failure_reason as string | null) ?? "unknown",
+      count: r.count as number, totalMinor: Number(r.total)
+    })) };
+  }
+
+  async cohortRetention(from: Date, to: Date) {
+    const result = await this.database.query(
+      `SELECT
+         date_trunc('week', u.created_at)::date AS cohort_week,
+         count(DISTINCT u.id)::int AS new_users,
+         count(DISTINCT o.user_id) FILTER (WHERE o.status = 'DELIVERED')::int AS ordered,
+         count(DISTINCT o2.user_id) FILTER (WHERE o2.status = 'DELIVERED')::int AS repeat_ordered
+       FROM users u
+       LEFT JOIN orders o ON o.user_id = u.id AND o.created_at >= $1 AND o.created_at < $2
+       LEFT JOIN orders o2 ON o2.user_id = u.id AND o2.created_at >= $1 AND o2.created_at < $2 AND o2.id != o.id
+       WHERE u.created_at >= $1 AND u.created_at < $2
+       GROUP BY 1 ORDER BY 1`,
+      [from, to]
+    );
+    return { items: result.rows.map(r => ({
+      cohortWeek: r.cohort_week as string, newUsers: r.new_users as number,
+      ordered: r.ordered as number, repeatOrdered: r.repeat_ordered as number,
+      orderRate: (r.new_users as number) > 0 ? Math.round(((r.ordered as number) / (r.new_users as number)) * 1000) / 1000 : 0,
+      repeatRate: (r.ordered as number) > 0 ? Math.round(((r.repeat_ordered as number) / (r.ordered as number)) * 1000) / 1000 : 0
+    })) };
+  }
 }

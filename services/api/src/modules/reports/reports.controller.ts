@@ -63,6 +63,37 @@ export class ReportsController {
     const csv = await this.service.ordersCsv(...range(query));
     reply.header("Content-Disposition", "attachment; filename=orders.csv").send(csv);
   }
+
+  @Get("zone-performance")
+  zonePerformance(@Query() query: RangeQuery) {
+    return this.service.zonePerformance(...range(query));
+  }
+
+  @Get("category-performance")
+  categoryPerformance(@Query() query: RangeQuery) {
+    return this.service.categoryPerformance(...range(query));
+  }
+
+  @Get("courier-utilization")
+  courierUtilization(@Query() query: RangeQuery) {
+    return this.service.courierUtilization(...range(query));
+  }
+
+  @Get("cancellations")
+  cancellations(@Query() query: RangeQuery) {
+    return this.service.cancellationBreakdown(...range(query));
+  }
+
+  @Get("payment-failures")
+  paymentFailures(@Query() query: RangeQuery) {
+    return this.service.paymentFailures(...range(query));
+  }
+
+  @Get("cohort-retention")
+  @Roles("admin", "finance")
+  cohortRetention(@Query() query: RangeQuery) {
+    return this.service.cohortRetention(...range(query));
+  }
 }
 
 function range(query: RangeQuery): [Date, Date] {

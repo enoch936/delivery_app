@@ -29,6 +29,10 @@ class StatusDto {
   @IsIn(["OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"]) status!: string;
 }
 
+class EscalateDto {
+  @IsOptional() @IsString() @Length(0, 500) note?: string;
+}
+
 class PageQuery {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) offset?: number;
@@ -99,5 +103,17 @@ export class SupportController {
   @Roles("admin", "support", "operations")
   status(@Param("ticketId", ParseUUIDPipe) ticketId: string, @Body() body: StatusDto) {
     return this.service.setStatus(ticketId, body.status);
+  }
+
+  @Post("admin/support/tickets/:ticketId/escalate")
+  @Roles("admin", "support", "operations")
+  escalate(@Req() request: AuthenticatedRequest, @Param("ticketId", ParseUUIDPipe) ticketId: string, @Body() body: EscalateDto) {
+    return this.service.escalate(ticketId, requireUser(request).id, body.note ?? null);
+  }
+
+  @Get("admin/support/stats")
+  @Roles("admin", "support", "operations")
+  stats() {
+    return this.service.adminStats();
   }
 }

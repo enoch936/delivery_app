@@ -110,4 +110,39 @@ export class SupportService {
     if (result.rowCount === 0) throw new NotFoundException("Ticket not found.");
     return { status };
   }
+
+  async escalate(ticketId: string, actorUserId: string, note: string | null) {
+    const result = await this.database.query(
+      "UPDATE support_tickets SET priority = 'URGENT', status = 'IN_PROGRESS', updated_at = now() WHERE id = $1 RETURNING id",
+      [ticketId]
+    );
+    if (result.rowCount === 0) throw new NotFoundException("Ticket not found.");
+    if (note) {
+      await this.database.query(
+        "INSERT INTO support_messages (ticket_id, sender_user_id, body, is_internal) VALUES ($1,$2,$3,true)",
+        [ticketId, actorUserId, `[ESCALATED] ${note}`]
+      );
+    }
+    return { escalated: true };
+  }
+
+  async adminStats() {
+    const result = await this.database.query(`
+      SELECT
+        count(*) FILTER (WHERE status = 'OPEN')::int AS open_count,
+        count(*) FILTER (WHERE status = 'IN_PROGRESS')::int AS in_progress_count,
+        count(*) FILTER (WHERE status = 'RESOLVED')::int AS resolved_count,
+        count(*) FILTER (WHERE status = 'CLOSED')::int AS closed_count,
+        count(*) FILTER (WHERE priority = 'URGENT' AND status NOT IN ('RESOLVED','CLOSED'))::int AS urgent_count,
+        count(*) FILTER (WHERE created_at >= now() - interval '24 hours')::int AS opened_24h,
+        count(*) FILTER (WHERE updated_at >= now() - interval '24 hours' AND status = 'RESOLVED')::int AS resolved_24h
+      FROM support_tickets`
+    );
+    const row = result.rows[0];
+    return {
+      open: row?.open_count ?? 0, inProgress: row?.in_progress_count ?? 0,
+      resolved: row?.resolved_count ?? 0, closed: row?.closed_count ?? 0,
+      urgent: row?.urgent_count ?? 0, opened24h: row?.opened_24h ?? 0, resolved24h: row?.resolved_24h ?? 0
+    };
+  }
 }
