@@ -279,8 +279,9 @@ class _ScrollablePillBarState extends State<_ScrollablePillBar> {
   }
 
   void _revealSelected() {
-    if (!_controller.hasClients || _widths.isEmpty || _viewportWidth <= 0)
+    if (!_controller.hasClients || _widths.isEmpty || _viewportWidth <= 0) {
       return;
+    }
     final index = widget.selectedIndex;
     if (index < 0 || index >= _widths.length) return;
     final max = _controller.position.maxScrollExtent;

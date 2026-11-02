@@ -94,8 +94,9 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     _promoTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (!mounted ||
           banners.isEmpty ||
-          MediaQuery.of(context).disableAnimations)
+          MediaQuery.of(context).disableAnimations) {
         return;
+      }
       setState(() => promoIndex = (promoIndex + 1) % banners.length);
       if (pageController.hasClients) {
         pageController.animateToPage(
@@ -181,11 +182,13 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         }
       });
     } catch (cause) {
-      if (mounted && generation == _feedGeneration)
+      if (mounted && generation == _feedGeneration) {
         setState(() => error = cause.toString());
+      }
     } finally {
-      if (mounted && generation == _feedGeneration)
+      if (mounted && generation == _feedGeneration) {
         setState(() => loading = false);
+      }
     }
   }
 
@@ -230,11 +233,13 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         merchantTotal = (result['total'] as num?)?.toInt() ?? merchants.length;
       });
     } catch (cause) {
-      if (mounted && generation == _listGeneration)
+      if (mounted && generation == _listGeneration) {
         setState(() => error = cause.toString());
+      }
     } finally {
-      if (mounted && generation == _listGeneration)
+      if (mounted && generation == _listGeneration) {
         setState(() => loadingList = false);
+      }
     }
   }
 
@@ -273,8 +278,9 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
       if (!mounted || generation != _suggestionGeneration) return;
       setState(() => suggestions = asList(result['items']));
     } catch (_) {
-      if (mounted && generation == _suggestionGeneration)
+      if (mounted && generation == _suggestionGeneration) {
         setState(() => suggestions = []);
+      }
     }
   }
 
@@ -299,8 +305,9 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         });
       }
     } finally {
-      if (mounted && generation == _searchGeneration)
+      if (mounted && generation == _searchGeneration) {
         setState(() => searchLoading = false);
+      }
     }
   }
 
@@ -506,8 +513,9 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
       _longitude = nextLongitude;
     });
     await _bootstrap();
-    if (mounted && searchController.text.trim().isNotEmpty)
+    if (mounted && searchController.text.trim().isNotEmpty) {
       await _runSearch(searchController.text.trim());
+    }
   }
 
   Future<void> _openFilters() async {
