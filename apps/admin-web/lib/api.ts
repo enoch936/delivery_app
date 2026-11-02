@@ -102,6 +102,7 @@ export async function api<T>(path: string, init: RequestInit = {}, retry = true)
     const next = await refresh(session);
     if (next) return api<T>(path, init, false);
     saveSession(null);
+    if (typeof window !== "undefined") window.dispatchEvent(new Event("delivery:session-expired"));
   }
   return parse<T>(response);
 }

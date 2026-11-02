@@ -9,9 +9,23 @@ export class SubscriptionsService {
     private readonly audit: AuditService
   ) {}
 
-  async listPlans() {
-    const result = await this.database.query("SELECT * FROM subscription_plans WHERE status = 'ACTIVE' ORDER BY price_minor ASC");
+  async listPlans(includeInactive = false) {
+    const result = await this.database.query("SELECT * FROM subscription_plans WHERE ($1::boolean OR status = 'ACTIVE') ORDER BY price_minor ASC", [includeInactive]);
     return { items: result.rows.map((row) => this.mapPlan(row)) };
+  }
+
+  async listSubscriptions(limit: number, offset: number) {
+    const result = await this.database.query(
+      `SELECT s.id, s.user_id, s.business_account_id, s.plan_id, s.status, s.current_period_start,
+              s.current_period_end, s.cancel_at_period_end, s.canceled_at, s.created_at
+       FROM subscriptions s ORDER BY s.created_at DESC LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    );
+    return { items: result.rows.map((row) => ({
+      id: row.id, userId: row.user_id, businessAccountId: row.business_account_id, planId: row.plan_id,
+      status: row.status, startsAt: row.current_period_start.toISOString(), endsAt: row.current_period_end.toISOString(),
+      canceledAt: row.canceled_at?.toISOString() ?? null, autoRenew: !row.cancel_at_period_end, createdAt: row.created_at.toISOString()
+    })) };
   }
 
   async createPlan(input: Readonly<{

@@ -52,7 +52,7 @@ export class PayoutsController {
 
   @Get("accounts")
   @Roles("admin", "finance")
-  listAccounts(@Query("ownerType") ownerType: string, @Query("ownerId") ownerId: string) {
+  listAccounts(@Query("ownerType") ownerType: string, @Query("ownerId") ownerId: string | undefined) {
     return this.service.listAccounts(ownerType, ownerId);
   }
 

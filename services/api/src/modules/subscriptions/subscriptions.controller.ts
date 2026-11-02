@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query, Req, UseGuards } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import { IsIn, IsInt, IsOptional, IsString, Length, Min } from "class-validator";
 import { requireUser, requestId } from "../../common/auth-context.js";
@@ -26,6 +26,11 @@ class SubscribeDto {
   @IsOptional() @IsString() providerReference?: string;
 }
 
+class PageQuery {
+  @IsOptional() @IsInt() @Min(1) limit?: number;
+  @IsOptional() @IsInt() @Min(0) offset?: number;
+}
+
 @ApiTags("subscriptions")
 @ApiBearerAuth()
 @UseGuards(SessionGuard, RolesGuard)
@@ -36,6 +41,18 @@ export class SubscriptionsController {
   @Get("subscriptions/plans")
   listPlans() {
     return this.service.listPlans();
+  }
+
+  @Get("admin/subscriptions/plans")
+  @Roles("admin", "finance")
+  listAdminPlans() {
+    return this.service.listPlans(true);
+  }
+
+  @Get("admin/subscriptions")
+  @Roles("admin", "finance")
+  listAdminSubscriptions(@Query() query: PageQuery) {
+    return this.service.listSubscriptions(query.limit ?? 100, query.offset ?? 0);
   }
 
   @Post("admin/subscriptions/plans")

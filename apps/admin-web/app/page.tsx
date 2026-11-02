@@ -247,6 +247,12 @@ export default function AdminHome() {
     setReady(true);
   }, []);
 
+  useEffect(() => {
+    const expire = () => setSession(null);
+    window.addEventListener("delivery:session-expired", expire);
+    return () => window.removeEventListener("delivery:session-expired", expire);
+  }, []);
+
   if (!ready) return <div className="boot">Loading operations console…</div>;
   if (!session) return <Login onSignedIn={setSession} />;
   return <Console session={session} onSignedOut={() => { saveSession(null); setSession(null); }} />;

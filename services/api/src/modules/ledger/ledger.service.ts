@@ -62,4 +62,22 @@ export class LedgerService {
       debitMinor: Number(row.debit), creditMinor: Number(row.credit), netMinor: Number(row.debit) - Number(row.credit)
     }));
   }
+
+  async entries(limit: number, offset: number) {
+    const result = await this.database.query(
+      `SELECT e.id, e.transaction_id, a.code, a.account_type, e.side, e.amount_minor, e.currency,
+              t.description, t.reference_type, t.reference_id, e.created_at
+       FROM ledger_entries e JOIN ledger_accounts a ON a.id = e.account_id
+       JOIN ledger_transactions t ON t.id = e.transaction_id
+       ORDER BY e.created_at DESC LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    );
+    return { items: result.rows.map((row) => ({
+      id: row.id, ledgerId: row.transaction_id, accountCode: row.code, accountType: row.account_type,
+      debitMinor: row.side === "debit" ? Number(row.amount_minor) : 0,
+      creditMinor: row.side === "credit" ? Number(row.amount_minor) : 0,
+      currency: row.currency, description: row.description, referenceType: row.reference_type,
+      referenceId: row.reference_id, metadata: {}, occurredAt: row.created_at.toISOString(), postedAt: row.created_at.toISOString()
+    })) };
+  }
 }

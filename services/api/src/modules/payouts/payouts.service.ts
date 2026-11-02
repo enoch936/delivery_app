@@ -50,11 +50,10 @@ export class PayoutsService {
     });
   }
 
-  async listAccounts(ownerType: string, ownerId: string) {
-    const result = await this.database.query(
-      "SELECT * FROM payout_accounts WHERE owner_type = $1 AND owner_id = $2 ORDER BY is_default DESC, created_at DESC",
-      [ownerType, ownerId]
-    );
+  async listAccounts(ownerType: string, ownerId?: string) {
+    const result = ownerId && ownerId !== "all"
+      ? await this.database.query("SELECT * FROM payout_accounts WHERE owner_type = $1 AND owner_id = $2 ORDER BY is_default DESC, created_at DESC", [ownerType, ownerId])
+      : await this.database.query("SELECT * FROM payout_accounts WHERE owner_type = $1 ORDER BY is_default DESC, created_at DESC", [ownerType]);
     return { items: result.rows.map((row) => this.mapAccount(row)) };
   }
 
