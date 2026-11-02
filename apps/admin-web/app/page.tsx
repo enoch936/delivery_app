@@ -684,7 +684,7 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
           <span className="avatar">{(session.user.displayName ?? session.user.phoneE164 ?? "OP").slice(0, 2).toUpperCase()}</span>
           <div className="workspace-user-text">
             <strong>{session.user.displayName ?? session.user.phoneE164 ?? "Staff"}</strong>
-            <small>{session.user.roles.join(", ")}</small>
+            <small>{session.user.roles.join(", ") || "No assigned operator role"}</small>
           </div>
           <button className="ghost" onClick={() => void signOut()}>Sign out</button>
         </div>
@@ -834,7 +834,7 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
           <table><thead><tr><th>User</th><th>Contact</th><th>Roles</th><th>Status</th><th>Joined</th><th /></tr></thead>
             <tbody>{users.map((user) => <tr key={user.id}>
               <td><strong>{user.displayName ?? "Unnamed"}</strong></td><td>{user.phoneE164 ?? "—"}<small className="block">{user.email ?? ""}</small></td>
-              <td>{user.roles.join(", ") || "—"}</td>
+              <td>{Array.isArray(user.roles) ? user.roles.join(", ") || "—" : "—"}</td>
               <td><select value={user.accountStatus} onChange={(event) => void setUserStatus(user, event.target.value)}>{USER_STATUSES.map((status) => <option key={status} value={status}>{status.replaceAll("_", " ")}</option>)}</select></td>
               <td>{shortDate(user.createdAt)}</td>
               <td><button className="ghost" onClick={() => { setEditingUser(user); setDraftRoles(user.roles); }}>Edit roles</button></td>

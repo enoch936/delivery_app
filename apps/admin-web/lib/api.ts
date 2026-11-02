@@ -13,6 +13,32 @@ export type Session = {
   user: SessionUser;
 };
 
+function normalizeRoles(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((role): role is string => typeof role === "string");
+  if (typeof value === "string") return value ? [value] : [];
+  if (value && typeof value === "object") return Object.keys(value).filter((role) => Boolean((value as Record<string, unknown>)[role]));
+  return [];
+}
+
+function normalizeSession(value: unknown): Session | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.accessToken !== "string" || !raw.user || typeof raw.user !== "object") return null;
+  const rawUser = raw.user as Record<string, unknown>;
+  return {
+    accessToken: raw.accessToken,
+    refreshToken: typeof raw.refreshToken === "string" ? raw.refreshToken : "",
+    expiresAt: typeof raw.expiresAt === "string" ? raw.expiresAt : "",
+    refreshExpiresAt: typeof raw.refreshExpiresAt === "string" ? raw.refreshExpiresAt : "",
+    user: {
+      id: typeof rawUser.id === "string" ? rawUser.id : "",
+      phoneE164: typeof rawUser.phoneE164 === "string" ? rawUser.phoneE164 : null,
+      displayName: typeof rawUser.displayName === "string" ? rawUser.displayName : null,
+      roles: normalizeRoles(rawUser.roles)
+    }
+  };
+}
+
 const API_BASE = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3000/api").replace(/\/$/, "");
 const STORAGE_KEY = "delivery.admin.session";
 
@@ -21,8 +47,10 @@ export function loadSession(): Session | null {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    const session = JSON.parse(raw) as Session;
-    return session.accessToken ? session : null;
+    const session = normalizeSession(JSON.parse(raw));
+    if (!session) return null;
+    saveSession(session);
+    return session;
   } catch {
     return null;
   }
@@ -54,7 +82,8 @@ async function refresh(session: Session): Promise<Session | null> {
       body: JSON.stringify({ refreshToken: session.refreshToken })
     });
     if (!response.ok) return null;
-    const next = await parse<Session>(response);
+    const next = normalizeSession(await parse<Session>(response));
+    if (!next) return null;
     saveSession(next);
     return next;
   } catch {
@@ -92,7 +121,8 @@ export async function verifyOtp(phoneE164: string, code: string, challengeId: st
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ phoneE164, code, challengeId })
   });
-  const session = await parse<Session>(response);
+  const session = normalizeSession(await parse<Session>(response));
+  if (!session) throw new Error("The sign-in response was invalid.");
   saveSession(session);
   return session;
 }
