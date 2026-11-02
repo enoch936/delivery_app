@@ -7,6 +7,11 @@ import { RolesGuard } from "../auth/roles.guard.js";
 import { SessionGuard } from "../auth/session.guard.js";
 import { LedgerService } from "./ledger.service.js";
 
+class LedgerPageQuery {
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(500) limit?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) offset?: number;
+}
+
 @ApiTags("ledger")
 @ApiBearerAuth()
 @UseGuards(SessionGuard, RolesGuard)
@@ -24,9 +29,4 @@ export class LedgerController {
   entries(@Query() query: LedgerPageQuery) {
     return this.service.entries(query.limit ?? 100, query.offset ?? 0);
   }
-}
-
-class LedgerPageQuery {
-  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(500) limit?: number;
-  @IsOptional() @Type(() => Number) @IsInt() @Min(0) offset?: number;
 }
