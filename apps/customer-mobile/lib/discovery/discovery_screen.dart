@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -92,7 +92,10 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     _longitude = widget.client.storage.selectedLongitude;
     _bootstrap();
     _promoTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      if (!mounted || banners.isEmpty || MediaQuery.of(context).disableAnimations) return;
+      if (!mounted ||
+          banners.isEmpty ||
+          MediaQuery.of(context).disableAnimations)
+        return;
       setState(() => promoIndex = (promoIndex + 1) % banners.length);
       if (pageController.hasClients) {
         pageController.animateToPage(
@@ -121,13 +124,16 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
       error = null;
     });
     try {
-      Future<dynamic> safeGet(String path) => widget.client.get(path).catchError((_) => <String, dynamic>{});
+      Future<dynamic> safeGet(String path) =>
+          widget.client.get(path).catchError((_) => <String, dynamic>{});
       final results = await Future.wait<dynamic>([
         safeGet('/v1/discovery/home?lat=$latitude&lng=$longitude'),
         safeGet('/v1/merchants?${_merchantQuery()}'),
-        if (widget.client.session != null) safeGet('/v1/favorites?lat=$latitude&lng=$longitude'),
+        if (widget.client.session != null)
+          safeGet('/v1/favorites?lat=$latitude&lng=$longitude'),
         if (widget.client.session != null) safeGet('/v1/search/recent'),
-        if (widget.client.session != null) safeGet('/v1/favorites/products?lat=$latitude&lng=$longitude'),
+        if (widget.client.session != null)
+          safeGet('/v1/favorites/products?lat=$latitude&lng=$longitude'),
       ]);
       if (!mounted || generation != _feedGeneration) return;
       final feed = asMap(results[0]);
@@ -146,10 +152,13 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         recentlyOrdered = asList(feed['recentlyOrdered']);
         recentlyOrderedProducts = asList(feed['recentlyOrderedProducts']);
         merchants = asList(asMap(results[1])['items']);
-        merchantTotal = (asMap(results[1])['total'] as num?)?.toInt() ?? merchants.length;
+        merchantTotal =
+            (asMap(results[1])['total'] as num?)?.toInt() ?? merchants.length;
         if (widget.client.session != null && results.length > favoritesIndex) {
           favorites = {};
-          for (final merchant in asList(asMap(results[favoritesIndex])['items'])) {
+          for (final merchant in asList(
+            asMap(results[favoritesIndex])['items'],
+          )) {
             final id = merchant['id']?.toString();
             if (id != null) favorites.add(id);
           }
@@ -160,18 +169,23 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
               .whereType<String>();
           recentSearches = {...serverTerms, ...recentSearches}.take(8).toList();
         }
-        if (widget.client.session != null && results.length > productFavoritesIndex) {
+        if (widget.client.session != null &&
+            results.length > productFavoritesIndex) {
           favoriteProducts = {};
-          for (final product in asList(asMap(results[productFavoritesIndex])['items'])) {
+          for (final product in asList(
+            asMap(results[productFavoritesIndex])['items'],
+          )) {
             final id = product['id']?.toString();
             if (id != null) favoriteProducts.add(id);
           }
         }
       });
     } catch (cause) {
-      if (mounted && generation == _feedGeneration) setState(() => error = cause.toString());
+      if (mounted && generation == _feedGeneration)
+        setState(() => error = cause.toString());
     } finally {
-      if (mounted && generation == _feedGeneration) setState(() => loading = false);
+      if (mounted && generation == _feedGeneration)
+        setState(() => loading = false);
     }
   }
 
@@ -191,7 +205,8 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
       if (selectedCategory != null) 'category=$selectedCategory',
       if (openNow) 'openNow=true',
       if (favoritesOnly) 'favorites=true',
-      if (withSearch && searchController.text.trim().isNotEmpty) 'q=${Uri.encodeQueryComponent(searchController.text.trim())}',
+      if (withSearch && searchController.text.trim().isNotEmpty)
+        'q=${Uri.encodeQueryComponent(searchController.text.trim())}',
     ];
     return query.join('&');
   }
@@ -203,7 +218,11 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
       error = null;
     });
     try {
-      final result = asMap(await widget.client.get('/v1/merchants?${_merchantQuery()}&offset=${append ? merchants.length : 0}'));
+      final result = asMap(
+        await widget.client.get(
+          '/v1/merchants?${_merchantQuery()}&offset=${append ? merchants.length : 0}',
+        ),
+      );
       if (!mounted || generation != _listGeneration) return;
       setState(() {
         final next = asList(result['items']);
@@ -211,9 +230,11 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         merchantTotal = (result['total'] as num?)?.toInt() ?? merchants.length;
       });
     } catch (cause) {
-      if (mounted && generation == _listGeneration) setState(() => error = cause.toString());
+      if (mounted && generation == _listGeneration)
+        setState(() => error = cause.toString());
     } finally {
-      if (mounted && generation == _listGeneration) setState(() => loadingList = false);
+      if (mounted && generation == _listGeneration)
+        setState(() => loadingList = false);
     }
   }
 
@@ -244,13 +265,16 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
       return;
     }
     try {
-      final result = asMap(await widget.client.get(
-        '/v1/search/suggestions?q=${Uri.encodeQueryComponent(trimmed)}&limit=8&lat=$latitude&lng=$longitude',
-      ));
+      final result = asMap(
+        await widget.client.get(
+          '/v1/search/suggestions?q=${Uri.encodeQueryComponent(trimmed)}&limit=8&lat=$latitude&lng=$longitude',
+        ),
+      );
       if (!mounted || generation != _suggestionGeneration) return;
       setState(() => suggestions = asList(result['items']));
     } catch (_) {
-      if (mounted && generation == _suggestionGeneration) setState(() => suggestions = []);
+      if (mounted && generation == _suggestionGeneration)
+        setState(() => suggestions = []);
     }
   }
 
@@ -275,7 +299,8 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         });
       }
     } finally {
-      if (mounted && generation == _searchGeneration) setState(() => searchLoading = false);
+      if (mounted && generation == _searchGeneration)
+        setState(() => searchLoading = false);
     }
   }
 
@@ -287,7 +312,11 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     await widget.client.storage.addRecentSearch(term);
     recentSearches = widget.client.storage.recentSearches;
     if (widget.client.session != null) {
-      unawaited(widget.client.post('/v1/search/recent', {'term': term}).catchError((_) => null));
+      unawaited(
+        widget.client
+            .post('/v1/search/recent', {'term': term})
+            .catchError((_) => null),
+      );
     }
     await _runSearch(term);
   }
@@ -373,10 +402,14 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     List<Map<String, dynamic>> addresses = [];
     if (widget.client.session != null) {
       try {
-        addresses = asList(asMap(await widget.client.get('/v1/addresses'))['items']);
+        addresses = asList(
+          asMap(await widget.client.get('/v1/addresses'))['items'],
+        );
       } catch (cause) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved addresses unavailable: $cause')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Saved addresses unavailable: $cause')),
+        );
       }
     }
     if (!mounted) return;
@@ -387,9 +420,16 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         shrinkWrap: true,
         padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
         children: [
-          Text('Delivery location', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+          Text(
+            'Delivery location',
+            style: Theme.of(context).textTheme.titleLarge
+                ?.copyWith(fontWeight: FontWeight.w800),
+          ),
           const SizedBox(height: 4),
-          Text('Availability, ETA and fees update for your area.', style: Theme.of(context).textTheme.bodySmall),
+          Text(
+            'Availability, ETA and fees update for your area.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
           const SizedBox(height: 12),
           for (final address in addresses)
             ListTile(
@@ -407,9 +447,21 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
           ..._locations.keys.map(
             (entry) => ListTile(
               contentPadding: EdgeInsets.zero,
-              leading: Icon(Icons.location_on_outlined, color: entry == location ? const Color(0xFFE8613D) : null),
-              title: Text(entry, style: TextStyle(fontWeight: entry == location ? FontWeight.w800 : FontWeight.w500)),
-              trailing: entry == location ? const Icon(Icons.check_circle, color: Color(0xFFE8613D)) : null,
+              leading: Icon(
+                Icons.location_on_outlined,
+                color: entry == location ? const Color(0xFFE8613D) : null,
+              ),
+              title: Text(
+                entry,
+                style: TextStyle(
+                  fontWeight: entry == location
+                      ? FontWeight.w800
+                      : FontWeight.w500,
+                ),
+              ),
+              trailing: entry == location
+                  ? const Icon(Icons.check_circle, color: Color(0xFFE8613D))
+                  : null,
               onTap: () => Navigator.pop(context, entry),
             ),
           ),
@@ -419,14 +471,20 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     if (selected == null) return;
     if (selected == 'manage-addresses') {
       if (!mounted) return;
-      await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => AddressBookScreen(client: widget.client)));
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => AddressBookScreen(client: widget.client),
+        ),
+      );
       return;
     }
     var label = selected;
     double nextLatitude;
     double nextLongitude;
     if (selected.startsWith('address:')) {
-      final address = addresses.firstWhere((item) => 'address:${item['id']}' == selected);
+      final address = addresses.firstWhere(
+        (item) => 'address:${item['id']}' == selected,
+      );
       if (address['latitude'] is! num || address['longitude'] is! num) return;
       label = address['label']?.toString() ?? 'Saved address';
       nextLatitude = (address['latitude'] as num).toDouble();
@@ -435,7 +493,11 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
       nextLatitude = _locations[selected]!.first;
       nextLongitude = _locations[selected]!.last;
     }
-    await widget.client.storage.saveDeliveryLocation(label, nextLatitude, nextLongitude);
+    await widget.client.storage.saveDeliveryLocation(
+      label,
+      nextLatitude,
+      nextLongitude,
+    );
     if (!mounted) return;
     ++_searchGeneration;
     setState(() {
@@ -444,7 +506,8 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
       _longitude = nextLongitude;
     });
     await _bootstrap();
-    if (mounted && searchController.text.trim().isNotEmpty) await _runSearch(searchController.text.trim());
+    if (mounted && searchController.text.trim().isNotEmpty)
+      await _runSearch(searchController.text.trim());
   }
 
   Future<void> _openFilters() async {
@@ -457,14 +520,27 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
       isScrollControlled: true,
       builder: (context) => StatefulBuilder(
         builder: (context, setSheetState) => Padding(
-          padding: EdgeInsets.fromLTRB(20, 0, 20, 24 + MediaQuery.of(context).viewInsets.bottom),
+          padding: EdgeInsets.fromLTRB(
+            20,
+            0,
+            20,
+            24 + MediaQuery.of(context).viewInsets.bottom,
+          ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Sort & filters', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+              Text(
+                'Sort & filters',
+                style: Theme.of(context).textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w800),
+              ),
               const SizedBox(height: 16),
-              Text('Sort by', style: Theme.of(context).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700)),
+              Text(
+                'Sort by',
+                style: Theme.of(context).textTheme.labelLarge
+                    ?.copyWith(fontWeight: FontWeight.w700),
+              ),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
@@ -480,7 +556,8 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                     ChoiceChip(
                       label: Text(option.value),
                       selected: nextSort == option.key,
-                      onSelected: (_) => setSheetState(() => nextSort = option.key),
+                      onSelected: (_) =>
+                          setSheetState(() => nextSort = option.key),
                     ),
                 ],
               ),
@@ -488,7 +565,9 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('Open now'),
-                subtitle: const Text('Hide merchants that are currently closed'),
+                subtitle: const Text(
+                  'Hide merchants that are currently closed',
+                ),
                 value: nextOpen,
                 onChanged: (value) => setSheetState(() => nextOpen = value),
               ),
@@ -497,7 +576,8 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                 title: const Text('Favorites only'),
                 subtitle: const Text('Show merchants you saved'),
                 value: nextFavorites,
-                onChanged: (value) => setSheetState(() => nextFavorites = value),
+                onChanged: (value) =>
+                    setSheetState(() => nextFavorites = value),
               ),
               const SizedBox(height: 12),
               Row(
@@ -529,7 +609,10 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
       ),
     );
     if (!mounted) return;
-    final changed = nextSort != sort || nextOpen != openNow || nextFavorites != favoritesOnly;
+    final changed =
+        nextSort != sort ||
+        nextOpen != openNow ||
+        nextFavorites != favoritesOnly;
     setState(() {
       sort = nextSort;
       openNow = nextOpen;
@@ -557,21 +640,39 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     if (id == null) return;
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => MerchantScreen(client: widget.client, merchantId: id, latitude: latitude, longitude: longitude),
+        builder: (_) => MerchantScreen(
+          client: widget.client,
+          merchantId: id,
+          latitude: latitude,
+          longitude: longitude,
+        ),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
+    return Column(
       children: [
-        Positioned.fill(
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (searching) ...[
+                _floatingSearchTypeBar(),
+                const SizedBox(height: 8),
+              ],
+              _floatingCategoryBar(),
+            ],
+          ),
+        ),
+        Expanded(
           child: RefreshIndicator(
             onRefresh: _refresh,
             child: ListView(
               physics: const AlwaysScrollableScrollPhysics(),
-              padding: EdgeInsets.fromLTRB(20, 8, 20, searching ? 150 : 96),
+              padding: const EdgeInsets.fromLTRB(20, 10, 20, 28),
               children: [
                 _locationHeader(),
                 const SizedBox(height: 14),
@@ -590,91 +691,119 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                   else if (error != null && home.isEmpty)
                     _errorState()
                   else ...[
-              if (banners.isNotEmpty) ...[
-                _bannerCarousel(),
-                const SizedBox(height: 18),
-              ],
-              _statsRow(),
-              if (offers.isNotEmpty) ...[
-                const SizedBox(height: 20),
-                _sectionHeader('Offers for you', 'Eligibility is checked again at checkout'),
-                const SizedBox(height: 10),
-                ...offers.map((offer) => Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Card(child: ListTile(
-                    leading: const Icon(Icons.local_offer_outlined, color: Color(0xFFE8613D)),
-                    title: Text(offer['displayName']?.toString() ?? 'Offer'),
-                    subtitle: Text('Minimum ${money(offer['minimumOrderMinor'] as num?, offer['currency']?.toString())} · ${offer['code']}'),
-                    trailing: const Icon(Icons.copy_rounded),
-                    onTap: () async {
-                      await Clipboard.setData(ClipboardData(text: offer['code'].toString()));
-                      if (!context.mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Offer code copied')));
-                    },
-                  )),
-                )),
-              ],
-              if (recommendations.isNotEmpty) ...[
-                const SizedBox(height: 20),
-                _sectionHeader('Recommended for you', 'Highly rated stores serving your location'),
-                const SizedBox(height: 10),
-                ...recommendations.take(3).map((merchant) => Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: MerchantCard(merchant: merchant,
-                    isFavorite: favorites.contains(merchant['id']),
-                    onFavoriteToggle: () => _toggleFavorite(merchant['id'].toString()),
-                    onTap: () => _openMerchant(merchant['id'].toString())),
-                )),
-              ],
-              if (featured.isNotEmpty) ...[
-                const SizedBox(height: 20),
-                _sectionHeader('Featured near you', 'Curated for ${location.split(',').first}'),
-                const SizedBox(height: 10),
-                _featuredRail(),
-              ],
-              if (products.isNotEmpty) ...[
-                const SizedBox(height: 20),
-                _sectionHeader('Popular picks', 'Ready to add to your cart'),
-                const SizedBox(height: 10),
-                _productRail(products),
-              ],
-              if (recentlyOrdered.isNotEmpty) ...[
-                const SizedBox(height: 20),
-                _sectionHeader('Order again', 'Your recent favorites'),
-                const SizedBox(height: 10),
-                _recentOrderRail(),
-              ],
-              if (recentlyOrderedProducts.isNotEmpty) ...[
-                const SizedBox(height: 20),
-                _sectionHeader('Buy it again', 'Products from your previous orders'),
-                const SizedBox(height: 10),
-                _productRail(recentlyOrderedProducts),
-              ],
-              const SizedBox(height: 22),
-              _allMerchantsHeader(),
-              const SizedBox(height: 10),
-              _merchantsSection(),
-              if (merchants.length < merchantTotal && !loadingList)
-                OutlinedButton(onPressed: () => _loadMerchants(append: true), child: const Text('Load more stores')),
+                    if (banners.isNotEmpty) ...[
+                      _bannerCarousel(),
+                      const SizedBox(height: 18),
+                    ],
+                    _statsRow(),
+                    if (offers.isNotEmpty) ...[
+                      const SizedBox(height: 20),
+                      _sectionHeader(
+                        'Offers for you',
+                        'Eligibility is checked again at checkout',
+                      ),
+                      const SizedBox(height: 10),
+                      ...offers.map(
+                        (offer) => Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Card(
+                            child: ListTile(
+                              leading: const Icon(
+                                Icons.local_offer_outlined,
+                                color: Color(0xFFE8613D),
+                              ),
+                              title: Text(
+                                offer['displayName']?.toString() ?? 'Offer',
+                              ),
+                              subtitle: Text(
+                                'Minimum ${money(offer['minimumOrderMinor'] as num?, offer['currency']?.toString())} · ${offer['code']}',
+                              ),
+                              trailing: const Icon(Icons.copy_rounded),
+                              onTap: () async {
+                                await Clipboard.setData(
+                                  ClipboardData(text: offer['code'].toString()),
+                                );
+                                if (!context.mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Offer code copied'),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                    if (recommendations.isNotEmpty) ...[
+                      const SizedBox(height: 20),
+                      _sectionHeader(
+                        'Recommended for you',
+                        'Highly rated stores serving your location',
+                      ),
+                      const SizedBox(height: 10),
+                      ...recommendations
+                          .take(3)
+                          .map(
+                            (merchant) => Padding(
+                              padding: const EdgeInsets.only(bottom: 10),
+                              child: MerchantCard(
+                                merchant: merchant,
+                                isFavorite: favorites.contains(merchant['id']),
+                                onFavoriteToggle: () =>
+                                    _toggleFavorite(merchant['id'].toString()),
+                                onTap: () =>
+                                    _openMerchant(merchant['id'].toString()),
+                              ),
+                            ),
+                          ),
+                    ],
+                    if (featured.isNotEmpty) ...[
+                      const SizedBox(height: 20),
+                      _sectionHeader(
+                        'Featured near you',
+                        'Curated for ${location.split(',').first}',
+                      ),
+                      const SizedBox(height: 10),
+                      _featuredRail(),
+                    ],
+                    if (products.isNotEmpty) ...[
+                      const SizedBox(height: 20),
+                      _sectionHeader(
+                        'Popular picks',
+                        'Ready to add to your cart',
+                      ),
+                      const SizedBox(height: 10),
+                      _productRail(products),
+                    ],
+                    if (recentlyOrdered.isNotEmpty) ...[
+                      const SizedBox(height: 20),
+                      _sectionHeader('Order again', 'Your recent favorites'),
+                      const SizedBox(height: 10),
+                      _recentOrderRail(),
+                    ],
+                    if (recentlyOrderedProducts.isNotEmpty) ...[
+                      const SizedBox(height: 20),
+                      _sectionHeader(
+                        'Buy it again',
+                        'Products from your previous orders',
+                      ),
+                      const SizedBox(height: 10),
+                      _productRail(recentlyOrderedProducts),
+                    ],
+                    const SizedBox(height: 22),
+                    _allMerchantsHeader(),
+                    const SizedBox(height: 10),
+                    _merchantsSection(),
+                    if (merchants.length < merchantTotal && !loadingList)
+                      OutlinedButton(
+                        onPressed: () => _loadMerchants(append: true),
+                        child: const Text('Load more stores'),
+                      ),
                   ],
                 ],
               ],
             ),
-          ),
-        ),
-        Positioned(
-          left: 12,
-          right: 12,
-          bottom: 8,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (searching) ...[
-                _floatingSearchTypeBar(),
-                const SizedBox(height: 8),
-              ],
-              _floatingCategoryBar(),
-            ],
           ),
         ),
       ],
@@ -700,15 +829,33 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                       color: const Color(0xFF20261F),
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: const Icon(Icons.near_me_rounded, color: Colors.white, size: 19),
+                    child: const Icon(
+                      Icons.near_me_rounded,
+                      color: Colors.white,
+                      size: 19,
+                    ),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('DELIVERING TO', style: theme.textTheme.labelSmall?.copyWith(letterSpacing: 1.1, color: const Color(0xFF6B7468), fontWeight: FontWeight.w700)),
-                        Text(location, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800)),
+                        Text(
+                          'DELIVERING TO',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            letterSpacing: 1.1,
+                            color: const Color(0xFF6B7468),
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        Text(
+                          location,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -721,12 +868,22 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         if (widget.client.offline)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-            decoration: BoxDecoration(color: const Color(0xFFFFF3E0), borderRadius: BorderRadius.circular(10)),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF3E0),
+              borderRadius: BorderRadius.circular(10),
+            ),
             child: const Row(
               children: [
                 Icon(Icons.cloud_off, size: 14, color: Color(0xFFE65100)),
                 SizedBox(width: 4),
-                Text('Offline', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFFE65100))),
+                Text(
+                  'Offline',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFFE65100),
+                  ),
+                ),
               ],
             ),
           ),
@@ -757,8 +914,14 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                   });
                 },
               ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 14,
+        ),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: BorderSide.none,
+        ),
         filled: true,
         fillColor: const Color(0xFFFFFDF7),
       ),
@@ -785,16 +948,29 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         if (term.isNotEmpty) _runSearch(term);
       },
       items: [
-        const FloatingBarItem(icon: Icons.grid_view_rounded, label: 'Everything'),
+        const FloatingBarItem(
+          icon: Icons.grid_view_rounded,
+          label: 'Everything',
+        ),
         const FloatingBarItem(icon: Icons.storefront_outlined, label: 'Stores'),
-        const FloatingBarItem(icon: Icons.shopping_basket_outlined, label: 'Products'),
-        const FloatingBarItem(icon: Icons.build_circle_outlined, label: 'Services'),
+        const FloatingBarItem(
+          icon: Icons.shopping_basket_outlined,
+          label: 'Products',
+        ),
+        const FloatingBarItem(
+          icon: Icons.build_circle_outlined,
+          label: 'Services',
+        ),
       ],
     );
   }
 
   Widget _workWithText(String text) {
-    return Text(text, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800));
+    return Text(
+      text,
+      style: Theme.of(context).textTheme.titleMedium
+          ?.copyWith(fontWeight: FontWeight.w800),
+    );
   }
 
   Widget _sectionHeader(String title, String subtitle) {
@@ -807,7 +983,11 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
             children: [
               _workWithText(title),
               const SizedBox(height: 2),
-              Text(subtitle, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468))),
+              Text(
+                subtitle,
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(color: const Color(0xFF6B7468)),
+              ),
             ],
           ),
         ),
@@ -823,7 +1003,11 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         children: [
           Row(
             children: [
-              Text('Recent searches', style: Theme.of(context).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700)),
+              Text(
+                'Recent searches',
+                style: Theme.of(context).textTheme.labelLarge
+                    ?.copyWith(fontWeight: FontWeight.w700),
+              ),
               const Spacer(),
               TextButton(onPressed: _clearRecent, child: const Text('Clear')),
             ],
@@ -851,20 +1035,26 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
       const FloatingBarItem(icon: Icons.apps_rounded, label: 'All'),
       for (final category in categories)
         FloatingBarItem(
-          icon: _categoryIcons[category['slug']?.toString()] ?? Icons.storefront_rounded,
+          icon:
+              _categoryIcons[category['slug']?.toString()] ??
+              Icons.storefront_rounded,
           label: category['displayName']?.toString() ?? 'Category',
           badge: category['merchantCount']?.toString(),
         ),
       FloatingBarItem(
         icon: Icons.tune_rounded,
         label: 'Filters',
-        badge: (openNow || favoritesOnly || sort != 'recommended') ? 'ON' : null,
+        badge: (openNow || favoritesOnly || sort != 'recommended')
+            ? 'ON'
+            : null,
       ),
     ];
     final selectedSlug = selectedCategory;
     var selectedIndex = 0;
     if (selectedSlug != null) {
-      final categoryIndex = categories.indexWhere((category) => category['slug']?.toString() == selectedSlug);
+      final categoryIndex = categories.indexWhere(
+        (category) => category['slug']?.toString() == selectedSlug,
+      );
       if (categoryIndex >= 0) selectedIndex = categoryIndex + 1;
     }
     return FloatingCategoryBar(
@@ -890,7 +1080,7 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     return Column(
       children: [
         SizedBox(
-          height: 172,
+          height: 195,
           child: PageView.builder(
             controller: pageController,
             itemCount: banners.length,
@@ -904,7 +1094,8 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                   borderRadius: BorderRadius.circular(22),
                   onTap: () {
                     final merchantId = banner['targetMerchantId']?.toString();
-                    final categorySlug = banner['targetCategorySlug']?.toString();
+                    final categorySlug = banner['targetCategorySlug']
+                        ?.toString();
                     if (merchantId != null && merchantId.isNotEmpty) {
                       _openMerchant(merchantId);
                       return;
@@ -934,7 +1125,8 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                             fit: BoxFit.cover,
                             color: Colors.black.withValues(alpha: 0.32),
                             colorBlendMode: BlendMode.darken,
-                            errorBuilder: (context, error, stack) => const SizedBox.shrink(),
+                            errorBuilder: (context, error, stack) =>
+                                const SizedBox.shrink(),
                           ),
                         Padding(
                           padding: const EdgeInsets.all(20),
@@ -944,31 +1136,61 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                             children: [
                               if (banner['code'] != null)
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
                                   decoration: BoxDecoration(
                                     color: Colors.white.withValues(alpha: 0.2),
                                     borderRadius: BorderRadius.circular(8),
                                   ),
-                                  child: Text('CODE ${banner['code']}', style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 0.8)),
+                                  child: Text(
+                                    'CODE ${banner['code']}',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w800,
+                                      letterSpacing: 0.8,
+                                    ),
+                                  ),
                                 ),
                               const SizedBox(height: 8),
                               Text(
                                 banner['title']?.toString() ?? 'Offer',
-                                style: const TextStyle(color: Colors.white, fontSize: 22, height: 1.05, fontWeight: FontWeight.w800),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 22,
+                                  height: 1.05,
+                                  fontWeight: FontWeight.w800,
+                                ),
                               ),
                               const SizedBox(height: 4),
                               Text(
                                 banner['subtitle']?.toString() ?? '',
                                 maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
-                                style: TextStyle(color: Colors.white.withValues(alpha: 0.85), fontSize: 12),
+                                style: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.85),
+                                  fontSize: 12,
+                                ),
                               ),
                               const SizedBox(height: 8),
                               Row(
                                 children: [
-                                  Text(banner['ctaLabel']?.toString() ?? 'Explore', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12)),
+                                  Text(
+                                    banner['ctaLabel']?.toString() ?? 'Explore',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 12,
+                                    ),
+                                  ),
                                   const SizedBox(width: 4),
-                                  const Icon(Icons.arrow_forward_rounded, color: Colors.white, size: 15),
+                                  const Icon(
+                                    Icons.arrow_forward_rounded,
+                                    color: Colors.white,
+                                    size: 15,
+                                  ),
                                 ],
                               ),
                             ],
@@ -994,7 +1216,9 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                 width: index == promoIndex ? 18 : 6,
                 height: 6,
                 decoration: BoxDecoration(
-                  color: index == promoIndex ? const Color(0xFFE8613D) : const Color(0xFFD9D5C7),
+                  color: index == promoIndex
+                      ? const Color(0xFFE8613D)
+                      : const Color(0xFFD9D5C7),
                   borderRadius: BorderRadius.circular(3),
                 ),
               ),
@@ -1009,11 +1233,29 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     final stats = asMap(home['stats']);
     return Row(
       children: [
-        Expanded(child: _statTile('Nearby stores', stats['merchantCount']?.toString() ?? '${merchants.length}', Icons.storefront_rounded)),
+        Expanded(
+          child: _statTile(
+            'Nearby stores',
+            stats['merchantCount']?.toString() ?? '${merchants.length}',
+            Icons.storefront_rounded,
+          ),
+        ),
         const SizedBox(width: 10),
-        Expanded(child: _statTile('Open now', stats['openNowCount']?.toString() ?? '—', Icons.bolt_rounded)),
+        Expanded(
+          child: _statTile(
+            'Open now',
+            stats['openNowCount']?.toString() ?? '—',
+            Icons.bolt_rounded,
+          ),
+        ),
         const SizedBox(width: 10),
-        Expanded(child: _statTile('Delivery', _deliveryWindow(), Icons.delivery_dining_rounded)),
+        Expanded(
+          child: _statTile(
+            'Delivery',
+            _deliveryWindow(),
+            Icons.delivery_dining_rounded,
+          ),
+        ),
       ],
     );
   }
@@ -1043,8 +1285,18 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         children: [
           Icon(icon, size: 18, color: const Color(0xFFE8613D)),
           const SizedBox(height: 6),
-          Text(value, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15)),
-          Text(labelText, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Color(0xFF6B7468))),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
+          ),
+          Text(
+            labelText,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 10, color: Color(0xFF6B7468)),
+          ),
         ],
       ),
     );
@@ -1082,13 +1334,17 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
           final merchant = asMap(product['merchant']);
           final image = product['imageUrl']?.toString();
           final productId = product['id']?.toString() ?? '';
-          final isFavorite = productId.isNotEmpty && favoriteProducts.contains(productId);
+          final isFavorite =
+              productId.isNotEmpty && favoriteProducts.contains(productId);
           return SizedBox(
             width: 150,
             child: Card(
               clipBehavior: Clip.antiAlias,
               child: InkWell(
-                onTap: () => _openMerchant(merchant['id']?.toString() ?? product['merchantId']?.toString()),
+                onTap: () => _openMerchant(
+                  merchant['id']?.toString() ??
+                      product['merchantId']?.toString(),
+                ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -1098,8 +1354,24 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                       child: Stack(
                         children: [
                           image == null
-                              ? const ColoredBox(color: Color(0xFFF0EAD9), child: Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D)))
-                              : Image.network(image, fit: BoxFit.cover, errorBuilder: (_, _, _) => const ColoredBox(color: Color(0xFFF0EAD9), child: Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D)))),
+                              ? const ColoredBox(
+                                  color: Color(0xFFF0EAD9),
+                                  child: Icon(
+                                    Icons.local_mall_rounded,
+                                    color: Color(0xFFE8613D),
+                                  ),
+                                )
+                              : Image.network(
+                                  image,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, _, _) => const ColoredBox(
+                                    color: Color(0xFFF0EAD9),
+                                    child: Icon(
+                                      Icons.local_mall_rounded,
+                                      color: Color(0xFFE8613D),
+                                    ),
+                                  ),
+                                ),
                           Positioned(
                             top: 6,
                             right: 6,
@@ -1107,12 +1379,20 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                               iconSize: 22,
                               padding: EdgeInsets.zero,
                               constraints: const BoxConstraints(),
-                              tooltip: isFavorite ? 'Remove from favorites' : 'Add to favorites',
+                              tooltip: isFavorite
+                                  ? 'Remove from favorites'
+                                  : 'Add to favorites',
                               icon: Icon(
-                                isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-                                color: isFavorite ? const Color(0xFFE8613D) : const Color(0xFF9E9E9E),
+                                isFavorite
+                                    ? Icons.favorite_rounded
+                                    : Icons.favorite_border_rounded,
+                                color: isFavorite
+                                    ? const Color(0xFFE8613D)
+                                    : const Color(0xFF9E9E9E),
                               ),
-                              onPressed: () => _toggleFavoriteProduct(product['id']?.toString() ?? ''),
+                              onPressed: () => _toggleFavoriteProduct(
+                                product['id']?.toString() ?? '',
+                              ),
                             ),
                           ),
                         ],
@@ -1123,11 +1403,36 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(product['displayName']?.toString() ?? 'Item', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                          Text(
+                            product['displayName']?.toString() ?? 'Item',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                            ),
+                          ),
                           const SizedBox(height: 2),
-                          Text(merchant['displayName']?.toString() ?? 'Merchant', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Color(0xFF6B7468))),
+                          Text(
+                            merchant['displayName']?.toString() ?? 'Merchant',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: Color(0xFF6B7468),
+                            ),
+                          ),
                           const SizedBox(height: 6),
-                          Text(money(product['basePriceMinor'] as num?, product['currency']?.toString() ?? 'ETB'), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12)),
+                          Text(
+                            money(
+                              product['basePriceMinor'] as num?,
+                              product['currency']?.toString() ?? 'ETB',
+                            ),
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 12,
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -1157,10 +1462,29 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
               child: ListTile(
                 leading: CircleAvatar(
                   backgroundColor: const Color(0xFFF0EAD9),
-                  child: Text((merchant['displayName']?.toString() ?? 'S').characters.first, style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFFE8613D))),
+                  child: Text(
+                    (merchant['displayName']?.toString() ?? 'S')
+                        .characters
+                        .first,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFFE8613D),
+                    ),
+                  ),
                 ),
-                title: Text(merchant['displayName']?.toString() ?? 'Merchant', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
-                subtitle: Text('Order again', style: const TextStyle(fontSize: 11)),
+                title: Text(
+                  merchant['displayName']?.toString() ?? 'Merchant',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                  ),
+                ),
+                subtitle: Text(
+                  'Order again',
+                  style: const TextStyle(fontSize: 11),
+                ),
                 onTap: () => _openMerchant(merchant['id']?.toString()),
               ),
             ),
@@ -1185,7 +1509,13 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
   Widget _merchantsSection() {
     if (loadingList) {
       return Column(
-        children: List.generate(3, (_) => const Padding(padding: EdgeInsets.only(bottom: 10), child: MerchantCardSkeleton())),
+        children: List.generate(
+          3,
+          (_) => const Padding(
+            padding: EdgeInsets.only(bottom: 10),
+            child: MerchantCardSkeleton(),
+          ),
+        ),
       );
     }
     if (error != null) return _errorState();
@@ -1206,7 +1536,8 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
               child: MerchantCard(
                 merchant: merchant,
                 isFavorite: favorites.contains(merchant['id']?.toString()),
-                onFavoriteToggle: () => _toggleFavorite(merchant['id']?.toString() ?? ''),
+                onFavoriteToggle: () =>
+                    _toggleFavorite(merchant['id']?.toString() ?? ''),
                 onTap: () => _openMerchant(merchant['id']?.toString()),
               ),
             ),
@@ -1233,7 +1564,11 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SkeletonBox(width: double.infinity, height: 170, borderRadius: 22),
+        const SkeletonBox(
+          width: double.infinity,
+          height: 170,
+          borderRadius: 22,
+        ),
         const SizedBox(height: 18),
         const SkeletonBox(width: 180, height: 20),
         const SizedBox(height: 10),
@@ -1243,11 +1578,18 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
             scrollDirection: Axis.horizontal,
             itemCount: 3,
             separatorBuilder: (_, _) => const SizedBox(width: 12),
-            itemBuilder: (_, _) => const SkeletonBox(width: 220, height: 205, borderRadius: 18),
+            itemBuilder: (_, _) =>
+                const SkeletonBox(width: 220, height: 205, borderRadius: 18),
           ),
         ),
         const SizedBox(height: 18),
-        ...List.generate(2, (_) => const Padding(padding: EdgeInsets.only(bottom: 10), child: MerchantCardSkeleton())),
+        ...List.generate(
+          2,
+          (_) => const Padding(
+            padding: EdgeInsets.only(bottom: 10),
+            child: MerchantCardSkeleton(),
+          ),
+        ),
       ],
     );
   }
@@ -1258,24 +1600,36 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     final merchantsResult = asList(results['merchants']);
     final productsResult = asList(results['products']);
     final servicesResult = asList(results['services']);
-    final termSuggestions = (results['suggestions'] as List? ?? const []).whereType<String>().toList();
+    final termSuggestions = (results['suggestions'] as List? ?? const [])
+        .whereType<String>()
+        .toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (searchError != null) ...[
           ErrorBanner(message: searchError!),
-          OutlinedButton(onPressed: () => _runSearch(searchController.text.trim()), child: const Text('Retry search')),
+          OutlinedButton(
+            onPressed: () => _runSearch(searchController.text.trim()),
+            child: const Text('Retry search'),
+          ),
         ],
         if (searchLoading) const LinearProgressIndicator(),
         if (searchResult.isEmpty && searchError == null)
           Column(
             children: List.generate(
               4,
-              (_) => const Padding(padding: EdgeInsets.only(top: 10), child: MerchantCardSkeleton()),
+              (_) => const Padding(
+                padding: EdgeInsets.only(top: 10),
+                child: MerchantCardSkeleton(),
+              ),
             ),
           ),
         if (suggestions.isNotEmpty) ...[
-          Text('Suggestions', style: Theme.of(context).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700)),
+          Text(
+            'Suggestions',
+            style: Theme.of(context).textTheme.labelLarge
+                ?.copyWith(fontWeight: FontWeight.w700),
+          ),
           const SizedBox(height: 8),
           Column(
             children: suggestions.take(5).map((suggestion) {
@@ -1283,13 +1637,17 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
               final icon = type == 'product'
                   ? Icons.local_mall_rounded
                   : type == 'service'
-                      ? Icons.local_offer_outlined
-                      : Icons.storefront_rounded;
+                  ? Icons.local_offer_outlined
+                  : Icons.storefront_rounded;
               return ListTile(
                 dense: true,
                 contentPadding: EdgeInsets.zero,
                 leading: Icon(icon, size: 20, color: const Color(0xFFE8613D)),
-                title: Text(suggestion['label']?.toString() ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
+                title: Text(
+                  suggestion['label']?.toString() ?? '',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
                 subtitle: Text(suggestion['subtitle']?.toString() ?? ''),
                 trailing: const Icon(Icons.north_west_rounded, size: 16),
                 onTap: () {
@@ -1314,7 +1672,15 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
           Wrap(
             spacing: 6,
             runSpacing: 4,
-            children: termSuggestions.take(6).map((term) => ActionChip(label: Text(term), onPressed: () => _commitSearch(term))).toList(),
+            children: termSuggestions
+                .take(6)
+                .map(
+                  (term) => ActionChip(
+                    label: Text(term),
+                    onPressed: () => _commitSearch(term),
+                  ),
+                )
+                .toList(),
           ),
           const SizedBox(height: 16),
         ],
@@ -1335,7 +1701,11 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
           )
         else ...[
           if (merchantsResult.isNotEmpty) ...[
-            Text('Merchants', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+            Text(
+              'Merchants',
+              style: Theme.of(context).textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w800),
+            ),
             const SizedBox(height: 8),
             ...merchantsResult.map(
               (merchant) => Padding(
@@ -1343,7 +1713,8 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                 child: MerchantCard(
                   merchant: merchant,
                   isFavorite: favorites.contains(merchant['id']?.toString()),
-                  onFavoriteToggle: () => _toggleFavorite(merchant['id']?.toString() ?? ''),
+                  onFavoriteToggle: () =>
+                      _toggleFavorite(merchant['id']?.toString() ?? ''),
                   onTap: () => _openMerchant(merchant['id']?.toString()),
                 ),
               ),
@@ -1351,7 +1722,11 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
             const SizedBox(height: 8),
           ],
           if (productsResult.isNotEmpty) ...[
-            Text('Products', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+            Text(
+              'Products',
+              style: Theme.of(context).textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w800),
+            ),
             const SizedBox(height: 8),
             ...productsResult.map(
               (product) => Padding(
@@ -1367,15 +1742,38 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                                 width: 44,
                                 height: 44,
                                 fit: BoxFit.cover,
-                                errorBuilder: (context, error, stack) => const Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D), size: 20),
+                                errorBuilder: (context, error, stack) =>
+                                    const Icon(
+                                      Icons.local_mall_rounded,
+                                      color: Color(0xFFE8613D),
+                                      size: 20,
+                                    ),
                               ),
                             )
-                          : const Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D), size: 20),
+                          : const Icon(
+                              Icons.local_mall_rounded,
+                              color: Color(0xFFE8613D),
+                              size: 20,
+                            ),
                     ),
-                    title: Text(product['displayName']?.toString() ?? 'Item', style: const TextStyle(fontWeight: FontWeight.w700)),
-                    subtitle: Text(asMap(product['merchant'])['displayName']?.toString() ?? 'Merchant'),
-                    trailing: Text(money(product['basePriceMinor'] as num?, product['currency']?.toString() ?? 'ETB'), style: const TextStyle(fontWeight: FontWeight.w800)),
-                    onTap: () => _openMerchant(asMap(product['merchant'])['id']?.toString()),
+                    title: Text(
+                      product['displayName']?.toString() ?? 'Item',
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    subtitle: Text(
+                      asMap(product['merchant'])['displayName']?.toString() ??
+                          'Merchant',
+                    ),
+                    trailing: Text(
+                      money(
+                        product['basePriceMinor'] as num?,
+                        product['currency']?.toString() ?? 'ETB',
+                      ),
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    onTap: () => _openMerchant(
+                      asMap(product['merchant'])['id']?.toString(),
+                    ),
                   ),
                 ),
               ),
@@ -1383,7 +1781,11 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
             const SizedBox(height: 8),
           ],
           if (servicesResult.isNotEmpty) ...[
-            Text('Services', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+            Text(
+              'Services',
+              style: Theme.of(context).textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w800),
+            ),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
@@ -1391,8 +1793,14 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
               children: servicesResult
                   .map(
                     (service) => ActionChip(
-                      avatar: Icon(_categoryIcons[service['slug']?.toString()] ?? Icons.storefront_rounded, size: 16),
-                      label: Text(service['displayName']?.toString() ?? 'Service'),
+                      avatar: Icon(
+                        _categoryIcons[service['slug']?.toString()] ??
+                            Icons.storefront_rounded,
+                        size: 16,
+                      ),
+                      label: Text(
+                        service['displayName']?.toString() ?? 'Service',
+                      ),
                       onPressed: () {
                         searchController.clear();
                         setState(() => searching = false);
@@ -1429,7 +1837,12 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
 }
 
 class _FeaturedMerchantCard extends StatelessWidget {
-  const _FeaturedMerchantCard({required this.merchant, required this.isFavorite, required this.onFavorite, required this.onTap});
+  const _FeaturedMerchantCard({
+    required this.merchant,
+    required this.isFavorite,
+    required this.onFavorite,
+    required this.onTap,
+  });
 
   final Map<String, dynamic> merchant;
   final bool isFavorite;
@@ -1440,7 +1853,8 @@ class _FeaturedMerchantCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final cover = merchant['coverImageUrl'] ?? merchant['logoUrl'];
     final rating = merchant['rating']?.toString() ?? '4.8';
-    final eta = merchant['etaMinMinutes'] != null && merchant['etaMaxMinutes'] != null
+    final eta =
+        merchant['etaMinMinutes'] != null && merchant['etaMaxMinutes'] != null
         ? '${merchant['etaMinMinutes']}-${merchant['etaMaxMinutes']} min'
         : '25-35 min';
     return SizedBox(
@@ -1458,25 +1872,75 @@ class _FeaturedMerchantCard extends StatelessWidget {
                     height: 118,
                     width: double.infinity,
                     child: cover == null
-                        ? const ColoredBox(color: Color(0xFFF0EAD9), child: Icon(Icons.storefront_rounded, size: 42, color: Color(0xFFE8613D)))
-                        : Image.network(cover.toString(), fit: BoxFit.cover, errorBuilder: (_, _, _) => const ColoredBox(color: Color(0xFFF0EAD9), child: Icon(Icons.storefront_rounded, size: 42, color: Color(0xFFE8613D)))),
+                        ? const ColoredBox(
+                            color: Color(0xFFF0EAD9),
+                            child: Icon(
+                              Icons.storefront_rounded,
+                              size: 42,
+                              color: Color(0xFFE8613D),
+                            ),
+                          )
+                        : Image.network(
+                            cover.toString(),
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, _, _) => const ColoredBox(
+                              color: Color(0xFFF0EAD9),
+                              child: Icon(
+                                Icons.storefront_rounded,
+                                size: 42,
+                                color: Color(0xFFE8613D),
+                              ),
+                            ),
+                          ),
                   ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(merchant['displayName']?.toString() ?? 'Merchant', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                        Text(
+                          merchant['displayName']?.toString() ?? 'Merchant',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            fontSize: 14,
+                          ),
+                        ),
                         const SizedBox(height: 3),
                         Row(
                           children: [
-                            const Icon(Icons.star_rounded, size: 15, color: Color(0xFFE8613D)),
+                            const Icon(
+                              Icons.star_rounded,
+                              size: 15,
+                              color: Color(0xFFE8613D),
+                            ),
                             const SizedBox(width: 2),
-                            Text(rating, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+                            Text(
+                              rating,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
                             const SizedBox(width: 8),
-                            const Icon(Icons.access_time_rounded, size: 13, color: Color(0xFF6B7468)),
+                            const Icon(
+                              Icons.access_time_rounded,
+                              size: 13,
+                              color: Color(0xFF6B7468),
+                            ),
                             const SizedBox(width: 2),
-                            Expanded(child: Text(eta, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: Color(0xFF6B7468)))),
+                            Expanded(
+                              child: Text(
+                                eta,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: Color(0xFF6B7468),
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                       ],
@@ -1494,7 +1958,14 @@ class _FeaturedMerchantCard extends StatelessWidget {
                     visualDensity: VisualDensity.compact,
                     iconSize: 18,
                     onPressed: onFavorite,
-                    icon: Icon(isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded, color: isFavorite ? const Color(0xFFE8613D) : const Color(0xFF20261F)),
+                    icon: Icon(
+                      isFavorite
+                          ? Icons.favorite_rounded
+                          : Icons.favorite_border_rounded,
+                      color: isFavorite
+                          ? const Color(0xFFE8613D)
+                          : const Color(0xFF20261F),
+                    ),
                   ),
                 ),
               ),
@@ -1503,9 +1974,23 @@ class _FeaturedMerchantCard extends StatelessWidget {
                   left: 8,
                   top: 8,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                    decoration: BoxDecoration(color: const Color(0xFF20261F), borderRadius: BorderRadius.circular(7)),
-                    child: const Text('FEATURED', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.w800, letterSpacing: 0.6)),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 3,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF20261F),
+                      borderRadius: BorderRadius.circular(7),
+                    ),
+                    child: const Text(
+                      'FEATURED',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 8,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.6,
+                      ),
+                    ),
                   ),
                 ),
             ],
@@ -1515,4 +2000,3 @@ class _FeaturedMerchantCard extends StatelessWidget {
     );
   }
 }
-

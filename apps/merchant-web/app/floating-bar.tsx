@@ -6,8 +6,10 @@ export type FloatingIcon =
   | "overview"
   | "orders"
   | "menu"
+  | "sales"
   | "settlements"
   | "finance"
+  | "business"
   | "all"
   | "new"
   | "accepted"
@@ -119,10 +121,14 @@ function FloatingGlyph({ name }: { name: FloatingIcon }) {
       return <svg {...common}><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6M9 12h6M9 16h4" /></svg>;
     case "menu":
       return <svg {...common}><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v18H6.5A2.5 2.5 0 0 1 4 18.5z" /><path d="M4 18.5A2.5 2.5 0 0 1 6.5 16H20" /></svg>;
+    case "sales":
+      return <svg {...common}><path d="M4 20v-7M10 20V8M16 20v-4M22 20H2" /></svg>;
     case "settlements":
       return <svg {...common}><rect x="3" y="6" width="18" height="13" rx="2.5" /><path d="M3 10h18" /><path d="M16 15h2" /></svg>;
     case "finance":
       return <svg {...common}><path d="M4 20V10M10 20V4M16 20v-7M22 20H2" /></svg>;
+    case "business":
+      return <svg {...common}><path d="M4 10v10h16V10" /><path d="M3 10l2-6h14l2 6" /><path d="M8 20v-6h8v6" /></svg>;
     case "all":
       return <svg {...common}><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="m3 13 9 5 9-5" /></svg>;
     case "new":

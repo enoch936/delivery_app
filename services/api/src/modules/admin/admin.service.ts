@@ -37,7 +37,9 @@ export class AdminService {
     const result = await this.database.query(
       `SELECT m.id, m.slug, m.display_name, m.status, m.rating_average, m.rating_count, m.created_at,
               (SELECT count(*)::int FROM orders o WHERE o.merchant_id = m.id) AS order_count,
-              (SELECT u.phone_e164 FROM merchant_members mm JOIN users u ON u.id = mm.user_id WHERE mm.merchant_id = m.id AND mm.role = 'owner' LIMIT 1) AS owner_phone
+              (SELECT u.phone_e164 FROM merchant_members mm JOIN users u ON u.id = mm.user_id WHERE mm.merchant_id = m.id AND mm.role = 'owner' LIMIT 1) AS owner_phone,
+              m.rejection_reason, m.suspension_reason,
+              (SELECT count(*)::int FROM merchant_documents d WHERE d.merchant_id = m.id AND d.status = 'pending') AS pending_documents
        FROM merchants m WHERE ($1::text IS NULL OR m.status = $1) ORDER BY m.created_at DESC LIMIT $2 OFFSET $3`,
       [status ?? null, limit, offset]
     );
@@ -45,7 +47,9 @@ export class AdminService {
       items: result.rows.map((row) => ({
         id: row.id as string, slug: row.slug as string, displayName: row.display_name as string, status: row.status as string,
         rating: Number(row.rating_average), ratingCount: row.rating_count as number, orderCount: row.order_count as number,
-        ownerPhone: row.owner_phone as string | null, createdAt: (row.created_at as Date).toISOString()
+        ownerPhone: row.owner_phone as string | null, createdAt: (row.created_at as Date).toISOString(),
+        rejectionReason: row.rejection_reason as string | null, suspensionReason: row.suspension_reason as string | null,
+        pendingDocuments: row.pending_documents as number
       }))
     };
   }
@@ -71,11 +75,43 @@ export class AdminService {
     };
   }
 
-  async setMerchantStatus(actorUserId: string, merchantId: string, status: "active" | "suspended" | "closed", requestId: string | null) {
-    const result = await this.database.query("UPDATE merchants SET status = $2, updated_at = now() WHERE id = $1", [merchantId, status]);
-    if (result.rowCount === 0) throw new NotFoundException("Merchant not found.");
-    await this.audit.record({ actorUserId, action: `admin.merchant_${status}`, entityType: "merchant", entityId: merchantId, requestId });
-    return { merchantId, status };
+  async setMerchantStatus(actorUserId: string, merchantId: string, status: "active" | "suspended" | "closed", reason: string | null, requestId: string | null) {
+    const result = await this.database.query(
+      `UPDATE merchants SET status = $2,
+              rejection_reason = CASE WHEN $2 = 'closed' THEN COALESCE($3, 'Application rejected by operator.') ELSE NULL END,
+              suspension_reason = CASE WHEN $2 = 'suspended' THEN $3 ELSE NULL END,
+              updated_at = now()
+       WHERE id = $1 RETURNING id`,
+      [merchantId, status, reason]
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundException("Merchant not found.");
+    await this.audit.record({ actorUserId, action: `admin.merchant_${status}`, entityType: "merchant", entityId: merchantId, requestId, metadata: { reason } });
+    return { merchantId, status, rejectionReason: status === "closed" ? reason ?? "Application rejected by operator." : null, suspensionReason: status === "suspended" ? reason : null };
+  }
+
+  async merchantDocuments(merchantId: string) {
+    const result = await this.database.query(
+      `SELECT id, merchant_id, document_type, storage_key, status, review_notes, reviewed_at, created_at
+       FROM merchant_documents WHERE merchant_id = $1 ORDER BY created_at DESC`,
+      [merchantId]
+    );
+    return { items: result.rows.map((row) => ({
+      id: row.id as string, merchantId: row.merchant_id as string, documentType: row.document_type as string,
+      storageKey: row.storage_key as string, status: row.status as string, reviewNotes: row.review_notes as string | null,
+      reviewedAt: (row.reviewed_at as Date | null)?.toISOString() ?? null, createdAt: (row.created_at as Date).toISOString()
+    })) };
+  }
+
+  async reviewMerchantDocument(actorUserId: string, documentId: string, status: "approved" | "rejected", notes: string | null, requestId: string | null) {
+    const result = await this.database.query(
+      "UPDATE merchant_documents SET status = $2, review_notes = $3, reviewed_by = $4, reviewed_at = now() WHERE id = $1 RETURNING merchant_id",
+      [documentId, status, notes, actorUserId]
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundException("Document not found.");
+    await this.audit.record({ actorUserId, action: `admin.merchant_document_${status}`, entityType: "merchant_document", entityId: documentId, requestId, metadata: { merchantId: row.merchant_id as string, notes } });
+    return { documentId, status };
   }
 
   async couriers(status: string | undefined, limit: number, offset: number) {

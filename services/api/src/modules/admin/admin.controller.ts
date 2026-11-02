@@ -37,6 +37,7 @@ class UserStatusDto {
 
 class MerchantStatusDto {
   @IsIn(["active", "suspended", "closed"]) status!: "active" | "suspended" | "closed";
+  @IsOptional() @IsString() @Length(0, 500) reason?: string;
 }
 
 class CourierDecisionDto {
@@ -62,10 +63,22 @@ export class AdminController {
     return this.service.merchants(query.status, query.limit ?? 50, query.offset ?? 0);
   }
 
+  @Get("merchants/:merchantId/documents")
+  @Roles("admin", "operations", "support", "finance")
+  merchantDocuments(@Param("merchantId", ParseUUIDPipe) merchantId: string) {
+    return this.service.merchantDocuments(merchantId);
+  }
+
+  @Patch("merchant-documents/:documentId/review")
+  @Roles("admin", "operations")
+  reviewMerchantDocument(@Req() request: AuthenticatedRequest, @Param("documentId", ParseUUIDPipe) documentId: string, @Body() body: DocumentReviewDto) {
+    return this.service.reviewMerchantDocument(requireUser(request).id, documentId, body.status, body.notes ?? null, requestId(request));
+  }
+
   @Patch("merchants/:merchantId/status")
   @Roles("admin", "operations")
   setMerchantStatus(@Req() request: AuthenticatedRequest, @Param("merchantId", ParseUUIDPipe) merchantId: string, @Body() body: MerchantStatusDto) {
-    return this.service.setMerchantStatus(requireUser(request).id, merchantId, body.status, requestId(request));
+    return this.service.setMerchantStatus(requireUser(request).id, merchantId, body.status, body.reason ?? null, requestId(request));
   }
 
   @Get("couriers")

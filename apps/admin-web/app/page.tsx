@@ -31,7 +31,9 @@ type OrderRow = {
 type MerchantRow = {
   id: string; slug: string; displayName: string; status: string; rating: number; ratingCount: number;
   orderCount: number; ownerPhone: string | null; createdAt: string;
+  rejectionReason: string | null; suspensionReason: string | null; pendingDocuments: number;
 };
+type MerchantDocumentRow = { id: string; merchantId: string; documentType: string; storageKey: string; status: string; reviewNotes: string | null; reviewedAt: string | null; createdAt: string };
 type CourierRow = {
   userId: string; status: string; fullName: string | null; phoneE164: string | null; vehicleType: string | null;
   vehiclePlate: string | null; rating: number; completedDeliveries: number; rejectionReason: string | null;
@@ -267,6 +269,7 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
   const [finance, setFinance] = useState<Finance | null>(null);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [merchants, setMerchants] = useState<MerchantRow[]>([]);
+  const [merchantDocuments, setMerchantDocuments] = useState<{ merchant: MerchantRow; items: MerchantDocumentRow[] } | null>(null);
   const [couriers, setCouriers] = useState<CourierRow[]>([]);
   const [users, setUsers] = useState<UserRow[]>([]);
   const [flags, setFlags] = useState<FlagRow[]>([]);
@@ -384,11 +387,36 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
 
   useEffect(() => { void load(); }, [load]);
 
-  async function setMerchantStatus(merchant: MerchantRow, status: "active" | "suspended" | "closed") {
+  async function setMerchantStatus(merchant: MerchantRow, status: "active" | "suspended" | "closed", reason?: string) {
     try {
-      await api(`/v1/admin/merchants/${merchant.id}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
+      await api(`/v1/admin/merchants/${merchant.id}/status`, { method: "PATCH", body: JSON.stringify({ status, reason: reason ?? null }) });
       notify(`${merchant.displayName} is now ${status}.`); void load();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not update merchant."); }
+  }
+
+  async function rejectMerchant(merchant: MerchantRow) {
+    const reason = window.prompt("Rejection reason for the merchant");
+    if (reason === null) return;
+    try {
+      await api(`/v1/admin/merchants/${merchant.id}/status`, { method: "PATCH", body: JSON.stringify({ status: "closed", reason }) });
+      notify(`${merchant.displayName} rejected.`);
+      void load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not reject merchant."); }
+  }
+
+  async function openMerchantDocuments(merchant: MerchantRow) {
+    try {
+      const result = await api<{ items: MerchantDocumentRow[] }>(`/v1/admin/merchants/${merchant.id}/documents`);
+      setMerchantDocuments({ merchant, items: result.items });
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load merchant documents."); }
+  }
+
+  async function reviewMerchantDocument(document: MerchantDocumentRow, status: "approved" | "rejected") {
+    try {
+      await api(`/v1/admin/merchant-documents/${document.id}/review`, { method: "PATCH", body: JSON.stringify({ status, notes: status === "rejected" ? window.prompt("Review notes (optional)") ?? undefined : undefined }) });
+      notify(`Document ${status}.`);
+      if (merchantDocuments) await openMerchantDocuments(merchantDocuments.merchant);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not review merchant document."); }
   }
 
   async function reviewCourier(courier: CourierRow, decision: "approve" | "reject" | "suspend") {
@@ -561,6 +589,14 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
         <div><p className="eyebrow">{TABS.find(([key]) => key === tab)?.[1]}</p><h1>{tab === "overview" ? "City pulse" : tab === "config" ? "System controls" : tab === "audit" ? "Audit trail" : TABS.find(([key]) => key === tab)?.[1]}</h1></div>
         <button className="ghost" onClick={() => void load()} disabled={loading}>{loading ? "Loading…" : "Refresh"}</button>
       </header>
+      {STATUS_FILTERS[tab] ? <div className="context-strip">
+        <FloatingCategoryBar
+          items={STATUS_FILTERS[tab] ?? []}
+          value={statusFilter}
+          onChange={setStatusFilter}
+          label="Status filters"
+        />
+      </div> : null}
       {error && <p className="form-error">{error}</p>}
 
       {tab === "overview" && <Overview dashboard={dashboard} daily={daily} finance={finance} maxDaily={maxDaily} from={from} to={to} setFrom={setFrom} setTo={setTo} />}
@@ -602,16 +638,35 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
               <td><strong>{merchant.displayName}</strong><small className="block">{merchant.slug}</small></td>
               <td>{merchant.ownerPhone ?? "—"}</td><td>{merchant.orderCount}</td>
               <td>{merchant.rating.toFixed(1)} <small>({merchant.ratingCount})</small></td>
-              <td><span className={`status-pill ${merchant.status}`}>{merchant.status}</span></td>
+              <td><span className={`status-pill ${merchant.status}`}>{merchant.status}</span>{merchant.rejectionReason ? <small className="block">{merchant.rejectionReason}</small> : null}{merchant.suspensionReason ? <small className="block">{merchant.suspensionReason}</small> : null}</td>
               <td>{shortDate(merchant.createdAt)}</td>
               <td className="actions">
-                {merchant.status !== "active" && <button className="ghost" onClick={() => void setMerchantStatus(merchant, "active")}>Activate</button>}
-                {merchant.status !== "suspended" && <button className="ghost danger" onClick={() => void setMerchantStatus(merchant, "suspended")}>Suspend</button>}
+                {merchant.status === "pending" && <button className="ghost" onClick={() => void setMerchantStatus(merchant, "active")}>Approve</button>}
+                {merchant.status === "pending" && <button className="ghost danger" onClick={() => void rejectMerchant(merchant)}>Reject</button>}
+                {merchant.status === "suspended" && <button className="ghost" onClick={() => void setMerchantStatus(merchant, "active")}>Reactivate</button>}
+                {merchant.status !== "closed" && <button className="ghost danger" onClick={() => void setMerchantStatus(merchant, "suspended")}>Suspend</button>}
+                <button className="ghost" onClick={() => void openMerchantDocuments(merchant)}>{merchant.pendingDocuments} docs</button>
               </td>
             </tr>)}</tbody>
           </table>
           {merchants.length === 0 && <p className="empty">No merchants match this filter.</p>}
         </div>
+        {merchantDocuments && <div className="panel">
+          <div className="panel-head">
+            <div><p className="eyebrow">MERCHANT DOCUMENTS</p><h2>{merchantDocuments.merchant.displayName}</h2></div>
+            <button className="ghost" onClick={() => setMerchantDocuments(null)}>Close</button>
+          </div>
+          {merchantDocuments.items.length === 0 ? <p className="muted">No documents uploaded.</p> : <div className="stack">
+            {merchantDocuments.items.map((document) => <div className="document-row" key={document.id}>
+              <div><strong>{document.documentType.replaceAll("_", " ")}</strong><small className="block">{document.storageKey}</small>{document.reviewNotes ? <small className="block">Review: {document.reviewNotes}</small> : null}</div>
+              <span className={`status-pill ${document.status}`}>{document.status}</span>
+              <div className="actions">
+                <button className="ghost" onClick={() => void reviewMerchantDocument(document, "approved")}>Approve</button>
+                <button className="ghost danger" onClick={() => void reviewMerchantDocument(document, "rejected")}>Reject</button>
+              </div>
+            </div>)}
+          </div>}
+        </div>}
       </section>}
 
       {tab === "couriers" && <section className="stack">
@@ -994,12 +1049,6 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
     </main>
 
     <FloatingDock>
-      {STATUS_FILTERS[tab] ? <FloatingCategoryBar
-        items={STATUS_FILTERS[tab] ?? []}
-        value={statusFilter}
-        onChange={setStatusFilter}
-        label="Status filters"
-      /> : null}
       <FloatingNav
         items={ADMIN_NAV}
         value={tab}

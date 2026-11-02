@@ -1,4 +1,4 @@
-﻿part of '../main.dart';
+part of '../main.dart';
 
 const _oxActiveStatuses = {
   'PENDING_CONFIRMATION',
@@ -250,14 +250,18 @@ class _OrdersScreenState extends State<OrdersScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Stack(
+    return Column(
       children: [
-        Positioned.fill(
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+          child: _ordersBucketBar(),
+        ),
+        Expanded(
           child: RefreshIndicator(
             onRefresh: _load,
             child: ListView(
               physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 96),
+              padding: const EdgeInsets.fromLTRB(20, 10, 20, 28),
               children: [
                 Row(
                   children: [
@@ -289,93 +293,87 @@ class _OrdersScreenState extends State<OrdersScreen> {
                   ],
                 ),
                 const SizedBox(height: 14),
-          if (_error != null && _error!.contains('401')) ...[
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  children: [
-                    const Icon(
-                      Icons.lock_clock_outlined,
-                      size: 48,
-                      color: Color(0xFFE8613D),
-                    ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'Session Expired',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w800,
-                        fontSize: 18,
+                if (_error != null && _error!.contains('401')) ...[
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        children: [
+                          const Icon(
+                            Icons.lock_clock_outlined,
+                            size: 48,
+                            color: Color(0xFFE8613D),
+                          ),
+                          const SizedBox(height: 12),
+                          const Text(
+                            'Session Expired',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 18,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          const Text(
+                            'Please sign in again to view your active orders and delivery history.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: Color(0xFF6B7468)),
+                          ),
+                          const SizedBox(height: 16),
+                          FilledButton(
+                            onPressed: () => widget.client.signOut(),
+                            child: const Text('Sign in with Phone'),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 6),
-                    const Text(
-                      'Please sign in again to view your active orders and delivery history.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Color(0xFF6B7468)),
+                  ),
+                ] else if (_error != null) ...[
+                  ErrorBanner(message: _error!),
+                  const SizedBox(height: 12),
+                  Center(
+                    child: OutlinedButton(
+                      onPressed: _load,
+                      child: const Text('Try Again'),
                     ),
-                    const SizedBox(height: 16),
-                    FilledButton(
-                      onPressed: () => widget.client.signOut(),
-                      child: const Text('Sign in with Phone'),
+                  ),
+                ],
+                if (_loading && _orders.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 100),
+                    child: Center(child: CircularProgressIndicator()),
+                  ),
+                if (!_loading && _orders.isEmpty && _error == null)
+                  EmptyState(
+                    icon: Icons.receipt_long_outlined,
+                    title: _bucket == 'active'
+                        ? 'No active orders'
+                        : 'No ${_bucket == 'all' ? '' : '${label(_bucket).toLowerCase()} '}orders yet',
+                    message: _bucket == 'active'
+                        ? 'Start shopping and your live delivery will appear here.'
+                        : 'Your delivery history will appear here.',
+                  ),
+                ..._orders.map(
+                  (order) => Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: _OxOrderCard(
+                      order: order,
+                      onTap: () async {
+                        await Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => OrderDetailScreen(
+                              client: widget.client,
+                              orderId: order['id'] as String,
+                            ),
+                          ),
+                        );
+                        _load();
+                      },
                     ),
-                  ],
+                  ),
                 ),
-              ),
-            ),
-          ] else if (_error != null) ...[
-            ErrorBanner(message: _error!),
-            const SizedBox(height: 12),
-            Center(
-              child: OutlinedButton(
-                onPressed: _load,
-                child: const Text('Try Again'),
-              ),
-            ),
-          ],
-          if (_loading && _orders.isEmpty)
-            const Padding(
-              padding: EdgeInsets.only(top: 100),
-              child: Center(child: CircularProgressIndicator()),
-            ),
-          if (!_loading && _orders.isEmpty && _error == null)
-            EmptyState(
-              icon: Icons.receipt_long_outlined,
-              title: _bucket == 'active'
-                  ? 'No active orders'
-                  : 'No ${_bucket == 'all' ? '' : '${label(_bucket).toLowerCase()} '}orders yet',
-              message: _bucket == 'active'
-                  ? 'Start shopping and your live delivery will appear here.'
-                  : 'Your delivery history will appear here.',
-            ),
-          ..._orders.map(
-            (order) => Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: _OxOrderCard(
-                order: order,
-                onTap: () async {
-                  await Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => OrderDetailScreen(
-                        client: widget.client,
-                        orderId: order['id'] as String,
-                      ),
-                    ),
-                  );
-                  _load();
-                },
-              ),
-            ),
-          ),
               ],
             ),
           ),
-        ),
-        Positioned(
-          left: 12,
-          right: 12,
-          bottom: 8,
-          child: _ordersBucketBar(),
         ),
       ],
     );
@@ -922,47 +920,58 @@ class _OrderDetailScreenState extends State<OrderDetailScreen>
             )
           : order == null
           ? const SizedBox.shrink()
-          : RefreshIndicator(
-              onRefresh: _load,
-              child: ListView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 28),
-                children: [
-                  _OxHero(order: order, tracking: _tracking),
-                  const SizedBox(height: 12),
-                  _OxMapCard(tracking: _tracking, order: order),
-                  const SizedBox(height: 12),
-                  if (asMap(order['delivery'])['courier'] is Map) ...[
-                    _OxCourierCard(
-                      delivery: asMap(order['delivery']),
-                      tracking: _tracking,
-                      onChat: () => _openChat(title: 'Message courier'),
-                      onCall: () => _callCourier(
-                        asMap(
-                          asMap(order['delivery'])['courier'],
-                        )['phoneE164']?.toString(),
-                      ),
+          : Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
+                  child: _floatingActions(order),
+                ),
+                Expanded(
+                  child: RefreshIndicator(
+                    onRefresh: _load,
+                    child: ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.fromLTRB(16, 10, 16, 28),
+                      children: [
+                        _OxHero(order: order, tracking: _tracking),
+                        const SizedBox(height: 12),
+                        _OxMapCard(tracking: _tracking, order: order),
+                        const SizedBox(height: 12),
+                        if (asMap(order['delivery'])['courier'] is Map) ...[
+                          _OxCourierCard(
+                            delivery: asMap(order['delivery']),
+                            tracking: _tracking,
+                            onChat: () => _openChat(title: 'Message courier'),
+                            onCall: () => _callCourier(
+                              asMap(
+                                asMap(order['delivery'])['courier'],
+                              )['phoneE164']?.toString(),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                        _OxTimelineCard(order: order),
+                        const SizedBox(height: 12),
+                        _OxItemsCard(order: order),
+                        const SizedBox(height: 12),
+                        _OxDeliveryCard(order: order),
+                        if (asList(order['proofOfDelivery']).isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          _OxProofCard(
+                            proofs: asList(order['proofOfDelivery']),
+                          ),
+                        ],
+                        if (asList(order['issues']).isNotEmpty ||
+                            asList(order['refunds']).isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          _OxResolutionCard(order: order),
+                        ],
+                      ],
                     ),
-                    const SizedBox(height: 12),
-                  ],
-                  _OxTimelineCard(order: order),
-                  const SizedBox(height: 12),
-                  _OxItemsCard(order: order),
-                  const SizedBox(height: 12),
-                  _OxDeliveryCard(order: order),
-                  if (asList(order['proofOfDelivery']).isNotEmpty) ...[
-                    const SizedBox(height: 12),
-                    _OxProofCard(proofs: asList(order['proofOfDelivery'])),
-                  ],
-                  if (asList(order['issues']).isNotEmpty ||
-                      asList(order['refunds']).isNotEmpty) ...[
-                    const SizedBox(height: 12),
-                    _OxResolutionCard(order: order),
-                  ],
-                ],
-              ),
+                  ),
+                ),
+              ],
             ),
-      bottomNavigationBar: order == null ? null : _floatingActions(order),
     );
   }
 
@@ -975,7 +984,10 @@ class _OrderDetailScreenState extends State<OrderDetailScreen>
         _refreshOrder,
       ),
       (
-        const FloatingBarItem(icon: Icons.chat_bubble_outline_rounded, label: 'Message'),
+        const FloatingBarItem(
+          icon: Icons.chat_bubble_outline_rounded,
+          label: 'Message',
+        ),
         () async => _openChat(title: 'Order chat'),
       ),
       if (capabilities['canCancel'] == true)
@@ -985,12 +997,18 @@ class _OrderDetailScreenState extends State<OrderDetailScreen>
         ),
       if (capabilities['canRequestRefund'] == true)
         (
-          const FloatingBarItem(icon: Icons.currency_exchange_rounded, label: 'Refund'),
+          const FloatingBarItem(
+            icon: Icons.currency_exchange_rounded,
+            label: 'Refund',
+          ),
           _requestRefund,
         ),
       if (capabilities['canReportIssue'] == true)
         (
-          const FloatingBarItem(icon: Icons.report_problem_outlined, label: 'Report'),
+          const FloatingBarItem(
+            icon: Icons.report_problem_outlined,
+            label: 'Report',
+          ),
           _reportIssue,
         ),
       if (capabilities['canReview'] == true)
@@ -1000,21 +1018,22 @@ class _OrderDetailScreenState extends State<OrderDetailScreen>
         ),
       if (status != 'CANCELLED' && status != 'FAILED')
         (
-          const FloatingBarItem(icon: Icons.replay_rounded, label: 'Order again'),
+          const FloatingBarItem(
+            icon: Icons.replay_rounded,
+            label: 'Order again',
+          ),
           _orderAgain,
         ),
     ];
-    return FloatingBarDock(
-      primary: FloatingCategoryBar(
-        semanticsLabel: 'Order actions',
-        selectedIndex: -1,
-        minItemWidth: 88,
-        onSelected: (index) {
-          if (_busy) return;
-          unawaited(actions[index].$2());
-        },
-        items: actions.map((action) => action.$1).toList(),
-      ),
+    return FloatingCategoryBar(
+      semanticsLabel: 'Order actions',
+      selectedIndex: -1,
+      minItemWidth: 88,
+      onSelected: (index) {
+        if (_busy) return;
+        unawaited(actions[index].$2());
+      },
+      items: actions.map((action) => action.$1).toList(),
     );
   }
 }
@@ -2166,7 +2185,6 @@ class _OxResolutionCard extends StatelessWidget {
   }
 }
 
-
 class _OxRefundDialog extends StatefulWidget {
   const _OxRefundDialog();
 
@@ -2683,6 +2701,36 @@ class _OrderChatScreenState extends State<OrderChatScreen> {
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
               child: ErrorBanner(message: _error!),
             ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+            child: FloatingCategoryBar(
+              semanticsLabel: 'Quick replies',
+              selectedIndex: -1,
+              minItemWidth: 104,
+              onSelected: (index) {
+                const replies = [
+                  'On my way',
+                  'Please call me when you arrive',
+                  'Thank you!',
+                ];
+                _sendQuick(replies[index]);
+              },
+              items: const [
+                FloatingBarItem(
+                  icon: Icons.directions_bike_rounded,
+                  label: 'On my way',
+                ),
+                FloatingBarItem(
+                  icon: Icons.phone_in_talk_outlined,
+                  label: 'Call me',
+                ),
+                FloatingBarItem(
+                  icon: Icons.favorite_outline_rounded,
+                  label: 'Thank you',
+                ),
+              ],
+            ),
+          ),
           Expanded(
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
@@ -2739,27 +2787,6 @@ class _OrderChatScreenState extends State<OrderChatScreen> {
                       );
                     },
                   ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
-            child: FloatingCategoryBar(
-              semanticsLabel: 'Quick replies',
-              selectedIndex: -1,
-              minItemWidth: 104,
-              onSelected: (index) {
-                const replies = [
-                  'On my way',
-                  'Please call me when you arrive',
-                  'Thank you!',
-                ];
-                _sendQuick(replies[index]);
-              },
-              items: const [
-                FloatingBarItem(icon: Icons.directions_bike_rounded, label: 'On my way'),
-                FloatingBarItem(icon: Icons.phone_in_talk_outlined, label: 'Call me'),
-                FloatingBarItem(icon: Icons.favorite_outline_rounded, label: 'Thank you'),
-              ],
-            ),
           ),
           SafeArea(
             top: false,

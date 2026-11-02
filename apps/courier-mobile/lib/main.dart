@@ -6,6 +6,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 
 import 'design/floating_bars.dart';
+
 import 'package:geolocator/geolocator.dart';
 
 import 'app_localizations.dart';
@@ -122,14 +123,18 @@ class _CourierAppState extends State<CourierApp> {
             backgroundColor: const Color(0xFF1E2A24),
             foregroundColor: Colors.white,
             minimumSize: const Size(0, 50),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
           ),
         ),
         outlinedButtonTheme: OutlinedButtonThemeData(
           style: OutlinedButton.styleFrom(
             foregroundColor: const Color(0xFF20261F),
             side: const BorderSide(color: Color(0xFFD9D5C7)),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
           ),
         ),
       ),
@@ -147,23 +152,27 @@ class _CourierAppState extends State<CourierApp> {
 }
 
 class Session {
-  Session({required this.accessToken, required this.refreshToken, required this.user});
+  Session({
+    required this.accessToken,
+    required this.refreshToken,
+    required this.user,
+  });
 
   final String accessToken;
   final String refreshToken;
   final Map<String, dynamic> user;
 
   factory Session.fromJson(Map<String, dynamic> json) => Session(
-        accessToken: json['accessToken'] as String,
-        refreshToken: json['refreshToken'] as String,
-        user: asMap(json['user']),
-      );
+    accessToken: json['accessToken'] as String,
+    refreshToken: json['refreshToken'] as String,
+    user: asMap(json['user']),
+  );
 
   Map<String, dynamic> toJson() => {
-        'accessToken': accessToken,
-        'refreshToken': refreshToken,
-        'user': user,
-      };
+    'accessToken': accessToken,
+    'refreshToken': refreshToken,
+    'user': user,
+  };
 }
 
 class ApiException implements Exception {
@@ -188,10 +197,14 @@ class ApiClient {
 
   Future<dynamic> get(String path) => _send('GET', path);
 
-  Future<dynamic> post(String path, [Object? body, Map<String, String>? headers]) =>
-      _send('POST', path, body: body, headers: headers);
+  Future<dynamic> post(
+    String path, [
+    Object? body,
+    Map<String, String>? headers,
+  ]) => _send('POST', path, body: body, headers: headers);
 
-  Future<dynamic> put(String path, [Object? body]) => _send('PUT', path, body: body);
+  Future<dynamic> put(String path, [Object? body]) =>
+      _send('PUT', path, body: body);
 
   Future<dynamic> delete(String path) => _send('DELETE', path);
 
@@ -219,12 +232,21 @@ class ApiClient {
     await flushQueue();
   }
 
-  Future<dynamic> postQueued(String path, [Object? body, Map<String, String>? headers]) async {
+  Future<dynamic> postQueued(
+    String path, [
+    Object? body,
+    Map<String, String>? headers,
+  ]) async {
     try {
       return await post(path, body, headers);
     } on ApiException catch (error) {
       if (error.statusCode != 0) rethrow;
-      await storage.enqueue(method: 'POST', path: path, body: body, headers: headers);
+      await storage.enqueue(
+        method: 'POST',
+        path: path,
+        body: body,
+        headers: headers,
+      );
       pendingSync.value = storage.queue().length;
       return {'queued': true};
     }
@@ -247,10 +269,19 @@ class ApiClient {
     try {
       for (final item in storage.queue()) {
         try {
-          await _send(item.method, item.path, body: item.body, headers: item.headers);
+          await _send(
+            item.method,
+            item.path,
+            body: item.body,
+            headers: item.headers,
+          );
           await storage.removeQueued(item.id);
         } on ApiException catch (error) {
-          final permanent = error.statusCode >= 400 && error.statusCode < 500 && error.statusCode != 408 && error.statusCode != 429;
+          final permanent =
+              error.statusCode >= 400 &&
+              error.statusCode < 500 &&
+              error.statusCode != 408 &&
+              error.statusCode != 429;
           if (permanent) {
             await storage.removeQueued(item.id);
             continue;
@@ -276,7 +307,10 @@ class ApiClient {
     bool retry = true,
   }) async {
     try {
-      final request = await _http.openUrl(method, Uri.parse('$apiBaseUrl$path'));
+      final request = await _http.openUrl(
+        method,
+        Uri.parse('$apiBaseUrl$path'),
+      );
       request.headers.contentType = ContentType.json;
       if (headers != null) headers.forEach(request.headers.set);
       if (auth && session != null) {
@@ -295,19 +329,30 @@ class ApiClient {
       }
       if (response.statusCode >= 200 && response.statusCode < 300) {
         offline = false;
-        if (method == 'GET' && path.startsWith('/v1/') && !path.contains('/auth/')) {
+        if (method == 'GET' &&
+            path.startsWith('/v1/') &&
+            !path.contains('/auth/')) {
           await storage.cacheResponse(path, decoded);
         }
         return decoded;
       }
       if (response.statusCode == 401 && auth && retry) {
         if (await _refresh()) {
-          return await _send(method, path, body: body, headers: headers, retry: false);
+          return await _send(
+            method,
+            path,
+            body: body,
+            headers: headers,
+            retry: false,
+          );
         }
         session = null;
         await storage.clearSession();
       }
-      throw ApiException(_message(decoded, response.statusCode), response.statusCode);
+      throw ApiException(
+        _message(decoded, response.statusCode),
+        response.statusCode,
+      );
     } on SocketException catch (error) {
       return _networkFailure(method, path, error.message);
     } on HttpException catch (error) {
@@ -364,7 +409,11 @@ class ApiClient {
     return asMap(result);
   }
 
-  Future<Session> verifyOtp(String phone, String code, String challengeId) async {
+  Future<Session> verifyOtp(
+    String phone,
+    String code,
+    String challengeId,
+  ) async {
     final result = await _send(
       'POST',
       '/v1/auth/otp/verify',
@@ -384,7 +433,13 @@ class ApiClient {
     pendingSync.value = 0;
     if (current == null) return;
     try {
-      await _send('POST', '/v1/auth/logout', body: {'refreshToken': current.refreshToken}, auth: false, retry: false);
+      await _send(
+        'POST',
+        '/v1/auth/logout',
+        body: {'refreshToken': current.refreshToken},
+        auth: false,
+        retry: false,
+      );
     } catch (_) {
       // Local credentials are discarded even when the server session expired.
     }
@@ -422,7 +477,10 @@ String label(String? value) {
   return value
       .toLowerCase()
       .split('_')
-      .map((word) => word.isEmpty ? word : word[0].toUpperCase() + word.substring(1))
+      .map(
+        (word) =>
+            word.isEmpty ? word : word[0].toUpperCase() + word.substring(1),
+      )
       .join(' ');
 }
 
@@ -485,7 +543,11 @@ class _CourierGateState extends State<CourierGate> {
 }
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key, required this.client, required this.onSignedIn});
+  const LoginScreen({
+    super.key,
+    required this.client,
+    required this.onSignedIn,
+  });
 
   final ApiClient client;
   final VoidCallback onSignedIn;
@@ -514,7 +576,9 @@ class _LoginScreenState extends State<LoginScreen> {
       error = null;
     });
     try {
-      final challenge = await widget.client.requestOtp(phoneController.text.trim());
+      final challenge = await widget.client.requestOtp(
+        phoneController.text.trim(),
+      );
       setState(() => challengeId = challenge['challengeId'] as String?);
     } catch (cause) {
       setState(() => error = cause.toString());
@@ -563,7 +627,11 @@ class _LoginScreenState extends State<LoginScreen> {
                   bottomRight: Radius.circular(6),
                 ),
               ),
-              child: const Icon(Icons.delivery_dining, color: Colors.white, size: 30),
+              child: const Icon(
+                Icons.delivery_dining,
+                color: Colors.white,
+                size: 30,
+              ),
             ),
             const SizedBox(height: 28),
             Text(
@@ -589,10 +657,16 @@ class _LoginScreenState extends State<LoginScreen> {
               TextField(
                 controller: phoneController,
                 keyboardType: TextInputType.phone,
-                decoration: InputDecoration(labelText: l10n.phoneNumber, hintText: '+2519XXXXXXXX'),
+                decoration: InputDecoration(
+                  labelText: l10n.phoneNumber,
+                  hintText: '+2519XXXXXXXX',
+                ),
                 onSubmitted: (_) => sendCode(),
               ),
-              if (error != null) ...[const SizedBox(height: 12), ErrorBanner(message: error!)],
+              if (error != null) ...[
+                const SizedBox(height: 12),
+                ErrorBanner(message: error!),
+              ],
               const SizedBox(height: 20),
               FilledButton(
                 onPressed: busy ? null : sendCode,
@@ -603,10 +677,16 @@ class _LoginScreenState extends State<LoginScreen> {
                 controller: codeController,
                 keyboardType: TextInputType.number,
                 autofocus: true,
-                decoration: InputDecoration(labelText: l10n.oneTimeCode, hintText: '123456'),
+                decoration: InputDecoration(
+                  labelText: l10n.oneTimeCode,
+                  hintText: '123456',
+                ),
                 onSubmitted: (_) => verify(),
               ),
-              if (error != null) ...[const SizedBox(height: 12), ErrorBanner(message: error!)],
+              if (error != null) ...[
+                const SizedBox(height: 12),
+                ErrorBanner(message: error!),
+              ],
               const SizedBox(height: 20),
               FilledButton(
                 onPressed: busy ? null : verify,
@@ -617,17 +697,19 @@ class _LoginScreenState extends State<LoginScreen> {
                 onPressed: busy
                     ? null
                     : () => setState(() {
-                          challengeId = null;
-                          codeController.clear();
-                          error = null;
-                        }),
+                        challengeId = null;
+                        codeController.clear();
+                        error = null;
+                      }),
                 child: Text(l10n.differentNumber),
               ),
             ],
             const SizedBox(height: 40),
             Text(
               '${l10n.courierAccessNote} API: $apiBaseUrl',
-              style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: const Color(0xFF6B7468),
+              ),
             ),
           ],
         ),
@@ -649,7 +731,10 @@ class ErrorBanner extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: const Color(0xFFEFC7C1)),
       ),
-      child: Text(message, style: const TextStyle(color: Color(0xFFA63A32), fontSize: 13)),
+      child: Text(
+        message,
+        style: const TextStyle(color: Color(0xFFA63A32), fontSize: 13),
+      ),
     );
   }
 }
@@ -710,13 +795,19 @@ class _CourierHomeState extends State<CourierHome> {
     });
     try {
       final result = asMap(await widget.client.get('/v1/courier/me'));
-      final active = asMap(await widget.client.get('/v1/courier/deliveries/active'));
+      final active = asMap(
+        await widget.client.get('/v1/courier/deliveries/active'),
+      );
       final offerResult = asMap(await widget.client.get('/v1/courier/offers'));
-      final earningsResult = asMap(await widget.client.get('/v1/courier/earnings'));
+      final earningsResult = asMap(
+        await widget.client.get('/v1/courier/earnings'),
+      );
       if (!mounted) return;
       setState(() {
         profile = result;
-        activeDelivery = active['delivery'] == null ? null : asMap(active['delivery']);
+        activeDelivery = active['delivery'] == null
+            ? null
+            : asMap(active['delivery']);
         offers = asList(offerResult['items']);
         earnings = earningsResult;
         needsOnboarding = false;
@@ -737,12 +828,18 @@ class _CourierHomeState extends State<CourierHome> {
 
   Future<void> _refreshData() async {
     try {
-      final active = asMap(await widget.client.get('/v1/courier/deliveries/active'));
+      final active = asMap(
+        await widget.client.get('/v1/courier/deliveries/active'),
+      );
       final offerResult = asMap(await widget.client.get('/v1/courier/offers'));
-      final earningsResult = asMap(await widget.client.get('/v1/courier/earnings'));
+      final earningsResult = asMap(
+        await widget.client.get('/v1/courier/earnings'),
+      );
       if (!mounted) return;
       setState(() {
-        activeDelivery = active['delivery'] == null ? null : asMap(active['delivery']);
+        activeDelivery = active['delivery'] == null
+            ? null
+            : asMap(active['delivery']);
         offers = asList(offerResult['items']);
         earnings = earningsResult;
       });
@@ -760,15 +857,21 @@ class _CourierHomeState extends State<CourierHome> {
     });
     try {
       final position = isOnline ? await _location.currentPosition() : null;
-      final result = asMap(await widget.client.put('/v1/courier/availability', {
-        'isOnline': isOnline,
-        'acceptingOffers': accepting ?? availability['acceptingOffers'] ?? true,
-        if (position != null) 'latitude': position.latitude,
-        if (position != null) 'longitude': position.longitude,
-      }));
+      final result = asMap(
+        await widget.client.put('/v1/courier/availability', {
+          'isOnline': isOnline,
+          'acceptingOffers':
+              accepting ?? availability['acceptingOffers'] ?? true,
+          if (position != null) 'latitude': position.latitude,
+          if (position != null) 'longitude': position.longitude,
+        }),
+      );
       if (!mounted) return;
       setState(() {
-        profile = {...?profile, 'availability': {...availability, ...result}};
+        profile = {
+          ...?profile,
+          'availability': {...availability, ...result},
+        };
       });
       _syncLocationHeartbeat();
       await _refreshData();
@@ -834,7 +937,8 @@ class _CourierHomeState extends State<CourierHome> {
       await _reportPosition(position);
       if (!mounted) return;
       final l10n = AppLocalizations.of(context);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(l10n.liveLocationSent)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l10n.liveLocationSent)));
     } catch (cause) {
       if (mounted) setState(() => error = cause.toString());
     } finally {
@@ -849,7 +953,11 @@ class _CourierHomeState extends State<CourierHome> {
       await _refreshData();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${offer['orderNumber']} accepted. Head to the merchant.')),
+          SnackBar(
+            content: Text(
+              '${offer['orderNumber']} accepted. Head to the merchant.',
+            ),
+          ),
         );
       }
     } catch (cause) {
@@ -862,7 +970,10 @@ class _CourierHomeState extends State<CourierHome> {
   Future<void> _rejectOffer(Map<String, dynamic> offer) async {
     setState(() => busy = true);
     try {
-      await widget.client.post('/v1/courier/offers/${offer['offerId']}/reject', {'reason': 'Not available'});
+      await widget.client.post(
+        '/v1/courier/offers/${offer['offerId']}/reject',
+        {'reason': 'Not available'},
+      );
       await _refreshData();
     } catch (cause) {
       if (mounted) setState(() => error = cause.toString());
@@ -871,7 +982,12 @@ class _CourierHomeState extends State<CourierHome> {
     }
   }
 
-  Future<void> _transition(String orderId, String action, {String? proofCode, String? notes}) async {
+  Future<void> _transition(
+    String orderId,
+    String action, {
+    String? proofCode,
+    String? notes,
+  }) async {
     setState(() {
       busy = true;
       error = null;
@@ -883,7 +999,9 @@ class _CourierHomeState extends State<CourierHome> {
       });
       await _refreshData();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Delivery updated: ${label(action)}.')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Delivery updated: ${label(action)}.')),
+        );
       }
     } catch (cause) {
       if (mounted) setState(() => error = cause.toString());
@@ -907,7 +1025,9 @@ class _CourierHomeState extends State<CourierHome> {
               TextField(
                 controller: proofController,
                 keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: "Customer's delivery code"),
+                decoration: const InputDecoration(
+                  labelText: "Customer's delivery code",
+                ),
               ),
             if (required) const SizedBox(height: 10),
             TextField(
@@ -917,8 +1037,14 @@ class _CourierHomeState extends State<CourierHome> {
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Confirm delivery')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Confirm delivery'),
+          ),
         ],
       ),
     );
@@ -947,8 +1073,14 @@ class _CourierHomeState extends State<CourierHome> {
           decoration: const InputDecoration(labelText: 'What happened?'),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Back')),
-          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Report failure')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Back'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Report failure'),
+          ),
         ],
       ),
     );
@@ -986,7 +1118,9 @@ class _CourierHomeState extends State<CourierHome> {
     }
     final availability = asMap(profile?['availability']);
     final online = availability['isOnline'] == true;
-    final roles = (widget.client.session?.user['roles'] as List? ?? const []).map((role) => label(role.toString())).join(', ');
+    final roles = (widget.client.session?.user['roles'] as List? ?? const [])
+        .map((role) => label(role.toString()))
+        .join(', ');
     return Scaffold(
       appBar: AppBar(
         title: Text([l10n.today, l10n.earnings, l10n.profile][index]),
@@ -1019,19 +1153,27 @@ class _CourierHomeState extends State<CourierHome> {
         ],
       ),
       bottomNavigationBar: FloatingBarDock(
-        contextual: index == 0
-            ? _todayFilterBar()
-            : index == 1
-            ? _earningsFilterBar()
-            : null,
         primary: FloatingNavigationBar(
           semanticsLabel: 'Courier navigation',
           selectedIndex: index,
           onSelected: (value) => setState(() => index = value),
           items: [
-            FloatingBarItem(icon: Icons.two_wheeler_outlined, selectedIcon: Icons.two_wheeler, label: l10n.today, badge: activeDelivery == null ? null : '1'),
-            FloatingBarItem(icon: Icons.payments_outlined, selectedIcon: Icons.payments, label: l10n.earnings),
-            FloatingBarItem(icon: Icons.person_outline, selectedIcon: Icons.person, label: l10n.profile),
+            FloatingBarItem(
+              icon: Icons.two_wheeler_outlined,
+              selectedIcon: Icons.two_wheeler,
+              label: l10n.today,
+              badge: activeDelivery == null ? null : '1',
+            ),
+            FloatingBarItem(
+              icon: Icons.payments_outlined,
+              selectedIcon: Icons.payments,
+              label: l10n.earnings,
+            ),
+            FloatingBarItem(
+              icon: Icons.person_outline,
+              selectedIcon: Icons.person,
+              label: l10n.profile,
+            ),
           ],
         ),
       ),
@@ -1074,12 +1216,17 @@ class _CourierHomeState extends State<CourierHome> {
       minItemWidth: 86,
       onSelected: (value) => setState(() => _earningsFilter = values[value]),
       items: [
-        const FloatingBarItem(icon: Icons.pie_chart_outline_rounded, label: 'All'),
+        const FloatingBarItem(
+          icon: Icons.pie_chart_outline_rounded,
+          label: 'All',
+        ),
         const FloatingBarItem(icon: Icons.summarize_outlined, label: 'Summary'),
         FloatingBarItem(
           icon: Icons.receipt_long_outlined,
           label: 'Deliveries',
-          badge: (data['recentDeliveries'] as List? ?? const []).isEmpty ? null : '${(data['recentDeliveries'] as List).length}',
+          badge: (data['recentDeliveries'] as List? ?? const []).isEmpty
+              ? null
+              : '${(data['recentDeliveries'] as List).length}',
         ),
         FloatingBarItem(
           icon: Icons.account_balance_wallet_outlined,
@@ -1097,144 +1244,213 @@ class _CourierHomeState extends State<CourierHome> {
     final showStatus = _todayFilter == 'all' || _todayFilter == 'status';
     final showActive = _todayFilter == 'all' || _todayFilter == 'active';
     final showOffers = _todayFilter == 'all' || _todayFilter == 'offers';
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: ListView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 30),
-        children: [
-          if (error != null) ...[ErrorBanner(message: error!), const SizedBox(height: 12)],
-          if (showStatus && !approved)
-            Container(
-              margin: const EdgeInsets.only(bottom: 12),
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF4EDDA),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Account ${label(status)}', style: const TextStyle(fontWeight: FontWeight.w800)),
-                  const SizedBox(height: 4),
-                  Text(
-                    status == 'pending'
-                        ? 'Operations are reviewing your documents. You can go online after approval.'
-                        : profile?['rejectionReason']?.toString() ?? 'Contact support to restore your courier account.',
-                    style: const TextStyle(fontSize: 13, height: 1.4),
-                  ),
-                ],
-              ),
-            ),
-          if (showStatus)
-            Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1E2A24),
-              borderRadius: BorderRadius.circular(22),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+          child: _todayFilterBar(),
+        ),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _load,
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 30),
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'YOU ARE',
-                            style: TextStyle(color: Color(0xFF98A59A), fontSize: 11, letterSpacing: 1.6, fontWeight: FontWeight.w800),
+                if (error != null) ...[
+                  ErrorBanner(message: error!),
+                  const SizedBox(height: 12),
+                ],
+                if (showStatus && !approved)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF4EDDA),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Account ${label(status)}',
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          status == 'pending'
+                              ? 'Operations are reviewing your documents. You can go online after approval.'
+                              : profile?['rejectionReason']?.toString() ?? 'Contact support to restore your courier account.',
+                          style: const TextStyle(fontSize: 13, height: 1.4),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (showStatus)
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E2A24),
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'YOU ARE',
+                                    style: TextStyle(
+                                      color: Color(0xFF98A59A),
+                                      fontSize: 11,
+                                      letterSpacing: 1.6,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    online ? 'Online' : 'Offline',
+                                    style: theme.textTheme.headlineMedium
+                                        ?.copyWith(
+                                          color: const Color(0xFFEEF0E6),
+                                          fontWeight: FontWeight.w800,
+                                          letterSpacing: -1,
+                                        ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Switch(
+                              value: online,
+                              onChanged: approved && !busy
+                                  ? (value) => _setAvailability(
+                                      online: value,
+                                      accepting: value,
+                                    )
+                                  : null,
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        const Divider(color: Color(0xFF38453D), height: 1),
+                        SwitchListTile.adaptive(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text(
+                            'Accept new offers',
+                            style: TextStyle(color: Color(0xFFEEF0E6)),
                           ),
-                          const SizedBox(height: 4),
-                          Text(
-                            online ? 'Online' : 'Offline',
-                            style: theme.textTheme.headlineMedium?.copyWith(
-                              color: const Color(0xFFEEF0E6),
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: -1,
+                          subtitle: const Text(
+                            'Pause this while you are on a delivery.',
+                            style: TextStyle(
+                              color: Color(0xFF98A59A),
+                              fontSize: 12,
                             ),
                           ),
-                        ],
+                          value: availability['acceptingOffers'] == true,
+                          onChanged: online && approved && !busy
+                              ? (value) => _setAvailability(accepting: value)
+                              : null,
+                          activeThumbColor: const Color(0xFF88C9A3),
+                        ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: busy ? null : _sendLocation,
+                          icon: const Icon(Icons.my_location),
+                          label: const Text('Send location heartbeat'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: const Color(0xFFEEF0E6),
+                            side: const BorderSide(color: Color(0xFF536259)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: 12),
+                if (showStatus)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _statCard(
+                          'Rating',
+                          (profile?['ratingAverage'] as num? ?? 0)
+                              .toStringAsFixed(1),
+                          Icons.star_outline,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: _statCard(
+                          'Deliveries',
+                          '${profile?['completedDeliveries'] ?? 0}',
+                          Icons.check_circle_outline,
+                        ),
+                      ),
+                    ],
+                  ),
+                const SizedBox(height: 20),
+                if (showActive) ...[
+                  Text(
+                    'Active delivery',
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  if (activeDelivery == null)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 20),
+                      child: Center(
+                        child: Text(
+                          'No active delivery right now.',
+                          style: TextStyle(color: Color(0xFF6B7468)),
+                        ),
+                      ),
+                    )
+                  else
+                    _activeDeliveryCard(activeDelivery!),
+                  const SizedBox(height: 20),
+                ],
+                if (showOffers) ...[
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Offers for you',
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      if (busy)
+                        const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  if (offers.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 32),
+                      child: Center(
+                        child: Text(
+                          'No offers right now. Stay online near busy merchants.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Color(0xFF6B7468)),
+                        ),
                       ),
                     ),
-                    Switch(
-                      value: online,
-                      onChanged: approved && !busy ? (value) => _setAvailability(online: value, accepting: value) : null,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                const Divider(color: Color(0xFF38453D), height: 1),
-                SwitchListTile.adaptive(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Accept new offers', style: TextStyle(color: Color(0xFFEEF0E6))),
-                  subtitle: const Text('Pause this while you are on a delivery.', style: TextStyle(color: Color(0xFF98A59A), fontSize: 12)),
-                  value: availability['acceptingOffers'] == true,
-                  onChanged: online && approved && !busy ? (value) => _setAvailability(accepting: value) : null,
-                  activeThumbColor: const Color(0xFF88C9A3),
-                ),
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  onPressed: busy ? null : _sendLocation,
-                  icon: const Icon(Icons.my_location),
-                  label: const Text('Send location heartbeat'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFFEEF0E6),
-                    side: const BorderSide(color: Color(0xFF536259)),
-                  ),
-                ),
+                  ...offers.map(_offerCard),
+                ],
               ],
             ),
           ),
-          const SizedBox(height: 12),
-          if (showStatus)
-            Row(
-            children: [
-              Expanded(child: _statCard('Rating', (profile?['ratingAverage'] as num? ?? 0).toStringAsFixed(1), Icons.star_outline)),
-              const SizedBox(width: 10),
-              Expanded(child: _statCard('Deliveries', '${profile?['completedDeliveries'] ?? 0}', Icons.check_circle_outline)),
-            ],
-          ),
-          const SizedBox(height: 20),
-          if (showActive) ...[
-            Text('Active delivery', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
-            const SizedBox(height: 10),
-            if (activeDelivery == null)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 20),
-                child: Center(
-                  child: Text('No active delivery right now.', style: TextStyle(color: Color(0xFF6B7468))),
-                ),
-              )
-            else
-              _activeDeliveryCard(activeDelivery!),
-            const SizedBox(height: 20),
-          ],
-          if (showOffers) ...[
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text('Offers for you', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
-                if (busy) const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
-              ],
-            ),
-            const SizedBox(height: 10),
-            if (offers.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 32),
-                child: Center(
-                  child: Text(
-                    'No offers right now. Stay online near busy merchants.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Color(0xFF6B7468)),
-                  ),
-                ),
-              ),
-            ...offers.map(_offerCard),
-          ],
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -1249,8 +1465,20 @@ class _CourierHomeState extends State<CourierHome> {
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: const TextStyle(color: Color(0xFF6B7468), fontSize: 12)),
-                Text(value, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 20)),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: Color(0xFF6B7468),
+                    fontSize: 12,
+                  ),
+                ),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 20,
+                  ),
+                ),
               ],
             ),
           ],
@@ -1274,11 +1502,16 @@ class _CourierHomeState extends State<CourierHome> {
                   Expanded(
                     child: Text(
                       offer['orderNumber']?.toString() ?? 'Offer',
-                      style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
                   ),
                   Text(
-                    money(offer['compensationMinor'] as num?, offer['currency']?.toString()),
+                    money(
+                      offer['compensationMinor'] as num?,
+                      offer['currency']?.toString(),
+                    ),
                     style: const TextStyle(fontWeight: FontWeight.w800),
                   ),
                 ],
@@ -1290,7 +1523,10 @@ class _CourierHomeState extends State<CourierHome> {
               ),
               if (offer['deliveryAddress'] != null) ...[
                 const SizedBox(height: 4),
-                Text('Deliver to ${offer['deliveryAddress']}', style: const TextStyle(fontSize: 13)),
+                Text(
+                  'Deliver to ${offer['deliveryAddress']}',
+                  style: const TextStyle(fontSize: 13),
+                ),
               ],
               const SizedBox(height: 12),
               Row(
@@ -1347,36 +1583,68 @@ class _CourierHomeState extends State<CourierHome> {
                 Expanded(
                   child: Text(
                     delivery['orderNumber']?.toString() ?? 'Delivery',
-                    style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 9,
+                    vertical: 5,
+                  ),
                   decoration: BoxDecoration(
                     color: const Color(0xFFE4F0E8),
                     borderRadius: BorderRadius.circular(999),
                   ),
                   child: Text(
                     label(assignmentStatus),
-                    style: const TextStyle(color: Color(0xFF2F6B4F), fontSize: 11, fontWeight: FontWeight.w800),
+                    style: const TextStyle(
+                      color: Color(0xFF2F6B4F),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 12),
-            _stopRow(Icons.storefront, 'Pickup', delivery['merchantName']?.toString() ?? '', delivery['pickupAddress']?.toString()),
+            _stopRow(
+              Icons.storefront,
+              'Pickup',
+              delivery['merchantName']?.toString() ?? '',
+              delivery['pickupAddress']?.toString(),
+            ),
             const SizedBox(height: 10),
-            _stopRow(Icons.location_on_outlined, 'Drop-off', delivery['customerName']?.toString() ?? 'Customer', delivery['deliveryAddress']?.toString()),
+            _stopRow(
+              Icons.location_on_outlined,
+              'Drop-off',
+              delivery['customerName']?.toString() ?? 'Customer',
+              delivery['deliveryAddress']?.toString(),
+            ),
             if (delivery['customerPhone'] != null) ...[
               const SizedBox(height: 8),
-              Text('Customer phone: ${delivery['customerPhone']}', style: const TextStyle(fontSize: 13)),
+              Text(
+                'Customer phone: ${delivery['customerPhone']}',
+                style: const TextStyle(fontSize: 13),
+              ),
             ],
             const SizedBox(height: 12),
             Row(
               children: [
-                Expanded(child: Text('Your earning', style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)))),
+                Expanded(
+                  child: Text(
+                    'Your earning',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: const Color(0xFF6B7468),
+                    ),
+                  ),
+                ),
                 Text(
-                  money(delivery['courierEarningMinor'] as num?, delivery['currency']?.toString()),
+                  money(
+                    delivery['courierEarningMinor'] as num?,
+                    delivery['currency']?.toString(),
+                  ),
                   style: const TextStyle(fontWeight: FontWeight.w800),
                 ),
               ],
@@ -1386,14 +1654,16 @@ class _CourierHomeState extends State<CourierHome> {
               onPressed: busy
                   ? null
                   : action == 'delivered'
-                      ? () => _deliver(delivery)
-                      : () => _transition(delivery['orderId'] as String, action),
+                  ? () => _deliver(delivery)
+                  : () => _transition(delivery['orderId'] as String, action),
               child: Text(busy ? 'Updating…' : actionLabel),
             ),
             const SizedBox(height: 6),
             TextButton(
               onPressed: busy ? null : () => _fail(delivery),
-              style: TextButton.styleFrom(foregroundColor: const Color(0xFFA63A32)),
+              style: TextButton.styleFrom(
+                foregroundColor: const Color(0xFFA63A32),
+              ),
               child: const Text('Report a problem'),
             ),
           ],
@@ -1412,10 +1682,23 @@ class _CourierHomeState extends State<CourierHome> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title, style: const TextStyle(fontSize: 11, color: Color(0xFF6B7468), fontWeight: FontWeight.w700)),
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: Color(0xFF6B7468),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
               Text(name, style: const TextStyle(fontWeight: FontWeight.w700)),
               if (address != null && address.isNotEmpty)
-                Text(address, style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468))),
+                Text(
+                  address,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF6B7468),
+                  ),
+                ),
             ],
           ),
         ),
@@ -1428,91 +1711,171 @@ class _CourierHomeState extends State<CourierHome> {
     final data = earnings ?? <String, dynamic>{};
     final payouts = asList(data['payouts']);
     final recent = asList(data['recentDeliveries']);
-    final showSummary = _earningsFilter == 'all' || _earningsFilter == 'summary';
-    final showDeliveries = _earningsFilter == 'all' || _earningsFilter == 'deliveries';
-    final showPayouts = _earningsFilter == 'all' || _earningsFilter == 'payouts';
-    return RefreshIndicator(
-      onRefresh: _refreshData,
-      child: ListView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 30),
-        children: [
-          if (error != null) ...[ErrorBanner(message: error!), const SizedBox(height: 12)],
-          if (showSummary) ...[
-            Container(
-              padding: const EdgeInsets.all(22),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1E2A24),
-                borderRadius: BorderRadius.circular(22),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('LIFETIME EARNINGS', style: TextStyle(color: Color(0xFF98A59A), fontSize: 11, letterSpacing: 1.5, fontWeight: FontWeight.w800)),
-                  const SizedBox(height: 8),
-                  Text(
-                    money(data['lifetimeEarningsMinor'] as num?),
-                    style: const TextStyle(color: Color(0xFFEEF0E6), fontSize: 34, fontWeight: FontWeight.w800, letterSpacing: -1),
+    final showSummary =
+        _earningsFilter == 'all' || _earningsFilter == 'summary';
+    final showDeliveries =
+        _earningsFilter == 'all' || _earningsFilter == 'deliveries';
+    final showPayouts =
+        _earningsFilter == 'all' || _earningsFilter == 'payouts';
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+          child: _earningsFilterBar(),
+        ),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _refreshData,
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 30),
+              children: [
+                if (error != null) ...[
+                  ErrorBanner(message: error!),
+                  const SizedBox(height: 12),
+                ],
+                if (showSummary) ...[
+                  Container(
+                    padding: const EdgeInsets.all(22),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E2A24),
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'LIFETIME EARNINGS',
+                          style: TextStyle(
+                            color: Color(0xFF98A59A),
+                            fontSize: 11,
+                            letterSpacing: 1.5,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          money(data['lifetimeEarningsMinor'] as num?),
+                          style: const TextStyle(
+                            color: Color(0xFFEEF0E6),
+                            fontSize: 34,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: -1,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _darkStat(
+                                'Tips',
+                                money(data['tipsMinor'] as num?),
+                              ),
+                            ),
+                            Expanded(
+                              child: _darkStat(
+                                'Pending payout',
+                                money(data['pendingPayoutMinor'] as num?),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 14),
                   Row(
                     children: [
-                      Expanded(child: _darkStat('Tips', money(data['tipsMinor'] as num?))),
-                      Expanded(child: _darkStat('Pending payout', money(data['pendingPayoutMinor'] as num?))),
+                      Expanded(
+                        child: _statCard(
+                          'Completed',
+                          '${data['completedDeliveries'] ?? 0}',
+                          Icons.check_circle_outline,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: _statCard(
+                          'Payouts',
+                          '${payouts.length}',
+                          Icons.account_balance_wallet_outlined,
+                        ),
+                      ),
                     ],
                   ),
+                  const SizedBox(height: 22),
                 ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                Expanded(child: _statCard('Completed', '${data['completedDeliveries'] ?? 0}', Icons.check_circle_outline)),
-                const SizedBox(width: 10),
-                Expanded(child: _statCard('Payouts', '${payouts.length}', Icons.account_balance_wallet_outlined)),
+                if (showDeliveries) ...[
+                  Text(
+                    'Recent deliveries',
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  if (recent.isEmpty)
+                    const Text(
+                      'Delivered orders will appear here.',
+                      style: TextStyle(color: Color(0xFF6B7468)),
+                    ),
+                  ...recent.map(
+                    (item) => Card(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      child: ListTile(
+                        title: Text(item['orderNumber']?.toString() ?? ''),
+                        subtitle: Text(
+                          shortDate(item['deliveredAt']?.toString()),
+                        ),
+                        trailing: Text(
+                          money(
+                            (item['earningMinor'] as num? ?? 0) +
+                                (item['tipMinor'] as num? ?? 0),
+                            item['currency']?.toString(),
+                          ),
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                ],
+                if (showPayouts) ...[
+                  Text(
+                    'Payouts',
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  if (payouts.isEmpty)
+                    const Text(
+                      'Payout statements will appear here.',
+                      style: TextStyle(color: Color(0xFF6B7468)),
+                    ),
+                  ...payouts.map(
+                    (payout) => Card(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      child: ListTile(
+                        title: Text(
+                          '${shortDate(payout['periodStart']?.toString())} – ${shortDate(payout['periodEnd']?.toString())}',
+                        ),
+                        subtitle: Text(label(payout['status']?.toString())),
+                        trailing: Text(
+                          money(
+                            payout['netPayableMinor'] as num?,
+                            payout['currency']?.toString(),
+                          ),
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ],
             ),
-            const SizedBox(height: 22),
-          ],
-          if (showDeliveries) ...[
-            Text('Recent deliveries', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
-            const SizedBox(height: 8),
-            if (recent.isEmpty) const Text('Delivered orders will appear here.', style: TextStyle(color: Color(0xFF6B7468))),
-            ...recent.map(
-              (item) => Card(
-                margin: const EdgeInsets.only(bottom: 8),
-                child: ListTile(
-                  title: Text(item['orderNumber']?.toString() ?? ''),
-                  subtitle: Text(shortDate(item['deliveredAt']?.toString())),
-                  trailing: Text(
-                    money((item['earningMinor'] as num? ?? 0) + (item['tipMinor'] as num? ?? 0), item['currency']?.toString()),
-                    style: const TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-          ],
-          if (showPayouts) ...[
-            Text('Payouts', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
-            const SizedBox(height: 8),
-            if (payouts.isEmpty) const Text('Payout statements will appear here.', style: TextStyle(color: Color(0xFF6B7468))),
-            ...payouts.map(
-              (payout) => Card(
-                margin: const EdgeInsets.only(bottom: 8),
-                child: ListTile(
-                  title: Text('${shortDate(payout['periodStart']?.toString())} – ${shortDate(payout['periodEnd']?.toString())}'),
-                  subtitle: Text(label(payout['status']?.toString())),
-                  trailing: Text(
-                    money(payout['netPayableMinor'] as num?, payout['currency']?.toString()),
-                    style: const TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ],
-      ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1520,9 +1883,18 @@ class _CourierHomeState extends State<CourierHome> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(title, style: const TextStyle(color: Color(0xFF98A59A), fontSize: 11)),
+        Text(
+          title,
+          style: const TextStyle(color: Color(0xFF98A59A), fontSize: 11),
+        ),
         const SizedBox(height: 2),
-        Text(value, style: const TextStyle(color: Color(0xFFEEF0E6), fontWeight: FontWeight.w700)),
+        Text(
+          value,
+          style: const TextStyle(
+            color: Color(0xFFEEF0E6),
+            fontWeight: FontWeight.w700,
+          ),
+        ),
       ],
     );
   }
@@ -1534,7 +1906,10 @@ class _CourierHomeState extends State<CourierHome> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 30),
       children: [
-        if (error != null) ...[ErrorBanner(message: error!), const SizedBox(height: 12)],
+        if (error != null) ...[
+          ErrorBanner(message: error!),
+          const SizedBox(height: 12),
+        ],
         Card(
           child: Padding(
             padding: const EdgeInsets.all(20),
@@ -1547,8 +1922,15 @@ class _CourierHomeState extends State<CourierHome> {
                       radius: 28,
                       backgroundColor: const Color(0xFF1E2A24),
                       child: Text(
-                        (profile?['fullName']?.toString() ?? 'C').characters.first.toUpperCase(),
-                        style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w800),
+                        (profile?['fullName']?.toString() ?? 'C')
+                            .characters
+                            .first
+                            .toUpperCase(),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 22,
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
                     ),
                     const SizedBox(width: 14),
@@ -1558,20 +1940,37 @@ class _CourierHomeState extends State<CourierHome> {
                         children: [
                           Text(
                             profile?['fullName']?.toString() ?? 'Courier',
-                            style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                            style: theme.textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w800,
+                            ),
                           ),
                           const SizedBox(height: 2),
-                          Text(label(profile?['status']?.toString()), style: const TextStyle(color: Color(0xFF6B7468))),
+                          Text(
+                            label(profile?['status']?.toString()),
+                            style: const TextStyle(color: Color(0xFF6B7468)),
+                          ),
                         ],
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 16),
-                _profileRow('Vehicle', label(profile?['vehicleType']?.toString())),
-                _profileRow('Plate', profile?['vehiclePlate']?.toString() ?? '—'),
-                _profileRow('Capacity', '${profile?['capacityUnits'] ?? 1} units'),
-                _profileRow('Phone', widget.client.session?.user['phoneE164']?.toString() ?? '—'),
+                _profileRow(
+                  'Vehicle',
+                  label(profile?['vehicleType']?.toString()),
+                ),
+                _profileRow(
+                  'Plate',
+                  profile?['vehiclePlate']?.toString() ?? '—',
+                ),
+                _profileRow(
+                  'Capacity',
+                  '${profile?['capacityUnits'] ?? 1} units',
+                ),
+                _profileRow(
+                  'Phone',
+                  widget.client.session?.user['phoneE164']?.toString() ?? '—',
+                ),
                 _profileRow('Roles', roles),
               ],
             ),
@@ -1584,29 +1983,51 @@ class _CourierHomeState extends State<CourierHome> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Documents', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+                Text(
+                  'Documents',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
                 const SizedBox(height: 8),
-                if (documents.isEmpty) const Text('No documents uploaded.', style: TextStyle(color: Color(0xFF6B7468))),
+                if (documents.isEmpty)
+                  const Text(
+                    'No documents uploaded.',
+                    style: TextStyle(color: Color(0xFF6B7468)),
+                  ),
                 ...documents.map(
                   (document) => ListTile(
                     contentPadding: EdgeInsets.zero,
                     dense: true,
                     title: Text(label(document['documentType']?.toString())),
-                    subtitle: Text(document['reviewNotes']?.toString() ?? shortDate(document['createdAt']?.toString())),
+                    subtitle: Text(
+                      document['reviewNotes']?.toString() ??
+                          shortDate(document['createdAt']?.toString()),
+                    ),
                     trailing: Text(
                       label(document['status']?.toString()),
-                      style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                      ),
                     ),
                   ),
                 ),
                 if (vehicles.isNotEmpty) ...[
                   const Divider(height: 26),
-                  Text('Vehicles', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+                  Text(
+                    'Vehicles',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
                   ...vehicles.map(
                     (vehicle) => ListTile(
                       contentPadding: EdgeInsets.zero,
                       dense: true,
-                      title: Text('${label(vehicle['vehicleType']?.toString())} ${vehicle['plateNumber'] ?? ''}'),
+                      title: Text(
+                        '${label(vehicle['vehicleType']?.toString())} ${vehicle['plateNumber'] ?? ''}',
+                      ),
                       subtitle: Text(vehicle['makeModel']?.toString() ?? ''),
                     ),
                   ),
@@ -1625,11 +2046,19 @@ class _CourierHomeState extends State<CourierHome> {
                 const SizedBox(width: 12),
                 Expanded(child: Text(AppLocalizations.of(context).language)),
                 DropdownButton<String>(
-                  value: Localizations.localeOf(context).languageCode == 'am' ? 'am' : 'en',
+                  value: Localizations.localeOf(context).languageCode == 'am'
+                      ? 'am'
+                      : 'en',
                   underline: const SizedBox.shrink(),
                   items: [
-                    DropdownMenuItem(value: 'en', child: Text(AppLocalizations.of(context).english)),
-                    DropdownMenuItem(value: 'am', child: Text(AppLocalizations.of(context).amharic)),
+                    DropdownMenuItem(
+                      value: 'en',
+                      child: Text(AppLocalizations.of(context).english),
+                    ),
+                    DropdownMenuItem(
+                      value: 'am',
+                      child: Text(AppLocalizations.of(context).amharic),
+                    ),
                   ],
                   onChanged: (value) {
                     if (value != null) widget.onLocaleChanged(value);
@@ -1662,8 +2091,19 @@ class _CourierHomeState extends State<CourierHome> {
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
-          SizedBox(width: 92, child: Text(title, style: const TextStyle(color: Color(0xFF6B7468), fontSize: 13))),
-          Expanded(child: Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600))),
+          SizedBox(
+            width: 92,
+            child: Text(
+              title,
+              style: const TextStyle(color: Color(0xFF6B7468), fontSize: 13),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+          ),
         ],
       ),
     );
@@ -1706,12 +2146,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       error = null;
     });
     try {
-      final result = asMap(await widget.client.post('/v1/courier/register', {
-        'fullName': nameController.text.trim(),
-        'vehicleType': vehicleType,
-        if (plateController.text.trim().isNotEmpty) 'vehiclePlate': plateController.text.trim(),
-        'capacityUnits': 1,
-      }));
+      final result = asMap(
+        await widget.client.post('/v1/courier/register', {
+          'fullName': nameController.text.trim(),
+          'vehicleType': vehicleType,
+          if (plateController.text.trim().isNotEmpty)
+            'vehiclePlate': plateController.text.trim(),
+          'capacityUnits': 1,
+        }),
+      );
       widget.onRegistered(result);
     } catch (cause) {
       if (mounted) setState(() => error = cause.toString());
@@ -1763,7 +2206,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             ),
           ),
           const SizedBox(height: 20),
-          if (error != null) ...[ErrorBanner(message: error!), const SizedBox(height: 12)],
+          if (error != null) ...[
+            ErrorBanner(message: error!),
+            const SizedBox(height: 12),
+          ],
           TextField(
             controller: nameController,
             textCapitalization: TextCapitalization.words,
@@ -1780,13 +2226,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               DropdownMenuItem(value: 'car', child: Text('Car')),
               DropdownMenuItem(value: 'van', child: Text('Van')),
             ],
-            onChanged: (value) => setState(() => vehicleType = value ?? 'motorcycle'),
+            onChanged: (value) =>
+                setState(() => vehicleType = value ?? 'motorcycle'),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: plateController,
             textCapitalization: TextCapitalization.characters,
-            decoration: const InputDecoration(labelText: 'Vehicle plate (optional)'),
+            decoration: const InputDecoration(
+              labelText: 'Vehicle plate (optional)',
+            ),
           ),
           const SizedBox(height: 20),
           FilledButton(
@@ -1796,7 +2245,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           const SizedBox(height: 10),
           const Text(
             'After registration, upload identity and vehicle documents through operations before your first delivery.',
-            style: TextStyle(color: Color(0xFF6B7468), fontSize: 12, height: 1.5),
+            style: TextStyle(
+              color: Color(0xFF6B7468),
+              fontSize: 12,
+              height: 1.5,
+            ),
           ),
         ],
       ),

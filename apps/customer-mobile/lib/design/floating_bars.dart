@@ -16,7 +16,8 @@ class FloatingBarTokens {
   static const Color line = Color(0xFFD9D5C7);
   static const Color muted = Color(0xFF6B7468);
   static const Color onDark = Color(0xFFEEF0E6);
-  static const Color onDarkMuted = Color(0xFFC3CFC5);
+  static const Color onDarkMuted = Color(0xFFE6EDE7);
+  static const Color onLightMuted = Color(0xFF2F3A32);
   static const Color disabled = Color(0xFF8C948D);
 
   static const Duration motion = Duration(milliseconds: 220);
@@ -143,10 +144,10 @@ class FloatingCategoryBar extends StatelessWidget {
                 shadowColor: Color(0x26000000),
                 selectedBackground: FloatingBarTokens.accent,
                 selectedForeground: Colors.white,
-                unselectedForeground: Color(0xFF3A453C),
+                unselectedForeground: FloatingBarTokens.onLightMuted,
                 disabledForeground: FloatingBarTokens.disabled,
                 hoverOverlay: Color(0x14000000),
-                badgeBackground: Color(0x1AE8613D),
+                badgeBackground: Color(0xFFFBE4DC),
                 accent: FloatingBarTokens.accent,
                 iconSize: 17,
                 labelSize: 11.5,
@@ -178,14 +179,16 @@ class FloatingBarDock extends StatelessWidget {
     return SafeArea(
       top: false,
       child: Padding(
-        padding: EdgeInsets.fromLTRB(horizontalPadding, 0, horizontalPadding, bottomPadding),
+        padding: EdgeInsets.fromLTRB(
+          horizontalPadding,
+          0,
+          horizontalPadding,
+          bottomPadding,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (contextual != null) ...[
-              contextual!,
-              const SizedBox(height: 8),
-            ],
+            if (contextual != null) ...[contextual!, const SizedBox(height: 8)],
             primary,
           ],
         ),
@@ -251,15 +254,13 @@ class _ScrollablePillBar extends StatefulWidget {
 
 class _ScrollablePillBarState extends State<_ScrollablePillBar> {
   final ScrollController _controller = ScrollController();
-  bool _canScrollLeft = false;
-  bool _canScrollRight = false;
-  double _itemWidth = 0;
+  List<double> _widths = const [];
   double _viewportWidth = 0;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _updateEdges());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _revealSelected());
   }
 
   @override
@@ -273,32 +274,25 @@ class _ScrollablePillBarState extends State<_ScrollablePillBar> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.selectedIndex != widget.selectedIndex ||
         oldWidget.items.length != widget.items.length) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _revealSelected();
-        _updateEdges();
-      });
-    }
-  }
-
-  void _updateEdges() {
-    if (!mounted || !_controller.hasClients) return;
-    final position = _controller.position;
-    final left = position.pixels > 1;
-    final right = position.pixels < position.maxScrollExtent - 1;
-    if (left != _canScrollLeft || right != _canScrollRight) {
-      setState(() {
-        _canScrollLeft = left;
-        _canScrollRight = right;
-      });
+      WidgetsBinding.instance.addPostFrameCallback((_) => _revealSelected());
     }
   }
 
   void _revealSelected() {
-    if (!_controller.hasClients || _itemWidth <= 0) return;
+    if (!_controller.hasClients || _widths.isEmpty || _viewportWidth <= 0)
+      return;
+    final index = widget.selectedIndex;
+    if (index < 0 || index >= _widths.length) return;
     final max = _controller.position.maxScrollExtent;
     if (max <= 0) return;
-    final target = (_itemWidth * widget.selectedIndex - (_viewportWidth - _itemWidth) / 2)
-        .clamp(0.0, max);
+    var leading = 0.0;
+    for (var i = 0; i < index; i++) {
+      leading += _widths[i];
+    }
+    final target = (leading + _widths[index] / 2 - _viewportWidth / 2).clamp(
+      0.0,
+      max,
+    );
     _controller.animateTo(
       target,
       duration: FloatingBarTokens.motion,
@@ -308,23 +302,66 @@ class _ScrollablePillBarState extends State<_ScrollablePillBar> {
 
   void _handlePointerSignal(PointerSignalEvent event) {
     if (event is! PointerScrollEvent || !_controller.hasClients) return;
-    final delta = event.scrollDelta.dy != 0 ? event.scrollDelta.dy : event.scrollDelta.dx;
+    final delta = event.scrollDelta.dy != 0
+        ? event.scrollDelta.dy
+        : event.scrollDelta.dx;
     if (delta == 0) return;
-    final next = (_controller.offset + delta).clamp(0.0, _controller.position.maxScrollExtent);
+    final next = (_controller.offset + delta).clamp(
+      0.0,
+      _controller.position.maxScrollExtent,
+    );
     _controller.jumpTo(next);
+  }
+
+  double _measureItem(BuildContext context, int index) {
+    final item = widget.items[index];
+    final style = widget.style;
+    final scaler = MediaQuery.textScalerOf(context);
+    final label = TextPainter(
+      text: TextSpan(
+        text: item.label,
+        style: TextStyle(
+          fontSize: style.labelSize,
+          fontWeight: FontWeight.w800,
+          letterSpacing: style.dense ? -0.1 : -0.2,
+        ),
+      ),
+      maxLines: 1,
+      textDirection: TextDirection.ltr,
+      textScaler: scaler,
+    )..layout();
+    var badgeWidth = 0.0;
+    if (item.badge != null && item.badge!.isNotEmpty) {
+      final badge = TextPainter(
+        text: TextSpan(
+          text: item.badge!,
+          style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w800),
+        ),
+        maxLines: 1,
+        textDirection: TextDirection.ltr,
+        textScaler: scaler,
+      )..layout();
+      badgeWidth = badge.width + 14;
+    }
+    final itemPadding = (style.dense ? 8.0 : 6.0) * 2;
+    final iconAndBadge = style.iconSize + badgeWidth;
+    final contentWidth = style.dense
+        ? style.iconSize + 5 + label.width + badgeWidth + itemPadding
+        : math.max(iconAndBadge, label.width) + itemPadding;
+    return math.max(widget.minItemWidth, contentWidth + 6);
   }
 
   @override
   Widget build(BuildContext context) {
     final style = widget.style;
     if (widget.items.isEmpty) return const SizedBox.shrink();
+    _widths = [
+      for (var index = 0; index < widget.items.length; index++)
+        _measureItem(context, index),
+    ];
     return LayoutBuilder(
       builder: (context, constraints) {
         _viewportWidth = constraints.maxWidth;
-        final available = constraints.maxWidth - style.innerPadding * 2;
-        _itemWidth = math.max(widget.minItemWidth, available / widget.items.length);
-        final contentWidth = _itemWidth * widget.items.length + style.innerPadding * 2;
-        final scrollable = contentWidth > constraints.maxWidth + 0.5;
         return Container(
           height: widget.height,
           decoration: BoxDecoration(
@@ -334,87 +371,36 @@ class _ScrollablePillBarState extends State<_ScrollablePillBar> {
             boxShadow: [
               BoxShadow(
                 color: style.shadowColor,
-                blurRadius: 20,
-                offset: const Offset(0, 8),
+                blurRadius: 24,
+                offset: const Offset(0, 10),
               ),
             ],
           ),
           clipBehavior: Clip.antiAlias,
-          child: Stack(
-            children: [
-              Positioned.fill(
-                child: Listener(
-                  onPointerSignal: _handlePointerSignal,
-                  child: NotificationListener<ScrollNotification>(
-                    onNotification: (_) {
-                      _updateEdges();
-                      return false;
-                    },
-                    child: SingleChildScrollView(
-                      controller: _controller,
-                      scrollDirection: Axis.horizontal,
-                      physics: const BouncingScrollPhysics(
-                        parent: AlwaysScrollableScrollPhysics(),
-                      ),
-                      padding: EdgeInsets.all(style.innerPadding),
-                      child: Row(
-                        children: [
-                          for (var index = 0; index < widget.items.length; index++)
-                            SizedBox(
-                              width: _itemWidth,
-                              height: widget.height - style.innerPadding * 2,
-                              child: _buildItem(index),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
+          child: Listener(
+            onPointerSignal: _handlePointerSignal,
+            child: SingleChildScrollView(
+              controller: _controller,
+              scrollDirection: Axis.horizontal,
+              physics: const BouncingScrollPhysics(
+                parent: AlwaysScrollableScrollPhysics(),
               ),
-              if (scrollable && _canScrollLeft)
-                Positioned(
-                  left: 0,
-                  top: 0,
-                  bottom: 0,
-                  width: 26,
-                  child: IgnorePointer(child: _edgeFade(alignLeft: true)),
-                ),
-              if (scrollable && _canScrollRight)
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  bottom: 0,
-                  width: 26,
-                  child: IgnorePointer(child: _edgeFade(alignLeft: false)),
-                ),
-            ],
+              padding: EdgeInsets.all(style.innerPadding),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (var index = 0; index < widget.items.length; index++)
+                    SizedBox(
+                      width: _widths[index],
+                      height: widget.height - style.innerPadding * 2,
+                      child: _buildItem(index),
+                    ),
+                ],
+              ),
+            ),
           ),
         );
       },
-    );
-  }
-
-  Widget _edgeFade({required bool alignLeft}) {
-    final style = widget.style;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: alignLeft ? Alignment.centerLeft : Alignment.centerRight,
-          end: alignLeft ? Alignment.centerRight : Alignment.centerLeft,
-          colors: [style.background, style.background.withValues(alpha: 0)],
-        ),
-      ),
-      child: Align(
-        alignment: alignLeft ? Alignment.centerLeft : Alignment.centerRight,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-          child: Icon(
-            alignLeft ? Icons.chevron_left_rounded : Icons.chevron_right_rounded,
-            size: 16,
-            color: style.unselectedForeground.withValues(alpha: 0.8),
-          ),
-        ),
-      ),
     );
   }
 
@@ -425,9 +411,17 @@ class _ScrollablePillBarState extends State<_ScrollablePillBar> {
     final foreground = !item.enabled
         ? style.disabledForeground
         : selected
-            ? style.selectedForeground
-            : style.unselectedForeground;
+        ? style.selectedForeground
+        : style.unselectedForeground;
     final radius = BorderRadius.circular(widget.height / 2);
+    final selectedGradient = LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: [
+        style.selectedBackground,
+        Color.lerp(style.selectedBackground, Colors.black, 0.14)!,
+      ],
+    );
     return Semantics(
       button: true,
       selected: selected,
@@ -448,31 +442,37 @@ class _ScrollablePillBarState extends State<_ScrollablePillBar> {
               duration: FloatingBarTokens.motion,
               curve: FloatingBarTokens.motionCurve,
               decoration: BoxDecoration(
-                color: selected ? style.selectedBackground : Colors.transparent,
+                color: selected ? null : Colors.transparent,
+                gradient: selected ? selectedGradient : null,
                 borderRadius: radius,
               ),
-              padding: EdgeInsets.symmetric(horizontal: style.dense ? 8 : 6, vertical: 4),
+              padding: EdgeInsets.symmetric(
+                horizontal: style.dense ? 8 : 6,
+                vertical: 4,
+              ),
               child: style.dense
                   ? Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Icon(
-                          selected ? (item.selectedIcon ?? item.icon) : item.icon,
+                          selected
+                              ? (item.selectedIcon ?? item.icon)
+                              : item.icon,
                           size: style.iconSize,
                           color: foreground,
                         ),
                         const SizedBox(width: 5),
-                        Flexible(
-                          child: Text(
-                            item.label,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: style.labelSize,
-                              fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
-                              color: foreground,
-                              letterSpacing: -0.1,
-                            ),
+                        Text(
+                          item.label,
+                          maxLines: 1,
+                          softWrap: false,
+                          style: TextStyle(
+                            fontSize: style.labelSize,
+                            fontWeight: selected
+                                ? FontWeight.w800
+                                : FontWeight.w700,
+                            color: foreground,
+                            letterSpacing: -0.1,
                           ),
                         ),
                         if (item.badge != null && item.badge!.isNotEmpty) ...[
@@ -489,11 +489,14 @@ class _ScrollablePillBarState extends State<_ScrollablePillBar> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Icon(
-                              selected ? (item.selectedIcon ?? item.icon) : item.icon,
+                              selected
+                                  ? (item.selectedIcon ?? item.icon)
+                                  : item.icon,
                               size: style.iconSize,
                               color: foreground,
                             ),
-                            if (item.badge != null && item.badge!.isNotEmpty) ...[
+                            if (item.badge != null &&
+                                item.badge!.isNotEmpty) ...[
                               const SizedBox(width: 4),
                               _badge(item.badge!, selected, style),
                             ],
@@ -503,10 +506,12 @@ class _ScrollablePillBarState extends State<_ScrollablePillBar> {
                         Text(
                           item.label,
                           maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                          softWrap: false,
                           style: TextStyle(
                             fontSize: style.labelSize,
-                            fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                            fontWeight: selected
+                                ? FontWeight.w800
+                                : FontWeight.w700,
                             color: foreground,
                             letterSpacing: -0.2,
                           ),
@@ -524,7 +529,9 @@ class _ScrollablePillBarState extends State<_ScrollablePillBar> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
       decoration: BoxDecoration(
-        color: selected ? Colors.white.withValues(alpha: 0.24) : style.badgeBackground,
+        color: selected
+            ? Colors.white.withValues(alpha: 0.24)
+            : style.badgeBackground,
         borderRadius: BorderRadius.circular(8),
       ),
       child: Text(

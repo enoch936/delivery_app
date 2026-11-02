@@ -77,6 +77,34 @@ export async function api<T>(path: string, init: RequestInit = {}, retry = true)
   return parse<T>(response);
 }
 
+export async function apiRaw(path: string, init: RequestInit = {}, retry = true): Promise<string> {
+  const session = loadSession();
+  if (!session) throw new Error("Please sign in again.");
+  const headers = new Headers(init.headers);
+  headers.set("authorization", `Bearer ${session.accessToken}`);
+  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+  const response = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  if (response.status === 401 && retry) {
+    const next = await refresh(session);
+    if (next) return apiRaw(path, init, false);
+    saveSession(null);
+  }
+  const text = await response.text();
+  if (!response.ok) {
+    let message = `Request failed (${response.status})`;
+    try {
+      const body = text ? JSON.parse(text) : null;
+      if (body && typeof body === "object" && "message" in body) {
+        message = Array.isArray(body.message) ? body.message.join(", ") : String(body.message);
+      }
+    } catch {
+      // Keep the fallback message for non-JSON error bodies.
+    }
+    throw new Error(message);
+  }
+  return text;
+}
+
 export async function requestOtp(phoneE164: string): Promise<{ challengeId: string; expiresAt: string }> {
   const response = await fetch(`${API_BASE}/v1/auth/otp/request`, {
     method: "POST",

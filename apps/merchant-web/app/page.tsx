@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
+  apiRaw,
   loadSession,
   logout,
   money,
@@ -13,14 +14,16 @@ import {
 } from "../lib/api";
 import { FloatingCategoryBar, FloatingDock, FloatingNav, type FloatingItem } from "./floating-bar";
 
-type Tab = "overview" | "orders" | "menu" | "settlements" | "finance";
+type Tab = "overview" | "orders" | "menu" | "sales" | "settlements" | "finance" | "business";
 
 const NAV_ITEMS: FloatingItem[] = [
   { value: "overview", label: "Overview", icon: "overview" },
   { value: "orders", label: "Orders", icon: "orders" },
   { value: "menu", label: "Menu", icon: "menu" },
+  { value: "sales", label: "Sales", icon: "sales" },
   { value: "settlements", label: "Settlements", icon: "settlements" },
-  { value: "finance", label: "Finance", icon: "finance" }
+  { value: "finance", label: "Finance", icon: "finance" },
+  { value: "business", label: "Business", icon: "business" }
 ];
 
 const ORDER_FILTERS: FloatingItem[] = [
@@ -38,7 +41,12 @@ type MerchantLocation = {
 };
 
 type MerchantMe = {
-  merchant: { id: string; slug: string; displayName: string; description: string | null; logoUrl: string | null; status: string; commissionBps: number };
+  merchant: {
+    id: string; slug: string; displayName: string; description: string | null; logoUrl: string | null;
+    status: string; commissionBps: number; deliveryRadiusKm: number; cancellationPolicy: string | null;
+    refundPolicy: string | null; minScheduleLeadMinutes: number; maxScheduleDays: number;
+    rejectionReason: string | null; suspensionReason: string | null;
+  };
   membership: { role: string };
   locations: MerchantLocation[];
   categories: Array<{ id: string; slug: string; display_name: string; sort_order: number }>;
@@ -50,9 +58,22 @@ type MerchantOrder = {
   deliveryAddress: string | null; itemCount: number; deliveryEstimateMinutes: number | null; createdAt: string;
 };
 
+type OrderEventRecord = { id: string; fromStatus: string | null; toStatus: string; actorUserId: string | null; metadata: Record<string, unknown>; createdAt: string };
+
+type MerchantOrderDetail = {
+  id: string; orderNumber: string; status: string; paymentStatus: string; currency: string;
+  fulfillmentType: string; deliveryAddress: Record<string, unknown>; deliveryInstructions: string | null;
+  scheduledFor: string | null; deliveryEstimateMinutes: number | null; deliveryCode: string | null;
+  totals: { itemsSubtotalMinor: number; deliveryFeeMinor: number; serviceFeeMinor: number; discountMinor: number; taxMinor: number; tipMinor: number; totalMinor: number; currency: string };
+  items: Array<{ displayName: string; quantity: number; unitPriceMinor: number; lineTotalMinor: number }>;
+  timeline: OrderEventRecord[];
+  delivery: { status: string | null; courier: { displayName: string | null; phoneE164: string | null; vehicleType: string | null; rating: number | null } | null; acceptedAt: string | null; pickedUpAt: string | null; deliveredAt: string | null } | null;
+  refunds: Array<{ id: string; status: string; amountMinor: number; reason: string; createdAt: string }>;
+};
+
 type MenuProduct = {
   id: string; categoryId: string | null; sku: string | null; displayName: string; description: string | null;
-  imageUrl: string | null; basePriceMinor: number; currency: string; isAvailable: boolean; quantityAvailable: number;
+  imageUrl: string | null; basePriceMinor: number; currency: string; isAvailable: boolean; quantityAvailable: number; prepMinutes: number; archivedAt: string | null;
 };
 
 type MenuResponse = {
@@ -60,10 +81,42 @@ type MenuResponse = {
   products: MenuProduct[];
 };
 
+type MerchantOption = { id: string; displayName: string; priceDeltaMinor: number; isDefault: boolean; isAvailable: boolean; sortOrder: number };
+type MerchantOptionGroup = { id: string; displayName: string; selectionType: string; isRequired: boolean; minSelections: number; maxSelections: number; options: MerchantOption[] };
+
 type Settlement = {
   id: string; periodStart: string; periodEnd: string; grossMinor: number; commissionMinor: number;
   netPayableMinor: number; currency: string; status: string; paidAt: string | null;
 };
+
+type MerchantDocument = {
+  id: string; merchantId: string; documentType: string; storageKey: string; status: string;
+  reviewNotes: string | null; reviewedAt: string | null; createdAt: string;
+};
+
+type MerchantSalesSummary = {
+  period: { from: string; to: string; days: number };
+  currency: string;
+  commissionBps: number;
+  orders: { received: number; accepted: number; delivered: number; cancelled: number; acceptanceRate: number; avgPrepMinutes: number };
+  grossSalesMinor: number; deliveryFeesMinor: number; serviceFeesMinor: number; taxMinor: number; tipsMinor: number;
+  refundsMinor: number; commissionMinor: number; netAfterCommissionMinor: number; averageOrderMinor: number;
+  calculationRules: { currency: string; commissionBps: number; commissionRatePercent: number; grossSalesFormula: string; commissionFormula: string; netFormula: string; refundFormula: string; averageOrderFormula: string };
+};
+
+type MerchantProductPerformance = {
+  days: number; currency: string; grossSalesMinor: number;
+  items: Array<{ productId: string; displayName: string; categoryLabel: string | null; quantity: number; revenueMinor: number; sharePercent: number }>;
+  bestSellers: Array<{ productId: string; displayName: string; quantity: number; revenueMinor: number }>;
+};
+
+type MerchantReviewSummary = {
+  average: number; count: number; distribution: Record<string, number>;
+  items: Array<{ id: string; merchantRating: number; courierRating: number | null; comment: string | null; customerName: string | null; createdAt: string }>;
+};
+
+const MERCHANT_DOCUMENT_TYPES = ["business_registration", "tax_identification", "trading_license", "operating_permit", "insurance", "profile_photo"];
+const BULK_IMPORT_PLACEHOLDER = '[{"displayName":"Tibs","basePriceMinor":24000,"currency":"ETB","initialStock":5}]';
 
 export default function MerchantHome() {
   const [session, setSession] = useState<Session | null>(null);
@@ -186,14 +239,22 @@ function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => 
           <button className="ghost" onClick={onSignOut}>Sign out</button>
         </div>
       </header>
-
       <header className="workspace-head">
         <div>
           <p className="eyebrow">{tab.toUpperCase()}</p>
-          <h1>{tab === "overview" ? name : tab === "orders" ? "Order queue" : tab === "menu" ? "Menu & stock" : tab === "settlements" ? "Settlement history" : "Finance & payouts"}</h1>
+          <h1>{tabTitle(tab, name)}</h1>
         </div>
         {me ? <div className={`status-pill ${me.merchant.status}`}>{me.merchant.status}</div> : null}
       </header>
+
+      {tab === "orders" ? <div className="context-strip">
+        <FloatingCategoryBar
+          items={ORDER_FILTERS}
+          value={orderStatus}
+          onChange={setOrderStatus}
+          label="Order status filters"
+        />
+      </div> : null}
 
       {loading && !me ? <div className="panel empty">Loading merchant…</div> : null}
       {error && !me ? <div className="panel empty">
@@ -206,32 +267,48 @@ function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => 
       {me && tab === "overview" ? <Overview me={me} reload={refresh} notify={setToast} /> : null}
       {me && tab === "orders" ? <Orders notify={setToast} status={orderStatus} /> : null}
       {me && tab === "menu" ? <Menu me={me} reload={refresh} notify={setToast} /> : null}
+      {me && tab === "sales" ? <Sales notify={setToast} /> : null}
       {me && tab === "settlements" ? <Settlements /> : null}
       {me && tab === "finance" ? <Finance /> : null}
+      {me && tab === "business" ? <Business me={me} reload={refresh} notify={setToast} /> : null}
     </main>
-
     <FloatingDock>
-      {tab === "orders" ? <FloatingCategoryBar
-        items={ORDER_FILTERS}
-        value={orderStatus}
-        onChange={setOrderStatus}
-        label="Order status filters"
-      /> : null}
-      <FloatingNav items={navItems} value={tab} onChange={(value) => setTab(value as Tab)} label="Merchant sections" />
+      <FloatingNav
+        items={navItems}
+        value={tab}
+        onChange={(value) => {
+          setTab(value as Tab);
+          if (value !== "orders") setOrderStatus("");
+        }}
+        label="Merchant sections"
+      />
     </FloatingDock>
-
     {toast ? <div className="toast">{toast}</div> : null}
   </div>;
 }
 
+function tabTitle(tab: Tab, name: string): string {
+  switch (tab) {
+    case "overview": return name;
+    case "orders": return "Order queue";
+    case "menu": return "Menu & stock";
+    case "sales": return "Sales & analytics";
+    case "settlements": return "Settlement history";
+    case "finance": return "Finance";
+    case "business": return "Store & business";
+  }
+}
+
 function Overview({ me, reload, notify }: { me: MerchantMe; reload: () => Promise<void>; notify: (message: string) => void }) {
-  const [savingLocation, setSavingLocation] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [displayName, setDisplayName] = useState(me.merchant.displayName);
   const [description, setDescription] = useState(me.merchant.description ?? "");
+  const [saving, setSaving] = useState(false);
+  const [savingLocationId, setSavingLocationId] = useState<string | null>(null);
 
   async function saveProfile(event: React.FormEvent) {
     event.preventDefault();
+    setSaving(true);
     try {
       await api("/v1/merchant/me", { method: "PATCH", body: JSON.stringify({ displayName, description }) });
       notify("Merchant profile updated.");
@@ -239,11 +316,13 @@ function Overview({ me, reload, notify }: { me: MerchantMe; reload: () => Promis
       await reload();
     } catch (cause) {
       notify(cause instanceof Error ? cause.message : "Could not update the profile.");
+    } finally {
+      setSaving(false);
     }
   }
 
   async function toggleLocation(location: MerchantLocation) {
-    setSavingLocation(location.id);
+    setSavingLocationId(location.id);
     try {
       await api(`/v1/merchant/locations/${location.id}`, { method: "PATCH", body: JSON.stringify({ active: !location.isActive }) });
       notify(`${location.name} is now ${location.isActive ? "closed" : "open"}.`);
@@ -251,11 +330,28 @@ function Overview({ me, reload, notify }: { me: MerchantMe; reload: () => Promis
     } catch (cause) {
       notify(cause instanceof Error ? cause.message : "Could not update the location.");
     } finally {
-      setSavingLocation(null);
+      setSavingLocationId(null);
     }
   }
 
+  const m = me.merchant;
+
   return <>
+    {m.status !== "active" ? <section className="panel">
+      <div className="panel-head">
+        <div><p className="eyebrow">APPLICATION</p><h2>{m.status === "pending" ? "Awaiting operator approval" : m.status}</h2></div>
+        <span className={`status-pill ${m.status}`}>{m.status}</span>
+      </div>
+      <p className="muted">
+        {m.status === "pending" ? "The operations team is reviewing this merchant application. You will be able to fulfil orders once approved."
+          : m.status === "suspended" ? "This merchant account is suspended. Store operations are paused until an operator reactivates it."
+          : m.status === "closed" ? "This merchant account is closed." : "This merchant account is not active."}
+      </p>
+      {m.rejectionReason ? <p className="form-error">Rejection reason: {m.rejectionReason}</p> : null}
+      {m.suspensionReason ? <p className="form-error">Suspension reason: {m.suspensionReason}</p> : null}
+      {m.status === "pending" ? <p className="fine-print">No orders can be accepted until an authorised operator approves the application. Verification documents and store details may still be submitted below.</p> : null}
+    </section> : null}
+
     <section className="metric-grid">
       <article className="metric"><span>Today</span><strong>{me.stats.todayOrders}</strong><p>orders received</p></article>
       <article className="metric accent"><span>Needs action</span><strong>{me.stats.pendingOrders}</strong><p>orders waiting on the kitchen</p></article>
@@ -272,7 +368,7 @@ function Overview({ me, reload, notify }: { me: MerchantMe; reload: () => Promis
         {editing ? <form className="stack" onSubmit={saveProfile}>
           <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} minLength={2} maxLength={120} required /></label>
           <label>Description<textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} maxLength={2000} /></label>
-          <button>Save profile</button>
+          <button disabled={saving}>{saving ? "Saving…" : "Save profile"}</button>
         </form> : <>
           <p className="muted">{me.merchant.description ?? "No public description yet."}</p>
           <dl className="detail-list">
@@ -280,6 +376,9 @@ function Overview({ me, reload, notify }: { me: MerchantMe; reload: () => Promis
             <div><dt>Your role</dt><dd>{me.membership.role}</dd></div>
             <div><dt>Locations</dt><dd>{me.locations.length}</dd></div>
             <div><dt>Menu categories</dt><dd>{me.categories.length}</dd></div>
+            <div><dt>Delivery radius</dt><dd>{me.merchant.deliveryRadiusKm} km</dd></div>
+            <div><dt>Cancellation policy</dt><dd>{me.merchant.cancellationPolicy ?? "Not set"}</dd></div>
+            <div><dt>Refund policy</dt><dd>{me.merchant.refundPolicy ?? "Not set"}</dd></div>
           </dl>
         </>}
       </section>
@@ -289,14 +388,12 @@ function Overview({ me, reload, notify }: { me: MerchantMe; reload: () => Promis
         {me.locations.length === 0 ? <p className="muted">No locations have been configured.</p> : <div className="location-list">
           {me.locations.map((location) => <article key={location.id} className="location-row">
             <div><strong>{location.name}</strong><p>{location.addressLine}</p></div>
-            <button className={location.isActive ? "toggle on" : "toggle"} disabled={savingLocation === location.id} onClick={() => void toggleLocation(location)}>
-              {savingLocation === location.id ? "Saving…" : location.isActive ? "Open" : "Closed"}
-            </button>
+            <button className={location.isActive ? "toggle on" : "toggle"} disabled={savingLocationId === location.id} onClick={() => void toggleLocation(location)}>{savingLocationId === location.id ? "Saving…" : location.isActive ? "Open" : "Closed"}</button>
           </article>)}
         </div>}
       </section>
     </div>
-  </>;
+  </>
 }
 
 function Orders({ notify, status }: { notify: (message: string) => void; status: string }) {
@@ -305,6 +402,12 @@ function Orders({ notify, status }: { notify: (message: string) => void; status:
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<MerchantOrderDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const seenRef = useRef<string[]>([]);
+  const loadedOnceRef = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -312,14 +415,29 @@ function Orders({ notify, status }: { notify: (message: string) => void; status:
       const query = status ? `?status=${encodeURIComponent(status)}` : "";
       const result = await api<{ items: MerchantOrder[]; total: number }>(`/v1/merchant/orders${query}`);
       setOrders(result.items); setTotal(result.total);
+      const actionable = result.items.filter((order) => order.status === "AWAITING_PAYMENT" || order.status === "PENDING_CONFIRMATION");
+      if (loadedOnceRef.current) {
+        for (const order of actionable) {
+          if (!seenRef.current.includes(order.id)) {
+            seenRef.current = [...seenRef.current, order.id];
+            notify(`New incoming order ${order.orderNumber}.`);
+          }
+        }
+      }
+      loadedOnceRef.current = true;
+      seenRef.current = actionable.map((order) => order.id);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load orders.");
     } finally {
       setLoading(false);
     }
-  }, [status]);
+  }, [status, notify]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => void load(), 20000);
+    return () => window.clearInterval(timer);
+  }, [load]);
 
   async function transition(order: MerchantOrder, action: "accept" | "prepare" | "ready" | "reject") {
     let reason: string | undefined;
@@ -339,13 +457,87 @@ function Orders({ notify, status }: { notify: (message: string) => void; status:
     }
   }
 
-  return <section className="panel">
-    <div className="panel-head">
-      <div><p className="eyebrow">FULFILMENT</p><h2>{total} orders</h2></div>
-      <button className="ghost" onClick={() => void load()}>Refresh</button>
-    </div>
-    {loading ? <p className="muted">Loading orders…</p> : error ? <p className="form-error">{error}</p> : orders.length === 0 ? <div className="empty"><h3>No orders here</h3><p>The queue is clear for this filter.</p></div> : <div className="order-list">
-      {orders.map((order) => <article key={order.id} className="order-card">
+  async function openOrder(order: MerchantOrder) {
+    setSelectedId(order.id);
+    setDetailLoading(true);
+    try {
+      const fetched = (await api(`/v1/merchant/orders/${order.id}`)) as MerchantOrderDetail;
+      setDetail(fetched);
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not load the order.");
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  const visibleOrders = orders.filter((order) => !search.trim() || order.orderNumber.toLowerCase().includes(search.trim().toLowerCase()));
+
+  return (
+    <>
+      {selectedId && detail ? (
+        <section className="panel stack">
+          <div className="panel-head">
+            <div><p className="eyebrow">ORDER DETAIL</p><h2>{detail.orderNumber}</h2></div>
+            <button className="ghost" onClick={() => { setSelectedId(null); setDetail(null); }}>Close</button>
+          </div>
+          <div className="order-meta">
+            <span>Status</span><span>{detail.status.replaceAll("_", " ")}</span>
+            <span>Payment</span><span>{detail.paymentStatus.replaceAll("_", " ")}</span>
+            <span>Fulfillment</span><span>{detail.fulfillmentType}</span>
+            <span>Delivery estimate</span><span>{detail.deliveryEstimateMinutes ? `~${detail.deliveryEstimateMinutes} min` : "—"}</span>
+            <span>Scheduled</span><span>{detail.scheduledFor ? new Date(detail.scheduledFor).toLocaleString() : "—"}</span>
+          </div>
+          <div className="metric-grid">
+            <article className="metric"><span>Items subtotal</span><strong>{money(detail.totals.itemsSubtotalMinor, detail.totals.currency)}</strong></article>
+            <article className="metric"><span>Delivery fee</span><strong>{money(detail.totals.deliveryFeeMinor, detail.totals.currency)}</strong></article>
+            <article className="metric"><span>Service fee</span><strong>{money(detail.totals.serviceFeeMinor, detail.totals.currency)}</strong></article>
+            <article className="metric"><span>Discount</span><strong>{money(detail.totals.discountMinor, detail.totals.currency)}</strong></article>
+            <article className="metric"><span>Tax</span><strong>{money(detail.totals.taxMinor, detail.totals.currency)}</strong></article>
+            <article className="metric"><span>Tip</span><strong>{money(detail.totals.tipMinor, detail.totals.currency)}</strong></article>
+            <article className="metric accent"><span>Total</span><strong>{money(detail.totals.totalMinor, detail.totals.currency)}</strong></article>
+          </div>
+          <section className="panel">
+            <div className="panel-head"><div><p className="eyebrow">ITEMS</p><h2>Line items</h2></div></div>
+            <div className="stack">
+              {detail.items.map((item) => (
+                <div className="flag-row" key={`${item.displayName}-${item.quantity}`}>
+                  <div><strong>{item.displayName}</strong><small className="block">×{item.quantity}</small></div>
+                  <span>{money(item.lineTotalMinor, detail.totals.currency)}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+          <section className="panel">
+            <div className="panel-head"><div><p className="eyebrow">DELIVERY</p><h2>Courier & handoff</h2></div></div>
+            <div className="order-meta">
+              <span>Assignment</span><span>{detail.delivery?.status ? detail.delivery.status.replaceAll("_", " ") : "—"}</span>
+              <span>Courier</span><span>{detail.delivery?.courier ? `${detail.delivery.courier.displayName ?? "Unknown"}${detail.delivery.courier.phoneE164 ? ` · ${detail.delivery.courier.phoneE164}` : ""}` : "—"}</span>
+              <span>Picked up</span><span>{detail.delivery?.pickedUpAt ? new Date(detail.delivery.pickedUpAt).toLocaleString() : "—"}</span>
+              <span>Delivered</span><span>{detail.delivery?.deliveredAt ? new Date(detail.delivery.deliveredAt).toLocaleString() : "—"}</span>
+            </div>
+          </section>
+          <section className="panel">
+            <div className="panel-head"><div><p className="eyebrow">HISTORY</p><h2>Order timeline</h2></div></div>
+            <div className="stack">
+              {detail.timeline.length === 0 ? <p className="muted">No status events recorded yet.</p> : detail.timeline.map((event) => (
+                <div className="flag-row" key={event.id}>
+                  <div><strong>{event.toStatus.replaceAll("_", " ")}</strong><small className="block">{event.fromStatus ? `from ${event.fromStatus.replaceAll("_", " ")}` : "initial"}</small><small className="block">{new Date(event.createdAt).toLocaleString()}</small></div>
+                </div>
+              ))}
+            </div>
+          </section>
+        </section>
+      ) : null}
+      <section className="panel">
+        <div className="panel-head">
+          <div><p className="eyebrow">FULFILMENT</p><h2>{total} orders</h2></div>
+          <div className="toolbar-inline">
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search order number" />
+            <button className="ghost" onClick={() => void load()}>Refresh</button>
+          </div>
+        </div>
+    {loading ? <p className="muted">Loading orders…</p> : error ? <p className="form-error">{error}</p> : visibleOrders.length === 0 ? <div className="empty"><h3>No orders here</h3><p>The queue is clear for this filter.</p></div> : <div className="order-list">
+      {visibleOrders.map((order) => <article key={order.id} className="order-card">
         <div className="order-head">
           <div><strong>{order.orderNumber}</strong><p>{new Date(order.createdAt).toLocaleString()}</p></div>
           <div className="order-total"><strong>{money(order.totalMinor, order.currency)}</strong><span className={`status-text ${order.status.toLowerCase()}`}>{order.status.replaceAll("_", " ")}</span></div>
@@ -363,8 +555,10 @@ function Orders({ notify, status }: { notify: (message: string) => void; status:
           {!["DELIVERED", "CANCELLED", "REFUNDED", "REFUND_PENDING", "FAILED", "PICKED_UP", "IN_TRANSIT"].includes(order.status) ? <button className="danger" disabled={busyId === order.id} onClick={() => void transition(order, "reject")}>Reject</button> : null}
         </div>
       </article>)}
-    </div>}
-  </section>;
+        </div>}
+      </section>
+    </>
+  );
 }
 
 function Menu({ me, reload, notify }: { me: MerchantMe; reload: () => Promise<void>; notify: (message: string) => void }) {
@@ -377,6 +571,18 @@ function Menu({ me, reload, notify }: { me: MerchantMe; reload: () => Promise<vo
   const [categoryId, setCategoryId] = useState("");
   const [creating, setCreating] = useState(false);
   const [categoryName, setCategoryName] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [edit, setEdit] = useState<{ displayName: string; description: string; imageUrl: string; basePriceMinor: string; categoryId: string; isAvailable: boolean; prepMinutes: string } | null>(null);
+  const [bulkText, setBulkText] = useState("");
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
+  const [categoryDraft, setCategoryDraft] = useState<{ displayName: string; sortOrder: string } | null>(null);
+  const [savingCategory, setSavingCategory] = useState(false);
+  const [optionGroups, setOptionGroups] = useState<MerchantOptionGroup[]>([]);
+  const [optionGroupName, setOptionGroupName] = useState("");
+  const [optionName, setOptionName] = useState("");
+  const [optionPriceDelta, setOptionPriceDelta] = useState("0");
+  const [busyOption, setBusyOption] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -428,6 +634,37 @@ function Menu({ me, reload, notify }: { me: MerchantMe; reload: () => Promise<vo
     }
   }
 
+  async function startEditCategory(category: { id: string; displayName: string; sortOrder: number }) {
+    setEditingCategoryId(category.id);
+    setCategoryDraft({ displayName: category.displayName, sortOrder: String(category.sortOrder) });
+  }
+
+  async function saveCategoryEdit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!editingCategoryId || !categoryDraft) return;
+    setSavingCategory(true);
+    try {
+      await api(`/v1/merchant/categories/${editingCategoryId}`, { method: "PATCH", body: JSON.stringify({ displayName: categoryDraft.displayName, sortOrder: Number(categoryDraft.sortOrder) || 0 }) });
+      notify("Category updated.");
+      setEditingCategoryId(null); setCategoryDraft(null);
+      await load();
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not update the category.");
+    } finally {
+      setSavingCategory(false);
+    }
+  }
+
+  async function archiveCategory(category: { id: string; displayName: string }) {
+    try {
+      await api(`/v1/merchant/categories/${category.id}/archive`, { method: "POST" });
+      notify(`${category.displayName} archived.`);
+      await load();
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not archive the category.");
+    }
+  }
+
   async function setInventory(product: MenuProduct, quantity: number) {
     try {
       await api(`/v1/merchant/products/${product.id}/inventory`, { method: "PATCH", body: JSON.stringify({ quantity }) });
@@ -447,23 +684,256 @@ function Menu({ me, reload, notify }: { me: MerchantMe; reload: () => Promise<vo
     }
   }
 
+  async function startEdit(product: MenuProduct) {
+    setEditingId(product.id);
+    setEdit({
+      displayName: product.displayName,
+      description: product.description ?? "",
+      imageUrl: product.imageUrl ?? "",
+      basePriceMinor: (product.basePriceMinor / 100).toFixed(2),
+      categoryId: product.categoryId ?? "",
+      isAvailable: product.isAvailable,
+      prepMinutes: String(product.prepMinutes ?? 0)
+    });
+    setOptionGroups([]);
+    try {
+      const result = await api<{ groups: MerchantOptionGroup[] }>(`/v1/merchant/products/${product.id}/options`);
+      setOptionGroups(result.groups ?? []);
+    } catch {
+      setOptionGroups([]);
+    }
+  }
+
+  async function createOptionGroup(event: React.FormEvent) {
+    event.preventDefault();
+    if (!editingId) return;
+    const displayName = optionGroupName.trim();
+    if (!displayName) return notify("Enter an option group name.");
+    try {
+      const result = await api<{ id: string; displayName: string }>(`/v1/merchant/products/${editingId}/options`, { method: "POST", body: JSON.stringify({ displayName }) });
+      notify(`Option group "${result.displayName}" created.`);
+      setOptionGroupName("");
+      const refreshed = await api<{ groups: MerchantOptionGroup[] }>(`/v1/merchant/products/${editingId}/options`);
+      setOptionGroups(refreshed.groups ?? []);
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not create the option group.");
+    }
+  }
+
+  async function createOption(groupId: string, event: React.FormEvent) {
+    event.preventDefault();
+    const displayName = optionName.trim();
+    const priceDelta = Math.round(Number(optionPriceDelta) * 100);
+    if (!displayName || !Number.isFinite(priceDelta) || priceDelta < 0) return notify("Enter a valid option name and price delta.");
+    setBusyOption(true);
+    try {
+      await api(`/v1/merchant/products/${editingId}/options/${groupId}`, { method: "POST", body: JSON.stringify({ displayName, priceDeltaMinor: priceDelta }) });
+      notify(`${displayName} option added.`);
+      setOptionName(""); setOptionPriceDelta("0");
+      const refreshed = await api<{ groups: MerchantOptionGroup[] }>(`/v1/merchant/products/${editingId}/options`);
+      setOptionGroups(refreshed.groups ?? []);
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not add the option.");
+    } finally {
+      setBusyOption(false);
+    }
+  }
+
+  async function toggleOption(optionId: string, available: boolean) {
+    try {
+      await api(`/v1/merchant/products/options/${optionId}`, { method: "PATCH", body: JSON.stringify({ isAvailable: available }) });
+      const refreshed = await api<{ groups: MerchantOptionGroup[] }>(`/v1/merchant/products/${editingId}/options`);
+      setOptionGroups(refreshed.groups ?? []);
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not update the option.");
+    }
+  }
+
+  async function deleteOption(optionId: string) {
+    try {
+      await api(`/v1/merchant/products/options/${optionId}`, { method: "DELETE" });
+      const refreshed = await api<{ groups: MerchantOptionGroup[] }>(`/v1/merchant/products/${editingId}/options`);
+      setOptionGroups(refreshed.groups ?? []);
+      notify("Option deleted.");
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not delete the option.");
+    }
+  }
+
+  async function saveEdit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!editingId || !edit) return;
+    const priceMinor = Math.round(Number(edit.basePriceMinor) * 100);
+    if (!Number.isFinite(priceMinor) || priceMinor < 0) return notify("Enter a valid ETB price.");
+    setCreating(true);
+    try {
+      await api(`/v1/merchant/products/${editingId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          displayName: edit.displayName, description: edit.description, imageUrl: edit.imageUrl, basePriceMinor: priceMinor,
+          categoryId: edit.categoryId || undefined, isAvailable: edit.isAvailable, prepMinutes: Number(edit.prepMinutes) || 0
+        })
+      });
+      notify("Product updated.");
+      setEditingId(null); setEdit(null);
+      await Promise.all([load(), reload()]);
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not update the product.");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function archiveProduct(product: MenuProduct) {
+    try {
+      await api(`/v1/merchant/products/${product.id}/archive`, { method: "POST" });
+      notify(`${product.displayName} archived.`);
+      await load();
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not archive the product.");
+    }
+  }
+
+  async function restoreProduct(product: MenuProduct) {
+    try {
+      await api(`/v1/merchant/products/${product.id}/restore`, { method: "POST" });
+      notify(`${product.displayName} restored.`);
+      await load();
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not restore the product.");
+    }
+  }
+
+  async function runBulkImport(event: React.FormEvent) {
+    event.preventDefault();
+    let parsed: Array<Record<string, unknown>>;
+    try { parsed = JSON.parse(bulkText); } catch { return notify("Bulk import must be a JSON array of product rows."); }
+    if (!Array.isArray(parsed) || parsed.length === 0) return notify("Bulk import needs at least one product row.");
+    setBulkBusy(true);
+    try {
+      const items = (parsed as Array<Record<string, unknown>>).map((row) => ({
+        displayName: String(row.displayName ?? ""),
+        basePriceMinor: Number(row.basePriceMinor ?? 0),
+        currency: String(row.currency ?? "ETB"),
+        categoryId: typeof row.categoryId === "string" ? row.categoryId : undefined,
+        sku: typeof row.sku === "string" ? row.sku : undefined,
+        description: typeof row.description === "string" ? row.description : undefined,
+        imageUrl: typeof row.imageUrl === "string" ? row.imageUrl : undefined,
+        initialStock: typeof row.initialStock === "number" ? row.initialStock : undefined
+      }));
+      const result = await api<{ created: number; failed: Array<{ displayName: string; error: string }> }>("/v1/merchant/products/bulk", { method: "POST", body: JSON.stringify({ items }) });
+      notify(`Imported ${result.created} products${result.failed && result.failed.length ? `; ${result.failed.length} failed` : ""}.`);
+      setBulkText("");
+      await load();
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not run the bulk import.");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function exportMenu() {
+    try {
+      const result = await api<{ items: Array<Record<string, unknown>> }>("/v1/merchant/products/export");
+      const blob = new Blob([JSON.stringify(result.items, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url; anchor.download = "merchant-menu-export.json"; anchor.click(); URL.revokeObjectURL(url);
+      notify(`Exported ${result.items.length} products.`);
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not export the menu.");
+    }
+  }
+
   const categoriesById = useMemo(() => new Map((menu?.categories ?? []).map((category) => [category.id, category.displayName])), [menu]);
+  const editingProduct = menu?.products.find((product) => product.id === editingId) ?? null;
+  const editingCategory = menu?.categories.find((category) => category.id === editingCategoryId) ?? null;
 
   return <div className="menu-layout">
     <section className="panel">
       <div className="panel-head"><div><p className="eyebrow">CATALOGUE</p><h2>{menu?.products.length ?? 0} products</h2></div><button className="ghost" onClick={() => void load()}>Refresh</button></div>
-      {loading ? <p className="muted">Loading menu…</p> : error ? <p className="form-error">{error}</p> : menu && menu.products.length > 0 ? <div className="product-list">
-        {menu.products.map((product) => <article key={product.id} className="product-row">
-          <div className="product-main">
-            <strong>{product.displayName}</strong>
-            <p>{categoriesById.get(product.categoryId ?? "") ?? "Uncategorised"} · {money(product.basePriceMinor, product.currency)}</p>
-          </div>
-          <div className="stock-control">
-            <label>Stock<input type="number" min={0} defaultValue={product.quantityAvailable} onBlur={(event) => { const value = Number(event.target.value); if (Number.isInteger(value) && value >= 0 && value !== product.quantityAvailable) void setInventory(product, value); }} /></label>
-            <button className={product.isAvailable ? "toggle on" : "toggle"} onClick={() => void toggleProduct(product)}>{product.isAvailable ? "Available" : "Hidden"}</button>
-          </div>
-        </article>)}
-      </div> : <div className="empty"><h3>No products yet</h3><p>Add the first item using the form.</p></div>}
+      {loading ? <p className="muted">Loading menu…</p> : error ? <p className="form-error">{error}</p> : menu && menu.products.length > 0 ? (
+        <div className="product-list">
+          {menu.products.map((product) => (
+            <article key={product.id} className="product-row">
+              <div className="product-main">
+                <strong>{product.displayName}</strong>
+                <p>{categoriesById.get(product.categoryId ?? "") ?? "Uncategorised"} · {money(product.basePriceMinor, product.currency)} · prep {product.prepMinutes} min</p>
+              </div>
+              <div className="stock-control">
+                <label>Stock<input type="number" min={0} defaultValue={product.quantityAvailable} onBlur={(event) => { const value = Number(event.target.value); if (Number.isInteger(value) && value >= 0 && value !== product.quantityAvailable) void setInventory(product, value); }} /></label>
+                <button className={product.isAvailable ? "toggle on" : "toggle"} onClick={() => void toggleProduct(product)}>{product.isAvailable ? "Available" : "Hidden"}</button>
+              </div>
+              <div className="product-actions">
+                <button className="ghost" onClick={() => void startEdit(product)}>{editingId === product.id ? "Close" : "Edit"}</button>
+                {product.archivedAt ? <button className="ghost" onClick={() => void restoreProduct(product)}>Restore</button> : <button className="ghost danger" onClick={() => void archiveProduct(product)}>Archive</button>}
+              </div>
+            </article>
+          ))}
+          {editingProduct ? (
+            <section className="panel stack">
+              <div className="panel-head">
+                <div><p className="eyebrow">EDIT PRODUCT</p><h2>{editingProduct.displayName}</h2></div>
+                <button className="ghost" onClick={() => { setEditingId(null); setEdit(null); }}>Close</button>
+              </div>
+              <form className="stack" onSubmit={saveEdit}>
+                <label>Name<input value={edit?.displayName ?? ""} onChange={(event) => setEdit((current) => current ? { ...current, displayName: event.target.value } : current)} minLength={2} maxLength={160} required /></label>
+                <label>Description<textarea value={edit?.description ?? ""} onChange={(event) => setEdit((current) => current ? { ...current, description: event.target.value } : current)} rows={3} maxLength={2000} /></label>
+                <div className="form-grid">
+                  <label>Price (ETB)<input value={edit?.basePriceMinor ?? ""} onChange={(event) => setEdit((current) => current ? { ...current, basePriceMinor: event.target.value } : current)} inputMode="decimal" required /></label>
+                  <label>Preparation minutes<input value={edit?.prepMinutes ?? "0"} onChange={(event) => setEdit((current) => current ? { ...current, prepMinutes: event.target.value } : current)} type="number" min={0} /></label>
+                </div>
+                <div className="form-grid">
+                  <label>Category<select value={edit?.categoryId ?? ""} onChange={(event) => setEdit((current) => current ? { ...current, categoryId: event.target.value } : current)}><option value="">Uncategorised</option>{menu?.categories.map((category) => <option key={category.id} value={category.id}>{category.displayName}</option>)}</select></label>
+                  <div className="stack" style={{ gap: "0.3rem" }}>
+                    <span>Availability</span>
+                    <div className="stack" style={{ flexDirection: "row", gap: "0.5rem" }}>
+                      <button type="button" className={edit?.isAvailable ? "toggle on" : "toggle"} onClick={() => setEdit((current) => current ? { ...current, isAvailable: true } : current)}>Available</button>
+                      <button type="button" className={!edit?.isAvailable ? "toggle on" : "toggle"} onClick={() => setEdit((current) => current ? { ...current, isAvailable: false } : current)}>Hidden</button>
+                    </div>
+                  </div>
+                </div>
+                <label>Image URL<input value={edit?.imageUrl ?? ""} onChange={(event) => setEdit((current) => current ? { ...current, imageUrl: event.target.value } : current)} maxLength={500} placeholder="https://cdn.example.com/item.png" /></label>
+                <button disabled={creating}>{creating ? "Saving…" : "Save product"}</button>
+              </form>
+              <section className="panel stack">
+                <div className="panel-head"><div><p className="eyebrow">OPTIONS</p><h2>Variants & customisations</h2></div></div>
+                <p className="muted">Sizes, packs and customisation extras with price adjustments. Customers pick one option per line at checkout.</p>
+                {optionGroups.length === 0 ? <p className="muted">No option groups for this product yet.</p> : optionGroups.map((group) => (
+                  <div className="stack" key={group.id}>
+                    <div className="order-head">
+                      <div><strong>{group.displayName}</strong><small className="block">{group.selectionType} · required {group.isRequired ? "yes" : "no"}{group.minSelections ? ` · min ${group.minSelections}` : ""}{group.maxSelections ? ` · max ${group.maxSelections}` : ""}</small></div>
+                    </div>
+                    <div className="stack">
+                      {group.options.map((option) => (
+                        <div className="flag-row" key={option.id}>
+                          <div><strong>{option.displayName}</strong><small className="block">price adjustment {option.priceDeltaMinor ? `+${money(option.priceDeltaMinor)}` : "+0 ETB"}</small></div>
+                          <div className="actions">
+                            <button className="ghost" onClick={() => void toggleOption(option.id, !option.isAvailable)}>{option.isAvailable ? "Available" : "Hidden"}</button>
+                            <button className="ghost danger" onClick={() => void deleteOption(option.id)}>Delete</button>
+                          </div>
+                        </div>
+                      ))}
+                      {group.options.length === 0 ? <p className="muted">No options in this group yet.</p> : null}
+                    </div>
+                    <form className="inline-form" onSubmit={(event) => void createOption(group.id, event)}>
+                      <input value={optionName} onChange={(event) => setOptionName(event.target.value)} placeholder="Large" maxLength={120} />
+                      <input value={optionPriceDelta} onChange={(event) => setOptionPriceDelta(event.target.value)} placeholder="0.00" inputMode="decimal" />
+                      <button disabled={busyOption || !optionName.trim()}>Add option</button>
+                    </form>
+                  </div>
+                ))}
+                <form className="inline-form" onSubmit={(event) => void createOptionGroup(event)}>
+                  <input value={optionGroupName} onChange={(event) => setOptionGroupName(event.target.value)} placeholder="Size" maxLength={120} />
+                  <button disabled={!optionGroupName.trim()}>Add group</button>
+                </form>
+              </section>
+            </section>
+          ) : null}
+        </div>
+      ) : (
+        <div className="empty"><h3>No products yet</h3><p>Add the first item using the form.</p></div>
+      )}
     </section>
 
     <aside className="side-stack">
@@ -485,10 +955,233 @@ function Menu({ me, reload, notify }: { me: MerchantMe; reload: () => Promise<vo
           <input value={categoryName} onChange={(event) => setCategoryName(event.target.value)} placeholder="Main dishes" maxLength={80} />
           <button disabled={!categoryName.trim()}>Add</button>
         </form>
+        <div className="stack">
+          {(menu?.categories ?? []).map((category) => (
+            <div className="flag-row" key={category.id}>
+              <div><strong>{category.displayName}</strong><small className="block">/{category.slug}</small></div>
+              <div className="actions">
+                <button className="ghost" onClick={() => startEditCategory(category)}>{editingCategoryId === category.id ? "Close" : "Edit"}</button>
+                <button className="ghost danger" onClick={() => void archiveCategory(category)}>Archive</button>
+              </div>
+            </div>
+          ))}
+        </div>
+        {editingCategory ? (
+          <form className="stack" onSubmit={saveCategoryEdit}>
+            <label>Name<input value={categoryDraft?.displayName ?? ""} onChange={(event) => setCategoryDraft((current) => current ? { ...current, displayName: event.target.value } : current)} required /></label>
+            <label>Sort order<input value={categoryDraft?.sortOrder ?? "0"} onChange={(event) => setCategoryDraft((current) => current ? { ...current, sortOrder: event.target.value } : current)} type="number" min={0} /></label>
+            <button disabled={savingCategory}>{savingCategory ? "Saving…" : "Save category"}</button>
+          </form>
+        ) : null}
         <p className="fine-print">{me.categories.length} categories currently on the menu.</p>
+      </section>
+      <section className="panel">
+        <p className="eyebrow">CATALOGUE OPS</p><h2>Bulk import / export</h2>
+        <form className="stack" onSubmit={(event) => void runBulkImport(event)}>
+          <label>Bulk import (JSON array of product rows)<textarea rows={6} value={bulkText} onChange={(event) => setBulkText(event.target.value)} placeholder={BULK_IMPORT_PLACEHOLDER} /></label>
+          <button disabled={bulkBusy}>{bulkBusy ? "Importing…" : "Run bulk import"}</button>
+        </form>
+        <button className="ghost" onClick={() => void exportMenu()}>Export menu JSON</button>
       </section>
     </aside>
   </div>;
+}
+
+function Sales({ notify }: { notify: (message: string) => void }) {
+  const [days, setDays] = useState(30);
+  const [summary, setSummary] = useState<MerchantSalesSummary | null>(null);
+  const [products, setProducts] = useState<MerchantProductPerformance | null>(null);
+  const [reviews, setReviews] = useState<MerchantReviewSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const [sales, productRows, merchantReviewSummary] = await Promise.all([
+        api<MerchantSalesSummary>(`/v1/merchant/analytics/sales?days=${days}`),
+        api<MerchantProductPerformance>(`/v1/merchant/analytics/products?days=${days}`),
+        api<MerchantReviewSummary>(`/v1/merchant/reviews?limit=20`)
+      ]);
+      setSummary(sales);
+      setProducts(productRows);
+      setReviews(merchantReviewSummary);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not load sales analytics.");
+    } finally {
+      setLoading(false);
+    }
+  }, [days]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  async function downloadReport() {
+    try {
+      const csv = await apiRaw(`/v1/merchant/reports/sales.csv?days=${days}`);
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `merchant-sales-${days}d.csv`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      notify("Sales report downloaded.");
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not download the sales report.");
+    }
+  }
+
+  const distribution = reviews?.distribution ?? {};
+  const maxRatingCount = Math.max(1, ...[1, 2, 3, 4, 5].map((rating) => Number(distribution[String(rating)] ?? distribution[String(rating)] ?? 0)));
+
+  return (
+    <div className="stack">
+      <section className="panel">
+        <div className="panel-head">
+          <div><p className="eyebrow">SALES</p><h2>Sales & finance dashboard</h2></div>
+          <div className="toolbar-inline">
+            <div className="filter-row" style={{ marginBottom: 0 }}>
+              {[7, 30, 365].map((option) => (
+                <button key={option} type="button" className={days === option ? "chip active" : "chip"} onClick={() => setDays(option)}>{option} days</button>
+              ))}
+            </div>
+            <button className="ghost" onClick={() => void load()} disabled={loading}>{loading ? "Loading…" : "Refresh"}</button>
+            <button className="ghost" onClick={() => void downloadReport()}>Download CSV</button>
+          </div>
+        </div>
+        {error ? <p className="form-error">{error}</p> : null}
+        {loading && !summary ? <p className="muted">Loading sales analytics…</p> : null}
+        {summary ? (
+          <>
+            <div className="metric-grid">
+              <article className="metric accent"><span>Gross sales</span><strong>{money(summary.grossSalesMinor, summary.currency)}</strong><p>period gross merchandise value</p></article>
+              <article className="metric"><span>Net after commission</span><strong>{money(summary.netAfterCommissionMinor, summary.currency)}</strong><p>after commission & refunds</p></article>
+              <article className="metric"><span>Refunds issued</span><strong>{money(summary.refundsMinor, summary.currency)}</strong><p>successfully refunded</p></article>
+              <article className="metric"><span>Tips received</span><strong>{money(summary.tipsMinor, summary.currency)}</strong><p>from customers</p></article>
+              <article className="metric"><span>Delivery fees</span><strong>{money(summary.deliveryFeesMinor, summary.currency)}</strong><p>collected</p></article>
+              <article className="metric"><span>Avg order value</span><strong>{money(summary.averageOrderMinor, summary.currency)}</strong><p>across {summary.orders.received} orders</p></article>
+            </div>
+            <div className="two-column">
+              <section className="panel">
+                <div className="panel-head"><div><p className="eyebrow">ORDERS</p><h2>Order health</h2></div></div>
+                <div className="metric-grid">
+                  <article className="metric"><span>Received</span><strong>{summary.orders.received}</strong><p>orders in period</p></article>
+                  <article className="metric"><span>Accepted</span><strong>{summary.orders.accepted}</strong><p>by the merchant</p></article>
+                  <article className="metric"><span>Delivered</span><strong>{summary.orders.delivered}</strong><p>orders delivered</p></article>
+                  <article className="metric"><span>Cancelled</span><strong>{summary.orders.cancelled}</strong><p>orders cancelled</p></article>
+                </div>
+                <dl className="detail-list">
+                  <div><dt>Acceptance rate</dt><dd>{summary.orders.acceptanceRate}%</dd></div>
+                  <div><dt>Avg preparation time</dt><dd>{summary.orders.avgPrepMinutes} min</dd></div>
+                </dl>
+              </section>
+              <section className="panel">
+                <div className="panel-head"><div><p className="eyebrow">CALCULATION RULES</p><h2>How the numbers are derived</h2></div></div>
+                <p className="muted">Currency: {summary.currency}. Platform commission: {(summary.calculationRules.commissionRatePercent ?? 0)}% ({(summary.commissionBps / 100).toFixed(1)}%).</p>
+                <dl className="detail-list">
+                  <div><dt>Gross sales</dt><dd>{summary.calculationRules.grossSalesFormula}</dd></div>
+                  <div><dt>Commission</dt><dd>{summary.calculationRules.commissionFormula}</dd></div>
+                  <div><dt>Refunds</dt><dd>{summary.calculationRules.refundFormula}</dd></div>
+                  <div><dt>Net after commission</dt><dd>{summary.calculationRules.netFormula}</dd></div>
+                  <div><dt>Average order</dt><dd>{summary.calculationRules.averageOrderFormula}</dd></div>
+                </dl>
+              </section>
+            </div>
+          </>
+        ) : null}
+      </section>
+
+      <section className="panel">
+        <div className="panel-head"><div><p className="eyebrow">COMMISSION</p><h2>Commission & net payout</h2></div></div>
+        {summary ? (
+          <>
+            <dl className="detail-list">
+              <div><dt>Gross sales</dt><dd>{money(summary.grossSalesMinor, summary.currency)}</dd></div>
+              <div><dt>Platform commission</dt><dd>{(summary.calculationRules.commissionRatePercent ?? 0)}% ({(summary.commissionBps / 100).toFixed(1)}%)</dd></div>
+              <div><dt>Commission amount</dt><dd>−{money(summary.commissionMinor, summary.currency)}</dd></div>
+              <div><dt>Refunds</dt><dd>−{money(summary.refundsMinor, summary.currency)}</dd></div>
+              <div><dt>Net after commission</dt><dd><strong>{money(summary.netAfterCommissionMinor, summary.currency)}</strong></dd></div>
+            </dl>
+            <p className="fine-print">Net payable = gross sales − commission − refunds. Merchants tune their commission rate from the Store & business tab.</p>
+          </>
+        ) : null}
+      </section>
+
+      <section className="panel">
+        <div className="panel-head"><div><p className="eyebrow">PRODUCTS</p><h2>Product performance</h2></div></div>
+        {loading && !products ? <p className="muted">Loading product performance…</p> : null}
+        {products ? (
+          products.items.length === 0 ? <div className="empty"><h3>No sales yet</h3><p>Product performance appears once paid orders include these items.</p></div> : (
+            <div className="table-wrap"><table>
+              <thead><tr><th>#</th><th>Product</th><th>Category</th><th>Qty sold</th><th>Revenue</th><th>Share</th></tr></thead>
+              <tbody>
+                {products.items.map((item, index) => (
+                  <tr key={item.productId}>
+                    <td>{index + 1}</td>
+                    <td>{item.displayName}</td>
+                    <td>{item.categoryLabel ?? "Uncategorised"}</td>
+                    <td>{item.quantity}</td>
+                    <td>{money(item.revenueMinor, products.currency)}</td>
+                    <td>{item.sharePercent}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table></div>
+          )
+        ) : null}
+        {products && products.bestSellers.length > 0 ? (
+          <div className="stack">
+            <h3>Best sellers</h3>
+            <div className="stack">
+              {products.bestSellers.map((item) => (
+                <div className="flag-row" key={item.productId}>
+                  <div><strong>{item.displayName}</strong><small className="block">×{item.quantity} sold</small></div>
+                  <span>{money(item.revenueMinor, products.currency)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      <section className="panel">
+        <div className="panel-head"><div><p className="eyebrow">RATINGS</p><h2>Customer ratings & feedback</h2></div></div>
+        {loading && !reviews ? <p className="muted">Loading ratings…</p> : null}
+        {reviews ? (
+          reviews.count === 0 ? <div className="empty"><h3>No ratings yet</h3><p>Completed orders with courier & merchant ratings will appear here.</p></div> : (
+            <>
+              <div className="metric-grid">
+                <article className="metric accent"><span>Average rating</span><strong>{reviews.average.toFixed(1)} / 5</strong><p>{reviews.count} reviews</p></article>
+              </div>
+              <div className="stack">
+                {[1, 2, 3, 4, 5].map((rating) => {
+                  const count = Number(distribution[String(rating)] ?? distribution[String(rating)] ?? 0);
+                  const width = maxRatingCount > 0 ? Math.round((count / maxRatingCount) * 100) : 0;
+                  return (
+                    <div key={rating} className="rating-row">
+                      <span>{rating} ★</span>
+                      <div className="rating-track"><span style={{ width: `${width}%` }} /></div>
+                      <span>{count}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="stack">
+                {reviews.items.map((review) => (
+                  <div className="flag-row" key={review.id}>
+                    <div><strong>{review.customerName ?? "Customer"}</strong><small className="block">{review.comment ?? "No comment provided."}</small><small className="block">{new Date(review.createdAt).toLocaleDateString()}</small></div>
+                    <span>★ {review.merchantRating}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )
+        ) : null}
+      </section>
+    </div>
+  );
 }
 
 function Settlements() {
@@ -596,3 +1289,190 @@ function Finance() {
   </section>;
 }
 
+function Business({ me, reload, notify }: { me: MerchantMe; reload: () => Promise<void>; notify: (message: string) => void }) {
+  const m = me.merchant;
+  const [displayName, setDisplayName] = useState(m.displayName);
+  const [description, setDescription] = useState(m.description ?? "");
+  const [logoUrl, setLogoUrl] = useState(m.logoUrl ?? "");
+  const [commissionBps, setCommissionBps] = useState(String(m.commissionBps ?? 1500));
+  const [deliveryRadiusKm, setDeliveryRadiusKm] = useState(String(m.deliveryRadiusKm ?? 8));
+  const [cancellationPolicy, setCancellationPolicy] = useState(m.cancellationPolicy ?? "");
+  const [refundPolicy, setRefundPolicy] = useState(m.refundPolicy ?? "");
+  const [saving, setSaving] = useState(false);
+
+  const [savingLocationId, setSavingLocationId] = useState<string | null>(null);
+  const [hoursDrafts, setHoursDrafts] = useState<Record<string, string>>({});
+
+  const [documentType, setDocumentType] = useState(MERCHANT_DOCUMENT_TYPES[0]);
+  const [storageKey, setStorageKey] = useState("");
+  const [documents, setDocuments] = useState<MerchantDocument[] | null>(null);
+  const [savingDocument, setSavingDocument] = useState(false);
+
+  const loadDocuments = useCallback(async () => {
+    try {
+      const result = await api<{ items: MerchantDocument[] }>("/v1/merchant/documents");
+      setDocuments(result.items);
+    } catch {
+      setDocuments([]);
+    }
+  }, []);
+
+  useEffect(() => { void loadDocuments(); }, [loadDocuments]);
+
+  async function saveStore(event: React.FormEvent) {
+    event.preventDefault();
+    const commission = Number(commissionBps);
+    const radius = Number(deliveryRadiusKm);
+    if (!Number.isFinite(commission) || commission < 0 || commission > 10000) return notify("Commission must be between 0 and 10000 basis points.");
+    if (!Number.isFinite(radius) || radius < 0 || radius > 200) return notify("Delivery radius must be between 0 and 200 km.");
+    setSaving(true);
+    try {
+      await api("/v1/merchant/me", { method: "PATCH", body: JSON.stringify({
+        displayName, description, logoUrl, commissionBps: commission, deliveryRadiusKm: radius,
+        cancellationPolicy, refundPolicy
+      }) });
+      notify("Store profile, contract and commission updated.");
+      await reload();
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not update the store.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleLocation(location: MerchantLocation) {
+    setSavingLocationId(location.id);
+    try {
+      await api(`/v1/merchant/locations/${location.id}`, { method: "PATCH", body: JSON.stringify({ active: !location.isActive }) });
+      notify(`${location.name} is now ${location.isActive ? "closed" : "open"}.`);
+      await reload();
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not update the location.");
+    } finally {
+      setSavingLocationId(null);
+    }
+  }
+
+  async function saveLocationHours(location: MerchantLocation) {
+    const raw = hoursDrafts[location.id];
+    if (raw === undefined) return;
+    let openingHours: Record<string, unknown>;
+    try {
+      openingHours = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return notify("Opening hours must be valid JSON before saving.");
+    }
+    setSavingLocationId(location.id);
+    try {
+      await api(`/v1/merchant/locations/${location.id}/hours`, { method: "PATCH", body: JSON.stringify({ openingHours }) });
+      notify(`${location.name} opening hours updated.`);
+      await reload();
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not update the opening hours.");
+    } finally {
+      setSavingLocationId(null);
+    }
+  }
+
+  async function uploadDocument(event: React.FormEvent) {
+    event.preventDefault();
+    if (!storageKey.trim()) return notify("Storage key is required for document uploads.");
+    setSavingDocument(true);
+    try {
+      await api("/v1/merchant/documents", { method: "POST", body: JSON.stringify({ documentType, storageKey: storageKey.trim() }) });
+      notify("Document uploaded and queued for operator review.");
+      setStorageKey("");
+      await loadDocuments();
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not upload the document.");
+    } finally {
+      setSavingDocument(false);
+    }
+  }
+
+  const canManageSettings = me.membership.role === "owner" || me.membership.role === "manager";
+
+  return <div className="stack">
+    <section className="panel">
+      <div className="panel-head">
+        <div><p className="eyebrow">ONBOARDING</p><h2>Application & status</h2></div>
+        <span className={`status-pill ${m.status}`}>{m.status}</span>
+      </div>
+      <dl className="detail-list">
+        <div><dt>Application status</dt><dd>{m.status}</dd></div>
+        <div><dt>Commission</dt><dd>{(m.commissionBps / 100).toFixed(1)}%</dd></div>
+        <div><dt>Delivery radius</dt><dd>{m.deliveryRadiusKm} km</dd></div>
+        <div><dt>Schedule lead window</dt><dd>{m.minScheduleLeadMinutes} min · max {m.maxScheduleDays} days</dd></div>
+      </dl>
+      {m.rejectionReason ? <p className="form-error">Rejection reason: {m.rejectionReason}</p> : null}
+      {m.suspensionReason ? <p className="form-error">Suspension reason: {m.suspensionReason}</p> : null}
+      {m.status === "pending" ? <p className="fine-print">Operators review applications and verification documents. No fulfilment actions should be taken before approval.</p> : null}
+    </section>
+
+    <section className="panel stack">
+      <div className="panel-head"><div><p className="eyebrow">STORE</p><h2>Merchant profile, contract & commission</h2></div></div>
+      {!canManageSettings ? <p className="muted">Your role ({me.membership.role}) can view store settings. Only owners and managers can change the profile, contract or commission.</p> : <form className="stack" onSubmit={saveStore}>
+        <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} minLength={2} maxLength={120} required /></label>
+        <label>Description<textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} maxLength={2000} /></label>
+        <label>Logo URL<input value={logoUrl} onChange={(event) => setLogoUrl(event.target.value)} maxLength={500} placeholder="https://cdn.example.com/logo.png" /></label>
+        <div className="form-grid">
+          <label>Commission (bps)<input type="number" min={0} max={10000} value={commissionBps} onChange={(event) => setCommissionBps(event.target.value)} /></label>
+          <label>Delivery radius (km)<input type="number" min={0} max={200} value={deliveryRadiusKm} onChange={(event) => setDeliveryRadiusKm(event.target.value)} /></label>
+        </div>
+        <label>Cancellation policy<textarea value={cancellationPolicy} onChange={(event) => setCancellationPolicy(event.target.value)} rows={3} maxLength={1000} placeholder="Free cancellation within 2 minutes of ordering." /></label>
+        <label>Refund policy<textarea value={refundPolicy} onChange={(event) => setRefundPolicy(event.target.value)} rows={3} maxLength={1000} placeholder="Refunds return to the original payment method within 5 business days." /></label>
+        <button disabled={saving}>{saving ? "Saving…" : "Save store profile"}</button>
+      </form>}
+    </section>
+
+    <section className="panel stack">
+      <div className="panel-head"><div><p className="eyebrow">STORE</p><h2>Locations, hours & coverage</h2></div></div>
+      {me.locations.length === 0 ? <p className="muted">No locations have been configured yet.</p> : <div className="location-list">
+        {me.locations.map((location) => (
+          <article key={location.id} className="location-row">
+            <div>
+              <strong>{location.name}</strong>
+              <p>{location.addressLine}</p>
+              <div className="stack" style={{ gap: "0.5rem", marginTop: "0.5rem" }}>
+                <div className="inline-form">
+                  <label className="stack" style={{ gap: "0.3rem" }}><span>Opening hours (JSON)</span>
+                    <textarea rows={4} value={hoursDrafts[location.id] ?? JSON.stringify(location.openingHours ?? {}, null, 2)} onChange={(event) => setHoursDrafts((current) => ({ ...current, [location.id]: event.target.value }))} />
+                  </label>
+                  <button className="ghost" disabled={savingLocationId === location.id} onClick={() => void saveLocationHours(location)}>Save hours</button>
+                </div>
+              </div>
+            </div>
+            <button className={location.isActive ? "toggle on" : "toggle"} disabled={savingLocationId === location.id} onClick={() => void toggleLocation(location)}>
+              {savingLocationId === location.id ? "Saving…" : location.isActive ? "Open" : "Closed"}
+            </button>
+          </article>
+        ))}
+      </div>}
+      <p className="fine-print">Opening hours use the weekly window JSON accepted by the platform, for example {`{ "mon": { "open": "08:00", "close": "17:00" }, "default": { "closed": true } }`}. Closed days and temporary closures use the <code>closed</code> flag.</p>
+    </section>
+
+    <section className="panel stack">
+      <div className="panel-head"><div><p className="eyebrow">VERIFICATION</p><h2>Business documents</h2></div></div>
+      {documents === null ? <p className="muted">Loading documents…</p> : documents.length === 0 ? <p className="muted">No documents uploaded yet.</p> : <div className="stack">
+        {documents.map((document) => <div className="flag-row" key={document.id}>
+          <div>
+            <strong>{document.documentType.replaceAll("_", " ")}</strong>
+            <p><small className="block">{document.storageKey}</small>{document.reviewNotes ? <small className="block">Review: {document.reviewNotes}</small> : null}</p>
+          </div>
+          <span className={`status-pill ${document.status}`}>{document.status}</span>
+        </div>)}
+      </div>}
+      <form className="stack" onSubmit={uploadDocument}>
+        <div className="form-grid">
+          <label>Document type
+            <select value={documentType} onChange={(event) => setDocumentType(event.target.value)}>
+              {MERCHANT_DOCUMENT_TYPES.map((type) => <option key={type} value={type}>{type.replaceAll("_", " ")}</option>)}
+            </select>
+          </label>
+          <label>Storage key<input value={storageKey} onChange={(event) => setStorageKey(event.target.value)} placeholder="merchants/<merchant-id>/business_registration.pdf" required /></label>
+        </div>
+        <button disabled={savingDocument}>{savingDocument ? "Uploading…" : "Upload for review"}</button>
+      </form>
+    </section>
+  </div>;
+}

@@ -23,7 +23,9 @@ class _SupportScreenState extends State<SupportScreen> {
 
   List<Map<String, dynamic>> get filteredTickets {
     if (statusFilter == 'all') return tickets;
-    return tickets.where((ticket) => ticket['status']?.toString() == statusFilter).toList();
+    return tickets
+        .where((ticket) => ticket['status']?.toString() == statusFilter)
+        .toList();
   }
 
   @override
@@ -38,7 +40,9 @@ class _SupportScreenState extends State<SupportScreen> {
       error = null;
     });
     try {
-      final result = asMap(await widget.client.get('/v1/support/tickets?limit=30'));
+      final result = asMap(
+        await widget.client.get('/v1/support/tickets?limit=30'),
+      );
       if (mounted) setState(() => tickets = asList(result['items']));
     } catch (cause) {
       if (mounted) setState(() => error = cause.toString());
@@ -48,61 +52,71 @@ class _SupportScreenState extends State<SupportScreen> {
   }
 
   Future<void> _openTicket(String ticketId) async {
-    final screen = SupportTicketScreen(client: widget.client, ticketId: ticketId);
-    await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => screen));
+    final screen = SupportTicketScreen(
+      client: widget.client,
+      ticketId: ticketId,
+    );
+    await Navigator.of(context)
+        .push(MaterialPageRoute<void>(builder: (_) => screen));
     if (mounted) _load();
   }
 
   Future<void> _newTicket() async {
     final created = await Navigator.of(context).push<dynamic>(
-      MaterialPageRoute<void>(builder: (_) => SupportNewTicketScreen(client: widget.client, orderId: null)),
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            SupportNewTicketScreen(client: widget.client, orderId: null),
+      ),
     );
     if (created is String && created.isNotEmpty && mounted) {
       await _openTicket(created);
     }
   }
 
-  int _statusCount(String status) => tickets.where((ticket) => ticket['status']?.toString() == status).length;
+  int _statusCount(String status) =>
+      tickets.where((ticket) => ticket['status']?.toString() == status).length;
 
   Widget _ticketFilterBar() {
     const values = ['all', 'OPEN', 'IN_PROGRESS', 'RESOLVED'];
     final selected = values.indexOf(statusFilter);
-    return FloatingBarDock(
-      primary: FloatingCategoryBar(
-        semanticsLabel: 'Support ticket filters',
-        selectedIndex: selected < 0 ? 0 : selected,
-        minItemWidth: 88,
-        onSelected: (index) {
-          if (index == values.length) {
-            unawaited(_newTicket());
-            return;
-          }
-          setState(() => statusFilter = values[index]);
-        },
-        items: [
-          FloatingBarItem(
-            icon: Icons.inbox_outlined,
-            label: 'All',
-            badge: tickets.isEmpty ? null : '${tickets.length}',
-          ),
-          FloatingBarItem(
-            icon: Icons.mark_email_unread_outlined,
-            label: 'Open',
-            badge: _statusCount('OPEN') > 0 ? '${_statusCount('OPEN')}' : null,
-          ),
-          FloatingBarItem(
-            icon: Icons.pending_actions_outlined,
-            label: 'In progress',
-            badge: _statusCount('IN_PROGRESS') > 0 ? '${_statusCount('IN_PROGRESS')}' : null,
-          ),
-          FloatingBarItem(
-            icon: Icons.task_alt_rounded,
-            label: 'Resolved',
-            badge: _statusCount('RESOLVED') > 0 ? '${_statusCount('RESOLVED')}' : null,
-          ),
-          const FloatingBarItem(icon: Icons.add_rounded, label: 'New ticket'),
-        ],
-      ),
+    return FloatingCategoryBar(
+      semanticsLabel: 'Support ticket filters',
+      selectedIndex: selected < 0 ? 0 : selected,
+      minItemWidth: 88,
+      onSelected: (index) {
+        if (index == values.length) {
+          unawaited(_newTicket());
+          return;
+        }
+        setState(() => statusFilter = values[index]);
+      },
+      items: [
+        FloatingBarItem(
+          icon: Icons.inbox_outlined,
+          label: 'All',
+          badge: tickets.isEmpty ? null : '${tickets.length}',
+        ),
+        FloatingBarItem(
+          icon: Icons.mark_email_unread_outlined,
+          label: 'Open',
+          badge: _statusCount('OPEN') > 0 ? '${_statusCount('OPEN')}' : null,
+        ),
+        FloatingBarItem(
+          icon: Icons.pending_actions_outlined,
+          label: 'In progress',
+          badge: _statusCount('IN_PROGRESS') > 0
+              ? '${_statusCount('IN_PROGRESS')}'
+              : null,
+        ),
+        FloatingBarItem(
+          icon: Icons.task_alt_rounded,
+          label: 'Resolved',
+          badge: _statusCount('RESOLVED') > 0
+              ? '${_statusCount('RESOLVED')}'
+              : null,
+        ),
+        const FloatingBarItem(icon: Icons.add_rounded, label: 'New ticket'),
+      ],
     );
   }
 
@@ -111,54 +125,73 @@ class _SupportScreenState extends State<SupportScreen> {
     final visible = filteredTickets;
     return Scaffold(
       appBar: AppBar(title: const Text('Support')),
-      body: RefreshIndicator(
-        onRefresh: _load,
-        child: loading
-            ? const AccountLoading()
-            : error != null
-            ? ListView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                children: [
-                  AccountEmpty(icon: Icons.support_agent_outlined, title: 'Could not load tickets', message: error!),
-                  const SizedBox(height: 20),
-                ],
-              )
-            : tickets.isEmpty
-            ? ListView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                children: [
-                  AccountEmpty(
-                    icon: Icons.support_agent_outlined,
-                    title: 'No support tickets yet',
-                    message: 'Open a ticket when an order needs help, or start one from the Help section.',
-                  ),
-                  const SizedBox(height: 20),
-                ],
-              )
-            : visible.isEmpty
-            ? ListView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                children: [
-                  AccountEmpty(
-                    icon: Icons.filter_alt_off_outlined,
-                    title: 'No ${statusFilter.toLowerCase().replaceAll('_', ' ')} tickets',
-                    message: 'Choose another filter or open a new ticket.',
-                  ),
-                  const SizedBox(height: 20),
-                ],
-              )
-            : ListView.separated(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 104),
-                itemCount: visible.length,
-                separatorBuilder: (_, _) => const SizedBox(height: 10),
-                itemBuilder: (context, index) {
-                  final ticket = visible[index];
-                  return _SupportTicketCard(ticket: ticket, onOpen: () => _openTicket(ticket['id']?.toString() ?? ''));
-                },
-              ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+            child: _ticketFilterBar(),
+          ),
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: _load,
+              child: loading
+                  ? const AccountLoading()
+                  : error != null
+                  ? ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      children: [
+                        AccountEmpty(
+                          icon: Icons.support_agent_outlined,
+                          title: 'Could not load tickets',
+                          message: error!,
+                        ),
+                        const SizedBox(height: 20),
+                      ],
+                    )
+                  : tickets.isEmpty
+                  ? ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      children: [
+                        AccountEmpty(
+                          icon: Icons.support_agent_outlined,
+                          title: 'No support tickets yet',
+                          message: 'Open a ticket when an order needs help, or start one from the Help section.',
+                        ),
+                        const SizedBox(height: 20),
+                      ],
+                    )
+                  : visible.isEmpty
+                  ? ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      children: [
+                        AccountEmpty(
+                          icon: Icons.filter_alt_off_outlined,
+                          title:
+                              'No ${statusFilter.toLowerCase().replaceAll('_', ' ')} tickets',
+                          message:
+                              'Choose another filter or open a new ticket.',
+                        ),
+                        const SizedBox(height: 20),
+                      ],
+                    )
+                  : ListView.separated(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
+                      itemCount: visible.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 10),
+                      itemBuilder: (context, index) {
+                        final ticket = visible[index];
+                        return _SupportTicketCard(
+                          ticket: ticket,
+                          onOpen: () =>
+                              _openTicket(ticket['id']?.toString() ?? ''),
+                        );
+                      },
+                    ),
+            ),
+          ),
+        ],
       ),
-      bottomNavigationBar: _ticketFilterBar(),
     );
   }
 }
@@ -183,11 +216,16 @@ class _SupportTicketCard extends StatelessWidget {
             color: const Color(0xFFE8613D).withValues(alpha: 0.1),
             borderRadius: BorderRadius.circular(12),
           ),
-          child: const Icon(Icons.support_agent_outlined, color: Color(0xFFE8613D)),
+          child: const Icon(
+            Icons.support_agent_outlined,
+            color: Color(0xFFE8613D),
+          ),
         ),
         title: Text(
           ticket['subject']?.toString() ?? 'Support request',
-          style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+          style: theme.textTheme.titleSmall?.copyWith(
+            fontWeight: FontWeight.w800,
+          ),
         ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -195,7 +233,11 @@ class _SupportTicketCard extends StatelessWidget {
             const SizedBox(height: 2),
             Text(
               ticket['orderNumber']?.toString() ?? 'General inquiry',
-              style: TextStyle(fontSize: 12, color: const Color(0xFF6B7468), fontWeight: FontWeight.w600),
+              style: TextStyle(
+                fontSize: 12,
+                color: const Color(0xFF6B7468),
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const SizedBox(height: 2),
             Text(
@@ -214,7 +256,11 @@ class _SupportTicketCard extends StatelessWidget {
 }
 
 class SupportTicketScreen extends StatefulWidget {
-  const SupportTicketScreen({super.key, required this.client, required this.ticketId});
+  const SupportTicketScreen({
+    super.key,
+    required this.client,
+    required this.ticketId,
+  });
 
   final ApiClient client;
   final String ticketId;
@@ -249,7 +295,9 @@ class _SupportTicketScreenState extends State<SupportTicketScreen> {
       error = null;
     });
     try {
-      final result = asMap(await widget.client.get('/v1/support/tickets/${widget.ticketId}'));
+      final result = asMap(
+        await widget.client.get('/v1/support/tickets/${widget.ticketId}'),
+      );
       if (!mounted) return;
       setState(() {
         _ticket = result;
@@ -267,7 +315,12 @@ class _SupportTicketScreenState extends State<SupportTicketScreen> {
     if (body.isEmpty || sending) return;
     setState(() => sending = true);
     try {
-      final result = asMap(await widget.client.post('/v1/support/tickets/${widget.ticketId}/messages', {'body': body}));
+      final result = asMap(
+        await widget.client.post(
+          '/v1/support/tickets/${widget.ticketId}/messages',
+          {'body': body},
+        ),
+      );
       if (!mounted) return;
       _draft.clear();
       await _load();
@@ -285,14 +338,20 @@ class _SupportTicketScreenState extends State<SupportTicketScreen> {
   Widget build(BuildContext context) {
     final ticket = _ticket;
     return Scaffold(
-      appBar: AppBar(title: Text(ticket?['subject']?.toString() ?? 'Support ticket')),
+      appBar: AppBar(
+        title: Text(ticket?['subject']?.toString() ?? 'Support ticket'),
+      ),
       body: loading
           ? const AccountLoading()
           : error != null
           ? ListView(
               physics: const AlwaysScrollableScrollPhysics(),
               children: [
-                AccountEmpty(icon: Icons.support_agent_outlined, title: 'Could not load ticket', message: error!),
+                AccountEmpty(
+                  icon: Icons.support_agent_outlined,
+                  title: 'Could not load ticket',
+                  message: error!,
+                ),
                 const SizedBox(height: 20),
               ],
             )
@@ -307,19 +366,24 @@ class _SupportTicketScreenState extends State<SupportTicketScreen> {
                       children: [
                         Text(
                           ticket['subject']?.toString() ?? 'Support request',
-                          style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                          style: Theme.of(context).textTheme.titleLarge
+                              ?.copyWith(fontWeight: FontWeight.w800),
                         ),
                         const SizedBox(height: 6),
                         Row(
                           children: [
                             StatusPill(
                               label: ticket['status']?.toString() ?? 'OPEN',
-                              color: _supportStatusColor(ticket['status']?.toString()),
+                              color: _supportStatusColor(
+                                ticket['status']?.toString(),
+                              ),
                             ),
                             const SizedBox(width: 8),
                             StatusPill(
                               label: ticket['priority']?.toString() ?? 'NORMAL',
-                              color: _supportPriorityColor(ticket['priority']?.toString()),
+                              color: _supportPriorityColor(
+                                ticket['priority']?.toString(),
+                              ),
                             ),
                           ],
                         ),
@@ -327,7 +391,11 @@ class _SupportTicketScreenState extends State<SupportTicketScreen> {
                           const SizedBox(height: 6),
                           Text(
                             'Order ${ticket['orderNumber']}',
-                            style: TextStyle(fontSize: 12, color: const Color(0xFF6B7468), fontWeight: FontWeight.w600),
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: const Color(0xFF6B7468),
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ],
                       ],
@@ -343,13 +411,19 @@ class _SupportTicketScreenState extends State<SupportTicketScreen> {
                         if (messages.isEmpty)
                           const Padding(
                             padding: EdgeInsets.only(top: 24),
-                            child: Center(child: Text('No replies yet. Send a message and we will respond shortly.')),
+                            child: Center(
+                              child: Text(
+                                'No replies yet. Send a message and we will respond shortly.',
+                              ),
+                            ),
                           )
                         else
                           ...messages.map(
                             (message) => _SupportMessageBubble(
                               message: message,
-                              mine: message['senderUserId']?.toString() == widget.client.session?.user['id']?.toString(),
+                              mine:
+                                  message['senderUserId']?.toString() ==
+                                  widget.client.session?.user['id']?.toString(),
                             ),
                           ),
                         const SizedBox(height: 12),
@@ -369,17 +443,31 @@ class _SupportTicketScreenState extends State<SupportTicketScreen> {
                             onSubmitted: (_) => _send(),
                             decoration: InputDecoration(
                               hintText: 'Write a message...',
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 12,
+                              ),
                             ),
                           ),
                         ),
                         const SizedBox(width: 10),
                         FilledButton(
                           onPressed: sending ? null : _send,
-                          style: FilledButton.styleFrom(backgroundColor: const Color(0xFFE8613D)),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFFE8613D),
+                          ),
                           child: sending
-                              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
                               : const Icon(Icons.send_rounded),
                         ),
                       ],
@@ -412,7 +500,11 @@ class _SupportMessageBubble extends StatelessWidget {
         ),
         child: Text(
           message['body']?.toString() ?? '',
-          style: TextStyle(color: mine ? Colors.white : const Color(0xFF20261F), fontSize: 13, height: 1.35),
+          style: TextStyle(
+            color: mine ? Colors.white : const Color(0xFF20261F),
+            fontSize: 13,
+            height: 1.35,
+          ),
         ),
       ),
     );
@@ -420,7 +512,11 @@ class _SupportMessageBubble extends StatelessWidget {
 }
 
 class SupportNewTicketScreen extends StatefulWidget {
-  const SupportNewTicketScreen({super.key, required this.client, required this.orderId});
+  const SupportNewTicketScreen({
+    super.key,
+    required this.client,
+    required this.orderId,
+  });
 
   final ApiClient client;
   final String? orderId;
@@ -460,13 +556,15 @@ class _SupportNewTicketScreenState extends State<SupportNewTicketScreen> {
       _error = null;
     });
     try {
-      final result = asMap(await widget.client.post('/v1/support/tickets', {
-        'subject': subject,
-        'category': _category,
-        'orderId': widget.orderId,
-        'priority': _priority,
-        'message': message,
-      }));
+      final result = asMap(
+        await widget.client.post('/v1/support/tickets', {
+          'subject': subject,
+          'category': _category,
+          'orderId': widget.orderId,
+          'priority': _priority,
+          'message': message,
+        }),
+      );
       if (!mounted) return;
       final ticketId = result['id']?.toString();
       if (ticketId == null || ticketId.isEmpty) {
@@ -490,21 +588,31 @@ class _SupportNewTicketScreenState extends State<SupportNewTicketScreen> {
         children: [
           TextField(
             controller: _subjectController,
-            decoration: const InputDecoration(labelText: 'Subject', hintText: 'What is this about? (3–160 characters)'),
+            decoration: const InputDecoration(
+              labelText: 'Subject',
+              hintText: 'What is this about? (3–160 characters)',
+            ),
           ),
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
             initialValue: _category,
             decoration: const InputDecoration(labelText: 'Category'),
             items: const [
-              DropdownMenuItem(value: 'general', child: Text('General inquiry')),
+              DropdownMenuItem(
+                value: 'general',
+                child: Text('General inquiry'),
+              ),
               DropdownMenuItem(value: 'order', child: Text('Order problem')),
-              DropdownMenuItem(value: 'delivery', child: Text('Delivery issue')),
+              DropdownMenuItem(
+                value: 'delivery',
+                child: Text('Delivery issue'),
+              ),
               DropdownMenuItem(value: 'payment', child: Text('Payment issue')),
               DropdownMenuItem(value: 'refund', child: Text('Refund request')),
               DropdownMenuItem(value: 'other', child: Text('Something else')),
             ],
-            onChanged: (value) => setState(() => _category = value ?? _category),
+            onChanged: (value) =>
+                setState(() => _category = value ?? _category),
           ),
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
@@ -516,24 +624,35 @@ class _SupportNewTicketScreenState extends State<SupportNewTicketScreen> {
               DropdownMenuItem(value: 'HIGH', child: Text('High')),
               DropdownMenuItem(value: 'URGENT', child: Text('Urgent')),
             ],
-            onChanged: (value) => setState(() => _priority = value ?? _priority),
+            onChanged: (value) =>
+                setState(() => _priority = value ?? _priority),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: _messageController,
             maxLines: 6,
             maxLength: 4000,
-            decoration: const InputDecoration(labelText: 'Message', hintText: 'Describe the issue or question (1–4000 characters)'),
+            decoration: const InputDecoration(
+              labelText: 'Message',
+              hintText: 'Describe the issue or question (1–4000 characters)',
+            ),
           ),
           if (_error != null) ...[
             const SizedBox(height: 12),
-            Text(_error!, style: const TextStyle(color: Color(0xFFA63A32), fontSize: 13)),
+            Text(
+              _error!,
+              style: const TextStyle(color: Color(0xFFA63A32), fontSize: 13),
+            ),
           ],
           const SizedBox(height: 20),
           FilledButton(
             onPressed: _saving ? null : _create,
             child: _saving
-                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
                 : const Text('Submit ticket'),
           ),
         ],
