@@ -31,7 +31,7 @@ export class AdminService {
           AND NOT EXISTS (SELECT 1 FROM delivery_assignments da WHERE da.order_id = orders.id AND da.status NOT IN ('cancelled','failed','rejected'))) AS unassigned_orders,
         (SELECT count(*)::int FROM courier_availability WHERE is_online = true AND accepting_offers = true) AS available_couriers,
         (SELECT count(*)::int FROM courier_availability WHERE is_online = true AND active_order_id IS NOT NULL) AS busy_couriers,
-        (SELECT count(*)::int FROM merchants WHERE is_active = true) AS merchants_available,
+        (SELECT count(*)::int FROM merchants WHERE status = 'active') AS merchants_available,
         (SELECT COALESCE(sum(amount_minor),0)::text FROM payments WHERE status = 'SUCCEEDED' AND created_at::date = current_date) AS collected_payments,
         (SELECT COALESCE(sum(f.commission_minor),0)::text FROM order_financials f JOIN orders o ON o.id = f.order_id WHERE o.status = 'DELIVERED' AND o.delivered_at::date = current_date) AS platform_revenue,
         (SELECT COALESCE(sum(amount_minor),0)::text FROM refunds WHERE status = 'PENDING') AS refund_liability,
