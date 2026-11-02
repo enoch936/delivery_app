@@ -10,6 +10,7 @@ export type FloatingIcon =
   | "settlements"
   | "finance"
   | "business"
+  | "control"
   | "all"
   | "new"
   | "accepted"
@@ -129,6 +130,8 @@ function FloatingGlyph({ name }: { name: FloatingIcon }) {
       return <svg {...common}><path d="M4 20V10M10 20V4M16 20v-7M22 20H2" /></svg>;
     case "business":
       return <svg {...common}><path d="M4 10v10h16V10" /><path d="M3 10l2-6h14l2 6" /><path d="M8 20v-6h8v6" /></svg>;
+    case "control":
+      return <svg {...common}><circle cx="9" cy="8" r="3" /><path d="M3 20c.7-3.2 2.7-5 6-5s5.3 1.8 6 5" /><path d="M16 5h5M18.5 3v4M16 12h5M18.5 10v4" /></svg>;
     case "all":
       return <svg {...common}><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="m3 13 9 5 9-5" /></svg>;
     case "new":

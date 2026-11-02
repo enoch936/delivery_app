@@ -14,7 +14,7 @@ import {
 } from "../lib/api";
 import { FloatingCategoryBar, FloatingDock, FloatingNav, type FloatingItem } from "./floating-bar";
 
-type Tab = "overview" | "orders" | "menu" | "sales" | "settlements" | "finance" | "business";
+type Tab = "overview" | "orders" | "menu" | "sales" | "settlements" | "finance" | "business" | "control";
 
 const NAV_ITEMS: FloatingItem[] = [
   { value: "overview", label: "Overview", icon: "overview" },
@@ -23,7 +23,8 @@ const NAV_ITEMS: FloatingItem[] = [
   { value: "sales", label: "Sales", icon: "sales" },
   { value: "settlements", label: "Settlements", icon: "settlements" },
   { value: "finance", label: "Finance", icon: "finance" },
-  { value: "business", label: "Business", icon: "business" }
+  { value: "business", label: "Business", icon: "business" },
+  { value: "control", label: "Control", icon: "control" }
 ];
 
 const ORDER_FILTERS: FloatingItem[] = [
@@ -52,6 +53,13 @@ type MerchantMe = {
   categories: Array<{ id: string; slug: string; display_name: string; sort_order: number }>;
   stats: { todayOrders: number; pendingOrders: number; revenueTodayMinor: number };
 };
+
+type MerchantMember = { userId: string; phoneE164: string; displayName: string | null; role: string; activeSessions: number; joinedAt: string };
+type FulfillmentSettings = { supportsPickup: boolean; allowsScheduling: boolean; pickupInstructions: string | null };
+type NotificationPreferences = { pushEnabled: boolean; smsEnabled: boolean; emailEnabled: boolean; orderUpdates: boolean; promotions: boolean; securityAlerts: boolean };
+type SupportTicket = { id: string; subject: string; category: string; status: string; priority: string; orderNumber: string | null; messageCount: number; createdAt: string; updatedAt: string };
+type UserSession = { id: string; userAgent: string | null; isCurrent: boolean; createdAt: string; expiresAt: string };
+type AuditEntry = { id: string; actorUserId: string; actorName: string | null; action: string; entityType: string; entityId: string | null; metadata: Record<string, unknown>; createdAt: string };
 
 type MerchantOrder = {
   id: string; orderNumber: string; status: string; paymentStatus: string; totalMinor: number; currency: string;
@@ -271,6 +279,7 @@ function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => 
       {me && tab === "settlements" ? <Settlements /> : null}
       {me && tab === "finance" ? <Finance /> : null}
       {me && tab === "business" ? <Business me={me} reload={refresh} notify={setToast} /> : null}
+      {me && tab === "control" ? <ControlCenter me={me} notify={setToast} /> : null}
     </main>
     <FloatingDock>
       <FloatingNav
@@ -296,6 +305,7 @@ function tabTitle(tab: Tab, name: string): string {
     case "settlements": return "Settlement history";
     case "finance": return "Finance";
     case "business": return "Store & business";
+    case "control": return "People, security & support";
   }
 }
 
@@ -1475,4 +1485,117 @@ function Business({ me, reload, notify }: { me: MerchantMe; reload: () => Promis
       </form>
     </section>
   </div>;
+}
+
+function ControlCenter({ me, notify }: { me: MerchantMe; notify: (message: string) => void }) {
+  const canManage = me.membership.role === "owner" || me.membership.role === "manager";
+  const [members, setMembers] = useState<MerchantMember[]>([]);
+  const [fulfillment, setFulfillment] = useState<FulfillmentSettings | null>(null);
+  const [preferences, setPreferences] = useState<NotificationPreferences | null>(null);
+  const [tickets, setTickets] = useState<SupportTicket[]>([]);
+  const [sessions, setSessions] = useState<UserSession[]>([]);
+  const [audit, setAudit] = useState<AuditEntry[]>([]);
+  const [phone, setPhone] = useState("");
+  const [role, setRole] = useState<"manager" | "staff">("staff");
+  const [ticketSubject, setTicketSubject] = useState("");
+  const [ticketMessage, setTicketMessage] = useState("");
+  const [selectedTicket, setSelectedTicket] = useState<string | null>(null);
+  const [reply, setReply] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [memberResult, fulfillmentResult, preferenceResult, ticketResult, sessionResult, auditResult] = await Promise.all([
+        api<{ items: MerchantMember[] }>("/v1/merchant/members"),
+        api<FulfillmentSettings>("/v1/merchant/fulfillment"),
+        api<NotificationPreferences>("/v1/notifications/preferences"),
+        api<{ items: SupportTicket[] }>("/v1/support/tickets"),
+        api<{ items: UserSession[] }>("/v1/users/me/sessions"),
+        api<{ items: AuditEntry[] }>("/v1/merchant/audit-log")
+      ]);
+      setMembers(memberResult.items); setFulfillment(fulfillmentResult); setPreferences(preferenceResult);
+      setTickets(ticketResult.items); setSessions(sessionResult.items); setAudit(auditResult.items);
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not load control center.");
+    } finally { setLoading(false); }
+  }, [notify]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  async function addMember(event: React.FormEvent) {
+    event.preventDefault();
+    try { await api("/v1/merchant/members", { method: "POST", body: JSON.stringify({ phoneE164: phone.trim(), role }) }); notify("Staff access granted."); setPhone(""); await load(); }
+    catch (cause) { notify(cause instanceof Error ? cause.message : "Could not add staff member."); }
+  }
+
+  async function removeMember(userId: string) {
+    try { await api(`/v1/merchant/members/${userId}`, { method: "DELETE" }); notify("Staff access revoked."); await load(); }
+    catch (cause) { notify(cause instanceof Error ? cause.message : "Could not revoke staff access."); }
+  }
+
+  async function saveFulfillment(event: React.FormEvent) {
+    event.preventDefault();
+    if (!fulfillment) return;
+    try { await api("/v1/merchant/fulfillment", { method: "PATCH", body: JSON.stringify(fulfillment) }); notify("Fulfillment settings updated."); await load(); }
+    catch (cause) { notify(cause instanceof Error ? cause.message : "Could not update fulfillment settings."); }
+  }
+
+  async function savePreferences(event: React.FormEvent) {
+    event.preventDefault();
+    if (!preferences) return;
+    try { await api("/v1/notifications/preferences", { method: "PATCH", body: JSON.stringify(preferences) }); notify("Notification preferences saved."); }
+    catch (cause) { notify(cause instanceof Error ? cause.message : "Could not save notification preferences."); }
+  }
+
+  async function createTicket(event: React.FormEvent) {
+    event.preventDefault();
+    try { await api("/v1/support/tickets", { method: "POST", body: JSON.stringify({ subject: ticketSubject, message: ticketMessage, category: "merchant_operations", priority: "NORMAL" }) }); notify("Support ticket opened."); setTicketSubject(""); setTicketMessage(""); await load(); }
+    catch (cause) { notify(cause instanceof Error ? cause.message : "Could not open support ticket."); }
+  }
+
+  async function revokeSession(sessionId: string) {
+    try { await api(`/v1/users/me/sessions/${sessionId}/revoke`, { method: "POST" }); notify("Session revoked."); await load(); }
+    catch (cause) { notify(cause instanceof Error ? cause.message : "Could not revoke session."); }
+  }
+
+  async function revokeOthers() {
+    try { await api("/v1/users/me/sessions/revoke-others", { method: "POST" }); notify("Other sessions revoked."); await load(); }
+    catch (cause) { notify(cause instanceof Error ? cause.message : "Could not revoke other sessions."); }
+  }
+
+  return <div className="stack">
+    {loading ? <div className="panel empty">Loading control center…</div> : null}
+    <div className="two-column">
+      <section className="panel stack">
+        <div className="panel-head"><div><p className="eyebrow">ACCESS</p><h2>Staff accounts</h2></div><span className="status-pill active">{members.length} members</span></div>
+        {canManage ? <form className="inline-form" onSubmit={addMember}><input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+251911000001" pattern="\+[1-9]\d{7,14}" required /><select value={role} onChange={(event) => setRole(event.target.value as "manager" | "staff")}><option value="staff">Limited staff</option><option value="manager">Manager</option></select><button>Add</button></form> : <p className="muted">Only owners and managers can change staff access.</p>}
+        <p className="fine-print">The person must have verified this phone number already. Access is merchant-scoped and can be revoked at any time.</p>
+        <div className="stack">{members.map((member) => <div className="flag-row" key={member.userId}><div><strong>{member.displayName ?? member.phoneE164}</strong><p>{member.phoneE164} · {member.activeSessions} active sessions</p></div><div className="toolbar-inline"><span className="status-text">{member.role}</span>{canManage && member.role !== "owner" ? <button className="ghost danger" onClick={() => void removeMember(member.userId)}>Revoke</button> : null}</div></div>)}</div>
+      </section>
+      <section className="panel stack">
+        <div className="panel-head"><div><p className="eyebrow">FULFILLMENT</p><h2>How customers receive orders</h2></div></div>
+        {fulfillment ? <form className="stack" onSubmit={saveFulfillment}><label className="check-row"><input type="checkbox" checked={fulfillment.supportsPickup} disabled={!canManage} onChange={(event) => setFulfillment({ ...fulfillment, supportsPickup: event.target.checked })} /> Offer customer pickup</label><label className="check-row"><input type="checkbox" checked={fulfillment.allowsScheduling} disabled={!canManage} onChange={(event) => setFulfillment({ ...fulfillment, allowsScheduling: event.target.checked })} /> Accept scheduled orders</label><label>Pickup instructions<textarea value={fulfillment.pickupInstructions ?? ""} disabled={!canManage} onChange={(event) => setFulfillment({ ...fulfillment, pickupInstructions: event.target.value })} rows={3} maxLength={1000} placeholder="Where should customers collect their order?" /></label>{canManage ? <button>Save fulfillment settings</button> : null}</form> : <p className="muted">Loading fulfillment settings…</p>}
+      </section>
+    </div>
+
+    <div className="two-column">
+      <section className="panel stack"><div className="panel-head"><div><p className="eyebrow">NOTIFICATIONS</p><h2>Operational alerts</h2></div></div>{preferences ? <form className="stack" onSubmit={savePreferences}>{(["pushEnabled", "smsEnabled", "emailEnabled", "orderUpdates", "promotions", "securityAlerts"] as const).map((key) => <label className="check-row" key={key}><input type="checkbox" checked={preferences[key]} onChange={(event) => setPreferences({ ...preferences, [key]: event.target.checked })} /> {key.replace(/([A-Z])/g, " $1")}</label>)}<button>Save notification preferences</button></form> : <p className="muted">Loading notification preferences…</p>}</section>
+      <section className="panel stack"><div className="panel-head"><div><p className="eyebrow">SUPPORT</p><h2>Platform support</h2></div></div><form className="stack" onSubmit={createTicket}><label>Subject<input value={ticketSubject} onChange={(event) => setTicketSubject(event.target.value)} minLength={3} maxLength={160} required /></label><label>Message<textarea value={ticketMessage} onChange={(event) => setTicketMessage(event.target.value)} rows={3} maxLength={4000} required /></label><button>Open ticket</button></form><div className="stack">{tickets.map((ticket) => <button className="ticket-row" key={ticket.id} onClick={() => setSelectedTicket(ticket.id)}><span><strong>{ticket.subject}</strong><small>{ticket.category} · {ticket.messageCount} messages</small></span><span className="status-text">{ticket.status}</span></button>)}</div>{selectedTicket ? <TicketReply ticketId={selectedTicket} value={reply} onChange={setReply} notify={notify} onSent={() => { setReply(""); void load(); }} /> : null}</section>
+    </div>
+
+    <div className="two-column">
+      <section className="panel stack"><div className="panel-head"><div><p className="eyebrow">SECURITY</p><h2>Active sessions</h2></div><button className="ghost" onClick={() => void revokeOthers()}>Revoke others</button></div>{sessions.map((item) => <div className="flag-row" key={item.id}><div><strong>{item.isCurrent ? "This device" : item.userAgent ?? "Unknown device"}</strong><p>Created {new Date(item.createdAt).toLocaleString()} · expires {new Date(item.expiresAt).toLocaleDateString()}</p></div>{item.isCurrent ? <span className="status-text active">Current</span> : <button className="ghost danger" onClick={() => void revokeSession(item.id)}>Revoke</button>}</div>)}</section>
+      <section className="panel stack"><div className="panel-head"><div><p className="eyebrow">AUDIT</p><h2>Important changes</h2></div></div>{audit.length === 0 ? <p className="muted">No merchant changes recorded yet.</p> : <div className="table-wrap"><table><thead><tr><th>When</th><th>Actor</th><th>Action</th></tr></thead><tbody>{audit.map((entry) => <tr key={entry.id}><td>{new Date(entry.createdAt).toLocaleString()}</td><td>{entry.actorName ?? entry.actorUserId}</td><td>{entry.action.replace("merchant.", "")}</td></tr>)}</tbody></table></div>}</section>
+    </div>
+  </div>;
+}
+
+function TicketReply({ ticketId, value, onChange, notify, onSent }: { ticketId: string; value: string; onChange: (value: string) => void; notify: (message: string) => void; onSent: () => void }) {
+  async function send(event: React.FormEvent) {
+    event.preventDefault();
+    try { await api(`/v1/support/tickets/${ticketId}/messages`, { method: "POST", body: JSON.stringify({ body: value }) }); notify("Reply sent to support."); onSent(); }
+    catch (cause) { notify(cause instanceof Error ? cause.message : "Could not send reply."); }
+  }
+  return <form className="inline-form" onSubmit={send}><input value={value} onChange={(event) => onChange(event.target.value)} placeholder="Reply to support" maxLength={4000} required /><button>Send</button></form>;
 }

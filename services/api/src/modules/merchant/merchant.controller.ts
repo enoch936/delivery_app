@@ -128,6 +128,17 @@ class SalesQuery {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(365) days?: number;
 }
 
+class FulfillmentSettingsDto {
+  @IsBoolean() supportsPickup!: boolean;
+  @IsBoolean() allowsScheduling!: boolean;
+  @IsOptional() @IsString() @Length(0, 1000) pickupInstructions?: string;
+}
+
+class MemberDto {
+  @IsString() @Matches(/^\+[1-9]\d{7,14}$/) phoneE164!: string;
+  @IsIn(["manager", "staff"]) role!: "manager" | "staff";
+}
+
 @ApiTags("merchant")
 @ApiBearerAuth()
 @UseGuards(SessionGuard, RolesGuard)
@@ -145,6 +156,48 @@ export class MerchantController {
   @Roles("merchant_staff")
   update(@Req() request: AuthenticatedRequest, @Body() body: UpdateMerchantDto) {
     return this.service.updateMerchant(requireUser(request).id, body);
+  }
+
+  @Get("members")
+  @Roles("merchant_staff", "admin")
+  members(@Req() request: AuthenticatedRequest) {
+    return this.service.members(requireUser(request).id);
+  }
+
+  @Post("members")
+  @Roles("merchant_staff")
+  addMember(@Req() request: AuthenticatedRequest, @Body() body: MemberDto) {
+    return this.service.addMember(requireUser(request).id, body, requestId(request));
+  }
+
+  @Patch("members/:userId")
+  @Roles("merchant_staff")
+  updateMember(@Req() request: AuthenticatedRequest, @Param("userId", ParseUUIDPipe) userId: string, @Body() body: MemberDto) {
+    return this.service.updateMember(requireUser(request).id, userId, body.role, requestId(request));
+  }
+
+  @Delete("members/:userId")
+  @Roles("merchant_staff")
+  removeMember(@Req() request: AuthenticatedRequest, @Param("userId", ParseUUIDPipe) userId: string) {
+    return this.service.removeMember(requireUser(request).id, userId, requestId(request));
+  }
+
+  @Get("fulfillment")
+  @Roles("merchant_staff", "admin")
+  fulfillment(@Req() request: AuthenticatedRequest) {
+    return this.service.fulfillmentSettings(requireUser(request).id);
+  }
+
+  @Patch("fulfillment")
+  @Roles("merchant_staff")
+  updateFulfillment(@Req() request: AuthenticatedRequest, @Body() body: FulfillmentSettingsDto) {
+    return this.service.updateFulfillmentSettings(requireUser(request).id, body, requestId(request));
+  }
+
+  @Get("audit-log")
+  @Roles("merchant_staff", "admin")
+  merchantAudit(@Req() request: AuthenticatedRequest, @Query() query: PageQuery) {
+    return this.service.merchantAudit(requireUser(request).id, query.limit ?? 50, query.offset ?? 0);
   }
 
   @Patch("locations/:locationId")

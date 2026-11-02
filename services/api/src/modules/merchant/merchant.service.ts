@@ -74,6 +74,94 @@ export class MerchantService {
     };
   }
 
+  async members(userId: string) {
+    const membership = await this.membership(userId);
+    const result = await this.database.query(
+      `SELECT u.id, u.phone_e164, u.display_name, mm.role, mm.created_at,
+              (SELECT count(*)::int FROM user_sessions s WHERE s.user_id = u.id AND s.revoked_at IS NULL AND s.expires_at > now()) AS active_sessions
+       FROM merchant_members mm JOIN users u ON u.id = mm.user_id
+       WHERE mm.merchant_id = $1 ORDER BY CASE mm.role WHEN 'owner' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END, u.display_name NULLS LAST`,
+      [membership.merchantId]
+    );
+    return { items: result.rows.map((row) => ({
+      userId: row.id as string, phoneE164: row.phone_e164 as string, displayName: row.display_name as string | null,
+      role: row.role as string, activeSessions: row.active_sessions as number, joinedAt: (row.created_at as Date).toISOString()
+    })) };
+  }
+
+  async addMember(userId: string, input: { phoneE164: string; role: "manager" | "staff" }, requestIdValue: string | null) {
+    const membership = await this.requireManager(userId);
+    const target = await this.database.query<{ id: string }>("SELECT id FROM users WHERE phone_e164 = $1 AND account_status = 'active'", [input.phoneE164]);
+    const targetId = target.rows[0]?.id;
+    if (!targetId) throw new NotFoundException("No active user exists for this phone number. Ask them to verify their phone first.");
+    if (targetId === userId) throw new ConflictException("You cannot add yourself as staff.");
+    await this.database.query(
+      `INSERT INTO merchant_members (user_id, merchant_id, role) VALUES ($1,$2,$3)
+       ON CONFLICT (user_id, merchant_id) DO UPDATE SET role = EXCLUDED.role`,
+      [targetId, membership.merchantId, input.role]
+    );
+    await this.recordAudit(userId, "merchant.member_added", "merchant_member", targetId, requestIdValue, { role: input.role });
+    return { userId: targetId, role: input.role };
+  }
+
+  async updateMember(userId: string, targetUserId: string, role: "manager" | "staff", requestIdValue: string | null) {
+    const membership = await this.requireManager(userId);
+    const result = await this.database.query(
+      "UPDATE merchant_members SET role = $3 WHERE merchant_id = $1 AND user_id = $2 AND role <> 'owner'",
+      [membership.merchantId, targetUserId, role]
+    );
+    if (result.rowCount === 0) throw new NotFoundException("Staff member not found or owner role cannot be changed.");
+    await this.recordAudit(userId, "merchant.member_role_updated", "merchant_member", targetUserId, requestIdValue, { role });
+    return { userId: targetUserId, role };
+  }
+
+  async removeMember(userId: string, targetUserId: string, requestIdValue: string | null) {
+    const membership = await this.requireManager(userId);
+    const result = await this.database.query(
+      "DELETE FROM merchant_members WHERE merchant_id = $1 AND user_id = $2 AND role <> 'owner' RETURNING user_id",
+      [membership.merchantId, targetUserId]
+    );
+    if (result.rowCount === 0) throw new NotFoundException("Staff member not found or owner cannot be removed.");
+    await this.recordAudit(userId, "merchant.member_removed", "merchant_member", targetUserId, requestIdValue);
+    return { removed: true };
+  }
+
+  async fulfillmentSettings(userId: string) {
+    const membership = await this.membership(userId);
+    const result = await this.database.query<{ supports_pickup: boolean; allows_scheduling: boolean; pickup_instructions: string | null }>(
+      "SELECT supports_pickup, allows_scheduling, pickup_instructions FROM merchants WHERE id = $1", [membership.merchantId]
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundException("Merchant not found.");
+    return { supportsPickup: row.supports_pickup, allowsScheduling: row.allows_scheduling, pickupInstructions: row.pickup_instructions };
+  }
+
+  async updateFulfillmentSettings(userId: string, input: { supportsPickup: boolean; allowsScheduling: boolean; pickupInstructions?: string }, requestIdValue: string | null) {
+    const membership = await this.requireManager(userId);
+    await this.database.query(
+      "UPDATE merchants SET supports_pickup = $2, allows_scheduling = $3, pickup_instructions = $4, updated_at = now() WHERE id = $1",
+      [membership.merchantId, input.supportsPickup, input.allowsScheduling, input.pickupInstructions ?? null]
+    );
+    await this.recordAudit(userId, "merchant.fulfillment_settings_updated", "merchant", membership.merchantId, requestIdValue, input);
+    return this.fulfillmentSettings(userId);
+  }
+
+  async merchantAudit(userId: string, limit: number, offset: number) {
+    const membership = await this.membership(userId);
+    const result = await this.database.query(
+      `SELECT a.id, a.actor_user_id, u.display_name AS actor_name, a.action, a.entity_type, a.entity_id, a.metadata, a.created_at
+       FROM audit_log a JOIN users u ON u.id = a.actor_user_id
+       JOIN merchant_members mm ON mm.user_id = a.actor_user_id AND mm.merchant_id = $1
+       WHERE a.action LIKE 'merchant.%' ORDER BY a.created_at DESC LIMIT $2 OFFSET $3`,
+      [membership.merchantId, limit, offset]
+    );
+    return { items: result.rows.map((row) => ({
+      id: row.id as string, actorUserId: row.actor_user_id as string, actorName: row.actor_name as string | null,
+      action: row.action as string, entityType: row.entity_type as string, entityId: row.entity_id as string | null,
+      metadata: row.metadata as Record<string, unknown>, createdAt: (row.created_at as Date).toISOString()
+    })) };
+  }
+
   async updateMerchant(userId: string, input: Readonly<{ displayName?: string | undefined; description?: string | undefined; logoUrl?: string | undefined; commissionBps?: number | undefined; deliveryRadiusKm?: number | undefined; cancellationPolicy?: string | undefined; refundPolicy?: string | undefined }>) {
     const membership = await this.requireManager(userId);
     await this.database.query(
