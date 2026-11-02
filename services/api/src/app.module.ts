@@ -33,6 +33,7 @@ import { SettlementsModule } from "./modules/settlements/settlements.module.js";
 import { PayoutsModule } from "./modules/payouts/payouts.module.js";
 import { CodModule } from "./modules/cod/cod.module.js";
 import { SubscriptionsModule } from "./modules/subscriptions/subscriptions.module.js";
+import { OperatorModule } from "./modules/operator/operator.module.js";
 
 @Module({
   imports: [
@@ -69,7 +70,8 @@ import { SubscriptionsModule } from "./modules/subscriptions/subscriptions.modul
     SettlementsModule,
     PayoutsModule,
     CodModule,
-    SubscriptionsModule
+    SubscriptionsModule,
+    OperatorModule
   ]
 })
 export class AppModule {}
