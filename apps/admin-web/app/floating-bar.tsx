@@ -4,6 +4,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 
 export type FloatingIcon =
   | "overview"
+  | "live"
   | "orders"
   | "merchants"
   | "couriers"
@@ -14,6 +15,7 @@ export type FloatingIcon =
   | "subscriptions"
   | "ledger"
   | "reconciliation"
+  | "support"
   | "config"
   | "audit"
   | "all"
@@ -128,6 +130,8 @@ function FloatingGlyph({ name }: { name: FloatingIcon }) {
   switch (name) {
     case "overview":
       return <svg {...common}><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg>;
+    case "live":
+      return <svg {...common}><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="2" /><path d="M12 4v2M20 12h-2M12 20v-2M4 12h2" /></svg>;
     case "orders":
       return <svg {...common}><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6M9 12h6M9 16h4" /></svg>;
     case "merchants":
@@ -148,6 +152,8 @@ function FloatingGlyph({ name }: { name: FloatingIcon }) {
       return <svg {...common}><path d="M5 3h14v18H5z" /><path d="M9 7h6M9 11h6M9 15h4" /></svg>;
     case "reconciliation":
       return <svg {...common}><path d="M4 7h11M4 7l3-3M4 7l3 3M20 17H9M20 17l-3-3M20 17l-3 3" /></svg>;
+    case "support":
+      return <svg {...common}><path d="M4 5h16v12H8l-4 4z" /><path d="M8 9h8M8 13h5" /></svg>;
     case "config":
       return <svg {...common}><path d="M4 7h10M18 7h2M4 17h2M10 17h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></svg>;
     case "audit":

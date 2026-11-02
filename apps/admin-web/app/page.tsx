@@ -98,16 +98,61 @@ type ReconciliationSummary = {
     }>;
   };
 };
+
+type OperatorDashboard = {
+  ordersToday: number; gmvTodayMinor: number; activeOrders: number;
+  onlineCouriers: number; availableCouriers: number; busyCouriers: number;
+  unassignedOrders: number; pendingMerchants: number; pendingCouriers: number;
+  openTickets: number; pendingRefunds: number; deliveriesToday: number; newUsersToday: number;
+  collectedPaymentsMinor: number; platformRevenueMinor: number; refundLiabilityMinor: number;
+  cancellationRateToday: number; paymentFailureRateToday: number;
+  ordersByStatus: Record<string, number>;
+  operationalAlerts: { level: "info" | "warning" | "critical"; message: string }[];
+};
+
+type LiveActiveOrder = {
+  id: string; orderNumber: string; status: string; merchantName: string;
+  ageMinutes: number; createdAt: string;
+  courierUserId: string | null; courierName: string | null; courierPhone: string | null;
+  courierLocation: { latitude: number; longitude: number; lastSeenAt: string | null } | null;
+  deliveryEstimateMinutes: number | null;
+};
+type LiveUnassigned = { id: string; orderNumber: string; status: string; merchantName: string; ageMinutes: number; createdAt: string };
+type LiveCourier = {
+  userId: string; fullName: string | null; phoneE164: string;
+  isOnline: boolean; acceptingOffers: boolean; hasActiveOrder: boolean;
+  zoneName: string | null; vehicleType: string; rating: number;
+  lastSeenAt: string | null; location: { latitude: number; longitude: number } | null;
+};
+type LiveException = { id: string; orderNumber: string; status: string; merchantName: string; ageMinutes: number; estimateMinutes: number | null; courierName: string | null; createdAt: string };
+type LiveSnapshot = { activeOrders: LiveActiveOrder[]; unassignedOrders: LiveUnassigned[]; couriers: LiveCourier[]; exceptions: LiveException[] };
+
+type TicketRow = {
+  id: string; subject: string; category: string; status: string; priority: string;
+  requesterPhone: string | null; orderNumber: string | null;
+  assignedTo: string | null; createdAt: string; updatedAt: string;
+};
+type TicketMessage = { id: string; senderUserId: string; body: string; isInternal: boolean; createdAt: string };
+type TicketDetail = TicketRow & { orderId: string | null; requesterName: string | null; messages: TicketMessage[] };
+type SupportStats = { open: number; inProgress: number; resolved: number; closed: number; urgent: number; opened24h: number; resolved24h: number };
+
+type OperatorRow = {
+  id: string; phoneE164: string | null; displayName: string | null;
+  accountStatus: string; roles: string[]; activeSessions: number; createdAt: string;
+};
+
+type ZonePerf = { zoneId: string; zoneName: string; citySlug: string; cityName: string; orders: number; gmvMinor: number; avgDeliveryMinutes: number; delivered: number; cancelled: number; cancellationRate: number };
+type CategoryPerf = { categorySlug: string; categoryName: string; orders: number; gmvMinor: number; delivered: number; cancelled: number; avgDeliveryMinutes: number; cancellationRate: number };
 type WebhookEventRow = {
   id: string; provider: string; providerEventId: string; signatureValid: boolean;
   processedAt: string | null; processingError: string | null; createdAt: string; replayable: boolean;
 };
 
 const TABS = [
-  ["overview", "Overview"], ["orders", "Orders & reports"], ["merchants", "Merchants"],
+  ["overview", "Overview"], ["live", "Live operations"], ["orders", "Orders & reports"], ["merchants", "Merchants"],
   ["couriers", "Couriers"], ["users", "Users"], ["settlements", "Settlements"],
   ["payout-batches", "Payout Batches"], ["cod", "COD"], ["subscriptions", "Subscriptions"],
-  ["ledger", "Ledger"], ["reconciliation", "Reconciliation"], ["config", "Configuration"], ["audit", "Audit trail"]
+  ["ledger", "Ledger"], ["reconciliation", "Reconciliation"], ["support", "Support"], ["config", "Configuration"], ["audit", "Audit trail"]
 ] as const;
 type Tab = (typeof TABS)[number][0];
 
@@ -116,6 +161,7 @@ const USER_STATUSES = ["active", "suspended", "disabled", "pending", "deletion_r
 
 const ADMIN_NAV: FloatingItem[] = [
   { value: "overview", label: "Overview", icon: "overview" },
+  { value: "live", label: "Live", icon: "live" },
   { value: "orders", label: "Orders", icon: "orders" },
   { value: "merchants", label: "Merchants", icon: "merchants" },
   { value: "couriers", label: "Couriers", icon: "couriers" },
@@ -126,6 +172,7 @@ const ADMIN_NAV: FloatingItem[] = [
   { value: "subscriptions", label: "Subscriptions", icon: "subscriptions" },
   { value: "ledger", label: "Ledger", icon: "ledger" },
   { value: "reconciliation", label: "Reconciliation", icon: "reconciliation" },
+  { value: "support", label: "Support", icon: "support" },
   { value: "config", label: "Config", icon: "config" },
   { value: "audit", label: "Audit", icon: "audit" }
 ];
@@ -181,6 +228,14 @@ function dateRange(from: string, to: string): { from: string; to: string } {
 function queryRange(from: string, to: string): string {
   const range = dateRange(from, to);
   return `from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}`;
+}
+
+function canViewTab(tab: string, roles: readonly string[]): boolean {
+  if (roles.includes("admin")) return true;
+  if (roles.includes("operations")) return tab !== "ledger";
+  if (roles.includes("finance")) return ["overview", "orders", "settlements", "payout-batches", "ledger", "reconciliation", "audit"].includes(tab);
+  if (roles.includes("support")) return ["overview", "orders", "merchants", "couriers", "users", "support", "audit"].includes(tab);
+  return false;
 }
 
 export default function AdminHome() {
@@ -297,6 +352,11 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
   const [subscriptions, setSubscriptions] = useState<SubscriptionRow[]>([]);
   const [ledgerEntries, setLedgerEntries] = useState<LedgerEntryRow[]>([]);
   const [ledgerBalances, setLedgerBalances] = useState<LedgerBalance[]>([]);
+  const [live, setLive] = useState<LiveSnapshot | null>(null);
+  const [supportTickets, setSupportTickets] = useState<TicketRow[]>([]);
+  const [supportStats, setSupportStats] = useState<SupportStats | null>(null);
+  const [ticketDetail, setTicketDetail] = useState<TicketDetail | null>(null);
+  const [ticketReply, setTicketReply] = useState("");
 
   function notify(message: string) {
     setToast(message);
@@ -314,6 +374,8 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
           api<Finance>(`/v1/admin/reports/finance?${range}`)
         ]);
         setDashboard(dash); setDaily(days.items); setFinance(fin);
+      } else if (tab === "live") {
+        setLive(await api<LiveSnapshot>("/v1/operator/live"));
       } else if (tab === "orders") {
         const range = queryRange(from, to);
         const status = statusFilter ? `&status=${encodeURIComponent(statusFilter)}` : "";
@@ -371,6 +433,12 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
           api<{ items: WebhookEventRow[] }>("/v1/admin/reconciliation/webhooks?status=failed")
         ]);
         setReconciliation(summaryResult); setWebhookEvents(eventsResult.items);
+      } else if (tab === "support") {
+        const [ticketsResult, statsResult] = await Promise.all([
+          api<{ items: TicketRow[] }>("/v1/admin/support/tickets?limit=100"),
+          api<SupportStats>("/v1/admin/support/stats")
+        ]);
+        setSupportTickets(ticketsResult.items); setSupportStats(statsResult);
       } else if (tab === "config") {
         const [flagResult, zoneResult] = await Promise.all([
           api<{ items: FlagRow[] }>("/v1/admin/feature-flags"),
@@ -522,6 +590,41 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not run reconciliation."); }
   }
 
+  async function assignLiveOrder(orderId: string, courierUserId: string, reassign = false) {
+    try {
+      const path = reassign ? `/v1/operator/orders/${orderId}/reassign` : `/v1/operator/orders/${orderId}/assign`;
+      await api(path, { method: "POST", body: JSON.stringify({ courierUserId, ...(reassign ? { reason: "Operator reassignment" } : {}) }) });
+      notify(reassign ? "Delivery reassigned." : "Delivery assigned.");
+      void load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not assign delivery."); }
+  }
+
+  async function cancelLiveOrder(orderId: string) {
+    const reason = window.prompt("Cancellation reason");
+    if (!reason) return;
+    try {
+      await api(`/v1/operator/orders/${orderId}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
+      notify("Order cancelled and audit logged.");
+      void load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not cancel order."); }
+  }
+
+  async function openTicket(ticketId: string) {
+    try { setTicketDetail(await api<TicketDetail>(`/v1/admin/support/tickets/${ticketId}`)); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load ticket."); }
+  }
+
+  async function replyToTicket(event: FormEvent) {
+    event.preventDefault();
+    if (!ticketDetail || !ticketReply.trim()) return;
+    try {
+      await api(`/v1/admin/support/tickets/${ticketDetail.id}/messages`, { method: "POST", body: JSON.stringify({ body: ticketReply.trim() }) });
+      setTicketReply("");
+      await openTicket(ticketDetail.id);
+      notify("Support reply sent.");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not reply to ticket."); }
+  }
+
   async function replayWebhook(event: WebhookEventRow) {
     try {
       await api(`/v1/admin/reconciliation/webhooks/${event.id}/replay`, { method: "POST" });
@@ -571,6 +674,7 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
   }
 
   const maxDaily = Math.max(1, ...daily.map((day) => day.gmvMinor));
+  const visibleNav = ADMIN_NAV.filter((item) => canViewTab(item.value, session.user.roles));
 
   return <div className="app-shell">
     <main className="workspace">
@@ -600,6 +704,17 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
       {error && <p className="form-error">{error}</p>}
 
       {tab === "overview" && <Overview dashboard={dashboard} daily={daily} finance={finance} maxDaily={maxDaily} from={from} to={to} setFrom={setFrom} setTo={setTo} />}
+
+      {tab === "live" && <section className="stack">
+        <div className="metric-grid">
+          <Metric label="Active deliveries" value={String(live?.activeOrders.length ?? 0)} note="In progress" accent />
+          <Metric label="Unassigned" value={String(live?.unassignedOrders.length ?? 0)} note="Dispatch queue" />
+          <Metric label="Online couriers" value={String(live?.couriers.length ?? 0)} note={`${live?.couriers.filter((courier) => courier.acceptingOffers).length ?? 0} accepting offers`} />
+          <Metric label="Exceptions" value={String(live?.exceptions.length ?? 0)} note="Over delivery estimate" />
+        </div>
+        <div className="panel live-map"><div className="panel-head"><div><p className="eyebrow">LOCATION ACCESS</p><h2>Live delivery map</h2></div><span className="fine-print">Operational view · last-seen timestamps shown</span></div><div className="map-surface">{live?.couriers.filter((courier) => courier.location).map((courier, index) => <button className="map-pin courier-pin" style={{ left: `${10 + (index * 17) % 80}%`, top: `${18 + (index * 29) % 64}%` }} title={`${courier.fullName ?? courier.phoneE164} · ${courier.lastSeenAt ? shortDate(courier.lastSeenAt) : "no timestamp"}`} key={courier.userId}>C</button>)}{live?.activeOrders.filter((order) => order.courierLocation).map((order, index) => <button className="map-pin order-pin" style={{ left: `${18 + (index * 23) % 70}%`, top: `${28 + (index * 19) % 52}%` }} title={`${order.orderNumber} · ${order.status}`} key={order.id}>O</button>)}</div></div>
+        <div className="two-column"><div className="panel table-wrap"><div className="panel-head"><div><p className="eyebrow">DISPATCH</p><h2>Unassigned orders</h2></div></div><table><thead><tr><th>Order</th><th>Merchant</th><th>Age</th><th>Courier</th></tr></thead><tbody>{live?.unassignedOrders.map((order) => <tr key={order.id}><td><strong>{order.orderNumber}</strong><small className="block">{order.status}</small></td><td>{order.merchantName}</td><td>{order.ageMinutes} min</td><td><div className="inline-form"><select defaultValue="" aria-label={`Courier for ${order.orderNumber}`}><option value="" disabled>Select</option>{live.couriers.filter((courier) => courier.acceptingOffers && !courier.hasActiveOrder).map((courier) => <option value={courier.userId} key={courier.userId}>{courier.fullName ?? courier.phoneE164}</option>)}</select><button className="ghost" onClick={(event) => { const select = event.currentTarget.previousElementSibling as HTMLSelectElement; if (select.value) void assignLiveOrder(order.id, select.value); }}>Assign</button></div></td></tr>)}</tbody></table>{!live?.unassignedOrders.length && <p className="empty">No unassigned orders.</p>}</div><div className="panel table-wrap"><div className="panel-head"><div><p className="eyebrow">EXCEPTIONS</p><h2>Delayed deliveries</h2></div></div><table><thead><tr><th>Order</th><th>Courier</th><th>Age</th><th /></tr></thead><tbody>{live?.exceptions.map((exception) => <tr key={exception.id}><td><strong>{exception.orderNumber}</strong><small className="block">{exception.merchantName}</small></td><td>{exception.courierName ?? "Unassigned"}</td><td>{exception.ageMinutes} min</td><td><button className="ghost danger" onClick={() => void cancelLiveOrder(exception.id)}>Cancel</button></td></tr>)}</tbody></table>{!live?.exceptions.length && <p className="empty">No delayed deliveries.</p>}</div></div>
+      </section>}
 
       {tab === "orders" && <section className="stack">
         <div className="panel">
@@ -841,6 +956,11 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
         </div>
       </section>}
 
+      {tab === "support" && <section className="two-column">
+        <div className="panel table-wrap"><div className="panel-head"><div><p className="eyebrow">CASE QUEUE</p><h2>Support & disputes</h2></div>{supportStats ? <span className="status-pill active">{supportStats.open + supportStats.inProgress} open</span> : null}</div><table><thead><tr><th>Subject</th><th>Priority</th><th>Status</th><th>Updated</th></tr></thead><tbody>{supportTickets.map((ticket) => <tr key={ticket.id} onClick={() => void openTicket(ticket.id)} className="clickable-row"><td><strong>{ticket.subject}</strong><small className="block">{ticket.requesterPhone ?? "Unknown requester"} · {ticket.orderNumber ?? "No order"}</small></td><td>{ticket.priority}</td><td><span className="status-text">{ticket.status}</span></td><td>{shortDate(ticket.updatedAt)}</td></tr>)}</tbody></table>{!supportTickets.length && <p className="empty">No support cases.</p>}</div>
+        <div className="panel stack">{ticketDetail ? <><div className="panel-head"><div><p className="eyebrow">CASE {ticketDetail.id.slice(0, 8)}</p><h2>{ticketDetail.subject}</h2><p className="muted">{ticketDetail.requesterName ?? ticketDetail.requesterPhone ?? "Unknown requester"} · {ticketDetail.status}</p></div></div><div className="message-list">{ticketDetail.messages.map((message) => <article className="message" key={message.id}><strong>{message.isInternal ? "Internal note" : message.senderUserId === session.user.id ? "You" : "Requester"}</strong><p>{message.body}</p><small>{shortDate(message.createdAt)}</small></article>)}</div><form className="inline-form" onSubmit={replyToTicket}><input value={ticketReply} onChange={(event) => setTicketReply(event.target.value)} placeholder="Reply to requester" maxLength={4000} required /><button>Send reply</button></form></> : <div className="empty"><h3>Select a case</h3><p>Open a support ticket to review its history and reply.</p></div>}</div>
+      </section>}
+
       {tab === "config" && <section className="stack">
         <div className="two-column">
           <div className="panel">
@@ -1050,7 +1170,7 @@ function Console({ session, onSignedOut }: { session: Session; onSignedOut: () =
 
     <FloatingDock>
       <FloatingNav
-        items={ADMIN_NAV}
+        items={visibleNav}
         value={tab}
         onChange={(value) => { setTab(value as Tab); setStatusFilter(""); setError(""); }}
         label="Operations sections"

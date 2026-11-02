@@ -153,6 +153,17 @@ table { width: 100%; border-collapse: collapse; font-size: .86rem; }
 th { text-align: left; color: var(--muted); font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; padding: .6rem; border-bottom: 1px solid var(--line); }
 td { padding: .75rem .6rem; border-bottom: 1px solid var(--line); }
 tr:last-child td { border-bottom: 0; }
+.clickable-row { cursor: pointer; }
+.clickable-row:hover td { background: rgba(232, 97, 61, .06); }
+.live-map { overflow: hidden; }
+.map-surface { position: relative; min-height: 360px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background-color: #e5eee4; background-image: linear-gradient(28deg, transparent 47%, rgba(47, 107, 79, .16) 48%, transparent 50%), linear-gradient(118deg, transparent 47%, rgba(47, 107, 79, .12) 48%, transparent 50%), linear-gradient(rgba(255,255,255,.55) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.55) 1px, transparent 1px); background-size: 180px 130px, 220px 170px, 42px 42px, 42px 42px; }
+.map-pin { position: absolute; transform: translate(-50%, -50%); width: 32px; height: 32px; border-radius: 50%; padding: 0; display: grid; place-items: center; border: 2px solid #fff; box-shadow: 0 4px 12px rgba(32, 38, 31, .2); font-size: .7rem; }
+.courier-pin { background: var(--sidebar); color: #fff; }
+.order-pin { background: var(--accent); color: #fff; }
+.message-list { display: grid; gap: .6rem; max-height: 420px; overflow: auto; }
+.message { border: 1px solid var(--line); border-radius: 10px; padding: .75rem; background: #fff; }
+.message p { margin: .35rem 0; white-space: pre-wrap; }
+.message small { color: var(--muted); }
 
 .toast { position: fixed; right: 1.2rem; bottom: 1.2rem; z-index: 20; background: var(--ink); color: #fff; border-radius: 10px; padding: .8rem 1rem; max-width: 360px; box-shadow: 0 12px 40px rgba(0, 0, 0, .22); font-size: .84rem; }
 
@@ -177,6 +188,7 @@ tr:last-child td { border-bottom: 0; }
   .product-row { align-items: flex-start; flex-direction: column; }
   .stock-control { width: 100%; justify-content: space-between; }
   .form-grid { grid-template-columns: 1fr; }
+  .map-surface { min-height: 260px; }
 }
 
 /* Operations console */

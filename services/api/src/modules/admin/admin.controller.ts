@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import { Type } from "class-transformer";
-import { ArrayUnique, IsArray, IsIn, IsInt, IsOptional, IsString, Length, Max, Min } from "class-validator";
+import { ArrayUnique, IsArray, IsDateString, IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Max, Min } from "class-validator";
 import { requireUser, requestId } from "../../common/auth-context.js";
 import { Roles } from "../auth/roles.decorator.js";
 import { RolesGuard } from "../auth/roles.guard.js";
@@ -12,6 +12,21 @@ class PageQuery {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) offset?: number;
   @IsOptional() @IsString() status?: string;
+}
+
+class OverviewQuery {
+  @IsOptional() @IsDateString() from?: string;
+  @IsOptional() @IsDateString() to?: string;
+  @IsOptional() @IsString() citySlug?: string;
+  @IsOptional() @IsString() zoneSlug?: string;
+  @IsOptional() @IsUUID() merchantId?: string;
+  @IsOptional() @IsString() categorySlug?: string;
+}
+
+class CreateOperatorDto {
+  @IsString() @Length(10, 20) phoneE164!: string;
+  @IsOptional() @IsString() @Length(2, 80) displayName?: string;
+  @IsArray() @ArrayUnique() @IsIn(["admin", "support", "operations", "finance", "business_admin"], { each: true }) roles!: string[];
 }
 
 class ReasonDto {
@@ -54,11 +69,37 @@ export class AdminController {
   constructor(private readonly service: AdminService) {}
 
   @Get("dashboard")
+  @Roles("admin", "operations", "finance")
   dashboard() {
     return this.service.dashboard();
   }
 
+  @Get("operator-overview")
+  @Roles("admin", "operations", "finance")
+  operatorOverview(@Query() query: OverviewQuery) {
+    return this.service.operatorOverview(query);
+  }
+
+  @Get("operators")
+  @Roles("admin")
+  operators(@Query() query: PageQuery) {
+    return this.service.operators(query.limit ?? 50, query.offset ?? 0);
+  }
+
+  @Post("operators")
+  @Roles("admin")
+  createOperator(@Req() request: AuthenticatedRequest, @Body() body: CreateOperatorDto) {
+    return this.service.createOperator(requireUser(request).id, { phoneE164: body.phoneE164, ...(body.displayName !== undefined && { displayName: body.displayName }), roles: body.roles }, requestId(request));
+  }
+
+  @Post("operators/:userId/sessions/revoke-all")
+  @Roles("admin")
+  revokeOperatorSessions(@Req() request: AuthenticatedRequest, @Param("userId", ParseUUIDPipe) userId: string) {
+    return this.service.revokeOperatorSessions(requireUser(request).id, userId, requestId(request));
+  }
+
   @Get("merchants")
+  @Roles("admin", "operations", "support")
   merchants(@Query() query: PageQuery) {
     return this.service.merchants(query.status, query.limit ?? 50, query.offset ?? 0);
   }
@@ -82,6 +123,7 @@ export class AdminController {
   }
 
   @Get("couriers")
+  @Roles("admin", "operations", "support")
   couriers(@Query() query: PageQuery) {
     return this.service.couriers(query.status, query.limit ?? 50, query.offset ?? 0);
   }
@@ -93,6 +135,7 @@ export class AdminController {
   }
 
   @Get("couriers/:courierUserId/documents")
+  @Roles("admin", "operations", "support")
   courierDocuments(@Param("courierUserId", ParseUUIDPipe) courierUserId: string) {
     return this.service.courierDocuments(courierUserId);
   }
@@ -104,6 +147,7 @@ export class AdminController {
   }
 
   @Get("users")
+  @Roles("admin", "operations", "support")
   users(@Query() query: UserQuery) {
     return this.service.users(query.search, query.limit ?? 50, query.offset ?? 0);
   }
@@ -127,6 +171,7 @@ export class AdminController {
   }
 
   @Get("orders")
+  @Roles("admin", "operations", "support")
   orders(@Query() query: PageQuery) {
     return this.service.orders(query.status, query.limit ?? 50, query.offset ?? 0);
   }
