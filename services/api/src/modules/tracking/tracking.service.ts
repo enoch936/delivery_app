@@ -213,7 +213,7 @@ export class TrackingService {
       || roles.some((role) => ["admin", "support", "operations"].includes(role));
     if (allowed) return;
     const merchant = await this.database.query(
-      "SELECT 1 FROM merchant_members WHERE merchant_id = $1 AND user_id = $2",
+      "SELECT 1 FROM merchant_members WHERE merchant_id = $1 AND user_id = $2 AND is_active = true",
       [order.merchant_id, viewer.userId]
     );
     if ((merchant.rowCount ?? 0) === 0 && order.courier_user_id !== viewer.userId) {

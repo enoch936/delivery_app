@@ -54,7 +54,15 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
 
   async listMerchants(input: MerchantListInput): Promise<{ items: readonly MerchantSummaryRecord[]; total: number }> {
     const params: unknown[] = [input.citySlug];
-    const filters = ["m.status = 'active'"];
+    const filters = [
+      "m.status = 'active'",
+      "m.accepting_orders = true",
+      `NOT EXISTS (
+        SELECT 1 FROM merchant_closures mc
+        WHERE mc.merchant_id = m.id AND now() >= mc.starts_at AND now() < mc.ends_at
+          AND (mc.location_id IS NULL OR mc.location_id = ml.id)
+      )`
+    ];
 
     if (input.categorySlug) {
       params.push(input.categorySlug);
@@ -121,7 +129,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
       `SELECT m.id, m.slug, m.display_name, m.description, m.logo_url, m.cover_image_url,
               m.rating, m.rating_count, m.price_level, m.delivery_fee_minor, m.min_order_minor,
               m.delivery_radius_km, (${eta})[1] AS eta_min_minutes, (${eta})[2] AS eta_max_minutes,
-              m.is_featured, m.tags, m.supports_pickup, m.allows_scheduling,
+              m.is_featured, m.tags, m.supports_pickup, m.allows_scheduling, m.accepting_orders,
               ml.name AS location_name, ml.address_line, ml.opening_hours,
               ST_Y(ml.location) AS latitude, ST_X(ml.location) AS longitude,
               discovery_is_open(ml.opening_hours) AS is_open,
@@ -149,7 +157,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
       `SELECT m.id, m.slug, m.display_name, m.description, m.logo_url, m.cover_image_url,
               m.rating, m.rating_count, m.price_level, m.delivery_fee_minor, m.min_order_minor,
               m.delivery_radius_km, (${eta})[1] AS eta_min_minutes, (${eta})[2] AS eta_max_minutes,
-              m.is_featured, m.tags, m.supports_pickup, m.allows_scheduling,
+              m.is_featured, m.tags, m.supports_pickup, m.allows_scheduling, m.accepting_orders,
               m.cancellation_policy, m.refund_policy, m.pickup_instructions,
               m.min_schedule_lead_minutes, m.max_schedule_days,
               ml.name AS location_name, ml.address_line, ml.opening_hours,
@@ -313,7 +321,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
                  WHERE msc.merchant_id = m.id ORDER BY sc.sort_order LIMIT 1) AS category_slug,
                 m.id::text AS target_id, similarity(m.display_name, $2) AS score
          FROM merchants m
-         WHERE m.status = 'active' AND (m.display_name ILIKE $3 OR m.tags::text ILIKE $3)
+         WHERE m.status = 'active' AND m.accepting_orders = true AND (m.display_name ILIKE $3 OR m.tags::text ILIKE $3)
            AND EXISTS (SELECT 1 FROM merchant_locations ml JOIN cities c ON c.id = ml.city_id
                        WHERE ml.merchant_id = m.id AND ml.is_active = true AND c.slug = $1 AND c.is_active = true
                          AND discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km, $7, $6))
@@ -324,7 +332,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
                  WHERE msc.merchant_id = m.id ORDER BY sc.sort_order LIMIT 1),
                 p.id::text, similarity(p.display_name, $2)
          FROM products p
-         JOIN merchants m ON m.id = p.merchant_id AND m.status = 'active'
+         JOIN merchants m ON m.id = p.merchant_id AND m.status = 'active' AND m.accepting_orders = true
          WHERE p.is_available = true AND (p.display_name ILIKE $3 OR p.sku ILIKE $3)
            AND EXISTS (SELECT 1 FROM merchant_locations ml JOIN cities c ON c.id = ml.city_id
                        WHERE ml.merchant_id = m.id AND ml.is_active = true AND c.slug = $1 AND c.is_active = true
@@ -335,8 +343,8 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
          FROM service_categories sc
          WHERE sc.is_active = true AND (sc.display_name ILIKE $3 OR sc.slug ILIKE $3)
            AND EXISTS (SELECT 1 FROM merchant_service_categories msc
-                       JOIN merchants m ON m.id = msc.merchant_id AND m.status = 'active'
-                       JOIN merchant_locations ml ON ml.merchant_id = m.id AND ml.is_active = true
+                        JOIN merchants m ON m.id = msc.merchant_id AND m.status = 'active' AND m.accepting_orders = true
+                        JOIN merchant_locations ml ON ml.merchant_id = m.id AND ml.is_active = true
                        JOIN cities c ON c.id = ml.city_id AND c.slug = $1 AND c.is_active = true
                        WHERE msc.service_category_id = sc.id
                          AND discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km, $7, $6))
@@ -359,7 +367,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
 
   private async searchProducts(input: SearchInput): Promise<{ items: readonly SearchProductRecord[]; total: number }> {
     const params: unknown[] = [input.citySlug, `%${escapeLike(input.query)}%`];
-    const filters = ["m.status = 'active'", "p.is_available = true", "(p.display_name ILIKE $2 OR p.description ILIKE $2 OR p.sku ILIKE $2 OR m.display_name ILIKE $2 OR m.tags::text ILIKE $2)"];
+    const filters = ["m.status = 'active'", "m.accepting_orders = true", "p.is_available = true", "(p.display_name ILIKE $2 OR p.description ILIKE $2 OR p.sku ILIKE $2 OR m.display_name ILIKE $2 OR m.tags::text ILIKE $2)"];
     if (input.categorySlug) {
       params.push(input.categorySlug);
       filters.push(`EXISTS (
@@ -369,6 +377,11 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
       )`);
     }
     if (input.openNow) filters.push("discovery_is_open(ml.opening_hours) = true");
+    filters.push(`NOT EXISTS (
+      SELECT 1 FROM merchant_closures mc
+      WHERE mc.merchant_id = m.id AND now() >= mc.starts_at AND now() < mc.ends_at
+        AND (mc.location_id IS NULL OR mc.location_id = ml.id)
+    )`);
     if (input.latitude !== null && input.longitude !== null) {
       params.push(input.longitude, input.latitude);
       filters.push(`discovery_location_available(ml.location, ml.service_zone_id, m.delivery_radius_km, $${params.length}, $${params.length - 1})`);
@@ -555,7 +568,7 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
               m.slug AS merchant_slug, m.display_name AS merchant_name, m.logo_url AS merchant_logo_url,
               m.cover_image_url AS merchant_cover_image_url, m.rating AS merchant_rating
        FROM products p
-       JOIN merchants m ON m.id = p.merchant_id AND m.status = 'active'
+       JOIN merchants m ON m.id = p.merchant_id AND m.status = 'active' AND m.accepting_orders = true
        JOIN LATERAL (
          SELECT ml.* FROM merchant_locations ml JOIN cities c ON c.id = ml.city_id
          WHERE ml.merchant_id = m.id AND ml.is_active = true AND c.slug = $1 AND c.is_active = true
@@ -569,6 +582,11 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
          GROUP BY oi.product_id
        ) sales ON sales.product_id = p.id
        WHERE p.is_available = true AND (i.quantity_available IS NULL OR i.quantity_available > 0) ${availability}
+         AND NOT EXISTS (
+           SELECT 1 FROM merchant_closures mc
+           WHERE mc.merchant_id = m.id AND now() >= mc.starts_at AND now() < mc.ends_at
+             AND (mc.location_id IS NULL OR mc.location_id = ml.id)
+         )
        ORDER BY COALESCE(sales.ordered, 0) DESC, m.rating DESC, p.display_name ASC
        LIMIT 8`,
       params
@@ -628,7 +646,12 @@ export class PostgresDiscoveryRepository implements DiscoveryRepository {
        FROM merchants m
        JOIN merchant_locations ml ON ml.merchant_id = m.id AND ml.is_active = true
        JOIN cities c ON c.id = ml.city_id AND c.slug = $1 AND c.is_active = true
-       WHERE m.status = 'active' ${availability}`,
+       WHERE m.status = 'active' AND m.accepting_orders = true ${availability}
+         AND NOT EXISTS (
+           SELECT 1 FROM merchant_closures mc
+           WHERE mc.merchant_id = m.id AND now() >= mc.starts_at AND now() < mc.ends_at
+             AND (mc.location_id IS NULL OR mc.location_id = ml.id)
+         )`,
       params
     );
     return {
@@ -897,6 +920,7 @@ type MerchantRow = {
   tags: string[] | null;
   supports_pickup: boolean;
   allows_scheduling: boolean;
+  accepting_orders: boolean;
   cancellation_policy?: string | null;
   refund_policy?: string | null;
   pickup_instructions?: string | null;
@@ -1016,7 +1040,7 @@ function mapMerchant(row: MerchantRow, serviceCategorySlugs: readonly string[]):
     etaMaxMinutes: row.eta_max_minutes,
     isFeatured: row.is_featured,
     tags: row.tags ?? [],
-    isOpen: row.is_open,
+    isOpen: row.is_open && row.accepting_orders,
     isDeliverable: row.is_deliverable !== false,
     distanceKm: row.distance_km === null ? null : Math.round(Number(row.distance_km) * 10) / 10,
     todayHours: mapTodayHours(row.today_hours),

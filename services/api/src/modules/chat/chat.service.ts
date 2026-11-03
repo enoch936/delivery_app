@@ -11,7 +11,7 @@ export class ChatService {
     );
     const row = order.rows[0];
     if (!row) throw new NotFoundException("Order not found.");
-    const merchantMember = await this.database.query("SELECT 1 FROM merchant_members WHERE merchant_id = $1 AND user_id = $2", [row.merchant_id, userId]);
+    const merchantMember = await this.database.query("SELECT 1 FROM merchant_members WHERE merchant_id = $1 AND user_id = $2 AND is_active = true", [row.merchant_id, userId]);
     const admin = await this.database.query("SELECT 1 FROM user_role_assignments WHERE user_id = $1 AND role IN ('admin','support','operations')", [userId]);
     const allowed = row.user_id === userId || row.courier_user_id === userId || (merchantMember.rowCount ?? 0) > 0 || (admin.rowCount ?? 0) > 0;
     if (!allowed) throw new ForbiddenException("You cannot access this order conversation.");
@@ -26,7 +26,7 @@ export class ChatService {
       if (!id) throw new Error("Conversation creation failed.");
       await client.query("INSERT INTO conversation_members (conversation_id, user_id) VALUES ($1,$2)", [id, userId]);
       if (row.user_id !== userId) await client.query("INSERT INTO conversation_members (conversation_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [id, row.user_id]);
-      const members = await client.query<{ user_id: string }>("SELECT user_id FROM merchant_members WHERE merchant_id = $1", [row.merchant_id]);
+      const members = await client.query<{ user_id: string }>("SELECT user_id FROM merchant_members WHERE merchant_id = $1 AND is_active = true", [row.merchant_id]);
       for (const member of members.rows) {
         await client.query("INSERT INTO conversation_members (conversation_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [id, member.user_id]);
       }

@@ -71,6 +71,28 @@ export class PostgresIdentityRepository implements IdentityRepository {
       if (!user) throw new Error("User creation did not return a user.");
       if (user.account_status === "suspended" || user.account_status === "deleted") return await this.rollback(client, { status: "suspended" });
       await client.query("INSERT INTO user_role_assignments (user_id, role) VALUES ($1, 'customer') ON CONFLICT DO NOTHING", [user.id]);
+      const acceptedInvitations = await client.query<{ merchant_id: string; role: "manager" | "staff"; permissions: string[]; invited_by: string | null }>(
+        `UPDATE merchant_staff_invitations
+         SET status = 'accepted', accepted_by = $2, accepted_at = now(), updated_at = now()
+         WHERE phone_e164 = $1 AND status = 'pending' AND expires_at > now()
+         RETURNING merchant_id, role, permissions, invited_by`,
+        [input.phoneE164, user.id]
+      );
+      for (const invitation of acceptedInvitations.rows) {
+        await client.query(
+          `INSERT INTO merchant_members (user_id, merchant_id, role, permissions, is_active, invited_by)
+           VALUES ($1,$2,$3,$4,true,$5)
+           ON CONFLICT (user_id, merchant_id) DO UPDATE
+           SET role = EXCLUDED.role, permissions = EXCLUDED.permissions, is_active = true,
+               invited_by = EXCLUDED.invited_by, updated_at = now()
+           WHERE merchant_members.role <> 'owner'`,
+          [user.id, invitation.merchant_id, invitation.role, invitation.permissions, invitation.invited_by]
+        );
+        await this.audit(client, user.id, "identity.staff_invitation_accepted", "merchant", invitation.merchant_id, input.requestId, input.ipHash);
+      }
+      if (acceptedInvitations.rows.length > 0) {
+        await client.query("INSERT INTO user_role_assignments (user_id, role) VALUES ($1, 'merchant_staff') ON CONFLICT DO NOTHING", [user.id]);
+      }
       const roleResult = await client.query<{ role: UserRole }>("SELECT role FROM user_role_assignments WHERE user_id = $1 ORDER BY role", [user.id]);
       const roles = roleResult.rows.map((row) => row.role);
       await client.query("UPDATE auth_challenges SET consumed_at = now() WHERE id = $1", [input.challengeId]);

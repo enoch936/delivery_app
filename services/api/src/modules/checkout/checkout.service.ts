@@ -43,8 +43,12 @@ type MerchantRow = {
   eta_min_minutes: number;
   eta_max_minutes: number;
   delivery_fee_minor: string;
+  supports_delivery: boolean;
   supports_pickup: boolean;
   allows_scheduling: boolean;
+  accepting_orders: boolean;
+  availability_note: string | null;
+  is_closure: boolean;
   min_schedule_lead_minutes: number;
   max_schedule_days: number;
   pickup_location_id: string | null;
@@ -105,11 +109,22 @@ export class CheckoutService {
       ? await this.loadPickupMerchant(cart.id, input.pickupLocationId ?? "", targetAt)
       : await this.loadDeliveryMerchant(cart.id, input.deliveryAddressId ?? "", targetAt);
     if (!merchant) throw new ConflictException("This merchant is not available right now.");
+    if (!merchant.accepting_orders) {
+      throw new ConflictException(merchant.availability_note?.trim()
+        ? `This merchant is not accepting orders right now: ${merchant.availability_note.trim()}`
+        : "This merchant is not accepting orders right now.");
+    }
+    if (merchant.is_closure) {
+      throw new ConflictException(scheduledFor
+        ? "The merchant is closed at the time you selected. Choose another time."
+        : "The merchant is temporarily closed. Try again later.");
+    }
 
     if (fulfillmentType === "pickup" && !merchant.supports_pickup) {
       throw new ConflictException("This merchant does not offer collection at the store.");
     }
     if (fulfillmentType === "delivery") {
+      if (!merchant.supports_delivery) throw new ConflictException("This merchant does not offer delivery.");
       if (merchant.distance_meters === null) throw new UnprocessableEntityException("Unable to calculate delivery distance for this address.");
       if (!merchant.is_available) throw new UnprocessableEntityException("This merchant does not deliver to the selected address yet. Choose another address or merchant.");
     }
@@ -308,7 +323,13 @@ export class CheckoutService {
                 m.eta_min_minutes, m.eta_max_minutes))[1] AS eta_min_minutes,
               (discovery_eta(ST_DistanceSphere(ml.location::geometry, ca.location::geometry)::float8 / 1000.0,
                 m.eta_min_minutes, m.eta_max_minutes))[2] AS eta_max_minutes,
-              m.supports_pickup, m.allows_scheduling, m.min_schedule_lead_minutes, m.max_schedule_days, m.delivery_fee_minor,
+              m.supports_delivery, m.supports_pickup, m.allows_scheduling, m.accepting_orders, m.availability_note,
+              m.min_schedule_lead_minutes, m.max_schedule_days, m.delivery_fee_minor,
+              EXISTS (
+                SELECT 1 FROM merchant_closures mc
+                WHERE mc.merchant_id = m.id AND $3 >= mc.starts_at AND $3 < mc.ends_at
+                  AND (mc.location_id IS NULL OR mc.location_id = ml.id)
+              ) AS is_closure,
               NULL::uuid AS pickup_location_id, NULL::text AS pickup_location_name, NULL::text AS pickup_address_line
        FROM carts c
        JOIN merchants m ON m.id = c.merchant_id
@@ -333,7 +354,13 @@ export class CheckoutService {
               true AS is_available,
               (discovery_eta(0::float8, m.eta_min_minutes, m.eta_max_minutes))[1] AS eta_min_minutes,
               (discovery_eta(0::float8, m.eta_min_minutes, m.eta_max_minutes))[2] AS eta_max_minutes,
-              m.supports_pickup, m.allows_scheduling, m.min_schedule_lead_minutes, m.max_schedule_days, m.delivery_fee_minor,
+              m.supports_delivery, m.supports_pickup, m.allows_scheduling, m.accepting_orders, m.availability_note,
+              m.min_schedule_lead_minutes, m.max_schedule_days, m.delivery_fee_minor,
+              EXISTS (
+                SELECT 1 FROM merchant_closures mc
+                WHERE mc.merchant_id = m.id AND $3 >= mc.starts_at AND $3 < mc.ends_at
+                  AND (mc.location_id IS NULL OR mc.location_id = ml.id)
+              ) AS is_closure,
               ml.id AS pickup_location_id, ml.name AS pickup_location_name, ml.address_line AS pickup_address_line
        FROM carts c
        JOIN merchants m ON m.id = c.merchant_id

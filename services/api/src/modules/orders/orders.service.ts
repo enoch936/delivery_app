@@ -277,6 +277,17 @@ export class OrdersService {
         body: `Your order ${order.order_number} has been sent to ${merchant.display_name}.`,
         data: { orderId: order.id }
       }, client);
+      const merchantRecipients = await client.query<{ user_id: string }>(
+        "SELECT user_id FROM merchant_members WHERE merchant_id = $1 AND is_active = true",
+        [order.merchant_id]
+      );
+      for (const recipient of merchantRecipients.rows) {
+        await this.notifications.create({
+          userId: recipient.user_id, type: "merchant.order.created", title: "New order",
+          body: `Order ${order.order_number} for ${quote.currency} ${(Number(quote.total_minor) / 100).toFixed(2)} is waiting for your team.`,
+          data: { orderId: order.id }
+        }, client);
+      }
       await client.query(
         "INSERT INTO outbox_events (event_type, aggregate_type, aggregate_id, payload) VALUES ('order.created', 'order', $1, $2)",
         [order.id, JSON.stringify({ orderId: order.id, userId: input.userId, totalMinor: Number(quote.total_minor), currency: quote.currency })]
@@ -804,7 +815,7 @@ export class OrdersService {
     const result = await client.query<OrderRow & { member_role: string }>(
       `SELECT o.*, COALESCE(o.merchant_name_snapshot, m.display_name) AS merchant_name, mm.role AS member_role
        FROM orders o JOIN merchants m ON m.id = o.merchant_id
-       JOIN merchant_members mm ON mm.merchant_id = o.merchant_id AND mm.user_id = $2
+       JOIN merchant_members mm ON mm.merchant_id = o.merchant_id AND mm.user_id = $2 AND mm.is_active = true
        WHERE o.id = $1 FOR UPDATE OF o`,
       [orderId, actorUserId]
     );
@@ -823,7 +834,7 @@ export class OrdersService {
     if (!order) throw new NotFoundException("Order not found.");
     const isOwner = order.user_id === viewer.userId;
     const roles = Array.isArray((viewer as any).roles) ? (viewer as any).roles : []; const isAdmin = roles.includes("admin") || roles.includes("support");
-    const membership = await executor.query("SELECT 1 FROM merchant_members WHERE merchant_id = $1 AND user_id = $2", [order.merchant_id, viewer.userId]);
+    const membership = await executor.query("SELECT 1 FROM merchant_members WHERE merchant_id = $1 AND user_id = $2 AND is_active = true", [order.merchant_id, viewer.userId]);
     const isMerchant = (membership.rowCount ?? 0) > 0;
     const assignmentResult = await executor.query<{
       id: string; status: string; courier_user_id: string; accepted_at: Date | null; picked_up_at: Date | null; delivered_at: Date | null;

@@ -1,15 +1,32 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import { DatabaseService } from "../../database/database.service.js";
 import { AuditService } from "../../common/audit.service.js";
+import { NotificationsService } from "../notifications/notifications.service.js";
 import { OrdersService } from "../orders/orders.service.js";
+import {
+  hasMerchantPermission,
+  normalizeInvitationPermissions,
+  permissionsForRole,
+  type MerchantPermission
+} from "./merchant.permissions.js";
 
-type Membership = Readonly<{ merchantId: string; role: "owner" | "manager" | "staff"; merchantName: string; commissionBps: number }>;
+type Membership = Readonly<{
+  merchantId: string; role: "owner" | "manager" | "staff"; merchantName: string; commissionBps: number;
+  permissions: readonly string[]; isActive: boolean;
+}>;
 
 type MerchantRow = Readonly<{
   id: string; slug: string; display_name: string; description: string | null; logo_url: string | null;
   status: string; commission_bps: number; delivery_radius_km: number; cancellation_policy: string | null;
   refund_policy: string | null; min_schedule_lead_minutes: number; max_schedule_days: number;
   rejection_reason: string | null; suspension_reason: string | null;
+  supports_delivery: boolean; supports_pickup: boolean; pickup_instructions: string | null;
+  allows_scheduling: boolean; accepting_orders: boolean; availability_note: string | null;
+}>;
+
+type StaffMemberRow = Readonly<{
+  user_id: string; phone_e164: string | null; email: string | null; display_name: string | null;
+  role: "owner" | "manager" | "staff"; permissions: string[]; is_active: boolean; created_at: Date;
 }>;
 
 type MerchantDocumentRow = Readonly<{
@@ -19,18 +36,30 @@ type MerchantDocumentRow = Readonly<{
 
 @Injectable()
 export class MerchantService {
-  constructor(private readonly database: DatabaseService, private readonly orders: OrdersService, private readonly audit: AuditService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly orders: OrdersService,
+    private readonly audit: AuditService,
+    private readonly notifications: NotificationsService
+  ) {}
 
   async membership(userId: string): Promise<Membership> {
-    const result = await this.database.query<{ merchant_id: string; role: "owner" | "manager" | "staff"; display_name: string; commission_bps: number }>(
-      `SELECT mm.merchant_id, mm.role, m.display_name, m.commission_bps
+    const result = await this.database.query<{
+      merchant_id: string; role: "owner" | "manager" | "staff"; display_name: string; commission_bps: number;
+      permissions: string[]; is_active: boolean;
+    }>(
+      `SELECT mm.merchant_id, mm.role, mm.permissions, mm.is_active, m.display_name, m.commission_bps
        FROM merchant_members mm JOIN merchants m ON m.id = mm.merchant_id
        WHERE mm.user_id = $1 ORDER BY CASE mm.role WHEN 'owner' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END LIMIT 1`,
       [userId]
     );
     const row = result.rows[0];
     if (!row) throw new ForbiddenException("You are not a member of a merchant account.");
-    return { merchantId: row.merchant_id, role: row.role, merchantName: row.display_name, commissionBps: row.commission_bps };
+    if (!row.is_active) throw new ForbiddenException("Your merchant access has been deactivated.");
+    return {
+      merchantId: row.merchant_id, role: row.role, merchantName: row.display_name, commissionBps: row.commission_bps,
+      permissions: permissionsForRole(row.role, row.permissions), isActive: row.is_active
+    };
   }
 
   async me(userId: string) {
@@ -39,7 +68,8 @@ export class MerchantService {
       this.database.query<MerchantRow>(
         `SELECT id, slug, display_name, description, logo_url, status, commission_bps, delivery_radius_km,
                 cancellation_policy, refund_policy, min_schedule_lead_minutes, max_schedule_days,
-                rejection_reason, suspension_reason
+                rejection_reason, suspension_reason, supports_delivery, supports_pickup, pickup_instructions,
+                allows_scheduling, accepting_orders, availability_note
          FROM merchants WHERE id = $1`, [membership.merchantId]
       ),
       this.database.query(
@@ -61,9 +91,11 @@ export class MerchantService {
         id: row.id, slug: row.slug, displayName: row.display_name, description: row.description, logoUrl: row.logo_url, status: row.status, commissionBps: row.commission_bps,
         deliveryRadiusKm: row.delivery_radius_km, cancellationPolicy: row.cancellation_policy, refundPolicy: row.refund_policy,
         minScheduleLeadMinutes: row.min_schedule_lead_minutes, maxScheduleDays: row.max_schedule_days,
-        rejectionReason: row.rejection_reason, suspensionReason: row.suspension_reason
+        rejectionReason: row.rejection_reason, suspensionReason: row.suspension_reason,
+        supportsDelivery: row.supports_delivery, supportsPickup: row.supports_pickup, pickupInstructions: row.pickup_instructions,
+        allowsScheduling: row.allows_scheduling, acceptingOrders: row.accepting_orders, availabilityNote: row.availability_note
       },
-      membership: { role: membership.role },
+      membership: { role: membership.role, permissions: membership.permissions },
       locations: locations.rows.map((location) => ({
         id: location.id as string, name: location.name as string, addressLine: location.address_line as string,
         latitude: location.latitude === null ? null : Number(location.latitude), longitude: location.longitude === null ? null : Number(location.longitude),
@@ -75,91 +107,429 @@ export class MerchantService {
   }
 
   async members(userId: string) {
-    const membership = await this.membership(userId);
-    const result = await this.database.query(
-      `SELECT u.id, u.phone_e164, u.display_name, mm.role, mm.created_at,
-              (SELECT count(*)::int FROM user_sessions s WHERE s.user_id = u.id AND s.revoked_at IS NULL AND s.expires_at > now()) AS active_sessions
-       FROM merchant_members mm JOIN users u ON u.id = mm.user_id
-       WHERE mm.merchant_id = $1 ORDER BY CASE mm.role WHEN 'owner' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END, u.display_name NULLS LAST`,
-      [membership.merchantId]
-    );
-    return { items: result.rows.map((row) => ({
-      userId: row.id as string, phoneE164: row.phone_e164 as string, displayName: row.display_name as string | null,
-      role: row.role as string, activeSessions: row.active_sessions as number, joinedAt: (row.created_at as Date).toISOString()
-    })) };
+    const membership = await this.requirePermission(userId, "staff:manage");
+    const [members, invitations] = await Promise.all([
+      this.database.query<StaffMemberRow & { active_sessions: number }>(
+        `SELECT u.id AS user_id, u.phone_e164, u.email, u.display_name, mm.role, mm.permissions, mm.is_active, mm.created_at,
+                (SELECT count(*)::int FROM user_sessions s WHERE s.user_id = u.id AND s.revoked_at IS NULL AND s.expires_at > now()) AS active_sessions
+         FROM merchant_members mm JOIN users u ON u.id = mm.user_id
+         WHERE mm.merchant_id = $1 ORDER BY CASE mm.role WHEN 'owner' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END, u.display_name NULLS LAST`,
+        [membership.merchantId]
+      ),
+      this.database.query<{ id: string; phone_e164: string; role: string; permissions: string[]; expires_at: Date; invited_by_name: string | null }>(
+        `SELECT i.id, i.phone_e164, i.role, i.permissions, i.expires_at, u.display_name AS invited_by_name
+         FROM merchant_staff_invitations i JOIN users u ON u.id = i.invited_by
+         WHERE i.merchant_id = $1 AND i.status = 'pending' AND i.expires_at > now()
+         ORDER BY i.created_at DESC`,
+        [membership.merchantId]
+      )
+    ]);
+    return {
+      items: members.rows.map((row) => ({
+        userId: row.user_id, phoneE164: row.phone_e164, email: row.email, displayName: row.display_name,
+        role: row.role, permissions: permissionsForRole(row.role, row.permissions), isActive: row.is_active,
+        activeSessions: row.active_sessions, joinedAt: row.created_at.toISOString()
+      })),
+      invitations: invitations.rows.map((row) => ({
+        id: row.id, phoneE164: row.phone_e164, role: row.role,
+        permissions: normalizeInvitationPermissions(row.role, row.permissions),
+        expiresAt: row.expires_at.toISOString(), invitedByName: row.invited_by_name
+      }))
+    };
   }
 
-  async addMember(userId: string, input: { phoneE164: string; role: "manager" | "staff" }, requestIdValue: string | null) {
-    const membership = await this.requireManager(userId);
-    const target = await this.database.query<{ id: string }>("SELECT id FROM users WHERE phone_e164 = $1 AND account_status = 'active'", [input.phoneE164]);
-    const targetId = target.rows[0]?.id;
-    if (!targetId) throw new NotFoundException("No active user exists for this phone number. Ask them to verify their phone first.");
-    if (targetId === userId) throw new ConflictException("You cannot add yourself as staff.");
+  async inviteMember(userId: string, input: Readonly<{ phoneE164: string; role: "manager" | "staff"; permissions?: readonly string[] | undefined }>, requestIdValue: string | null) {
+    const membership = await this.requirePermission(userId, "staff:manage");
+    const permissions = normalizeInvitationPermissions(input.role, input.permissions);
+    return this.database.withTransaction(async (client) => {
+      const target = await client.query<{ id: string; account_status: string; display_name: string | null }>(
+        "SELECT id, account_status, display_name FROM users WHERE phone_e164 = $1",
+        [input.phoneE164]
+      );
+      const targetUser = target.rows[0];
+      if (targetUser) {
+        if (targetUser.id === userId) throw new ConflictException("You cannot invite yourself.");
+        if (targetUser.account_status !== "active") throw new ConflictException("That phone number belongs to an account that is not active.");
+        const existing = await client.query<{ role: string }>(
+          "SELECT role FROM merchant_members WHERE merchant_id = $1 AND user_id = $2",
+          [membership.merchantId, targetUser.id]
+        );
+        if (existing.rows[0]?.role === "owner") throw new ConflictException("The merchant owner cannot be assigned through an invitation.");
+        await client.query(
+          `INSERT INTO merchant_members (user_id, merchant_id, role, permissions, is_active, invited_by)
+           VALUES ($1,$2,$3,$4,true,$5)
+           ON CONFLICT (user_id, merchant_id) DO UPDATE
+           SET role = EXCLUDED.role, permissions = EXCLUDED.permissions, is_active = true,
+               invited_by = EXCLUDED.invited_by, updated_at = now()`,
+          [targetUser.id, membership.merchantId, input.role, permissions, userId]
+        );
+        await client.query(
+          "INSERT INTO user_role_assignments (user_id, role) VALUES ($1, 'merchant_staff') ON CONFLICT DO NOTHING",
+          [targetUser.id]
+        );
+        await this.notifications.create({
+          userId: targetUser.id,
+          type: "merchant.staff_access",
+          title: "Merchant workspace access",
+          body: `You now have ${input.role} access to ${membership.merchantName}.`,
+          data: { merchantId: membership.merchantId, role: input.role }
+        }, client);
+        await this.audit.record({
+          actorUserId: userId, action: "merchant.staff_added", entityType: "merchant_member",
+          entityId: targetUser.id, requestId: requestIdValue,
+          metadata: { role: input.role, permissions }
+        }, client);
+        return {
+          status: existing.rows[0] ? "updated" as const : "accepted" as const,
+          userId: targetUser.id, phoneE164: input.phoneE164, role: input.role, permissions
+        };
+      }
+      const invitation = await client.query<{ id: string; expires_at: Date }>(
+        `INSERT INTO merchant_staff_invitations (merchant_id, phone_e164, role, permissions, invited_by)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (merchant_id, phone_e164) WHERE status = 'pending' DO UPDATE
+         SET role = EXCLUDED.role, permissions = EXCLUDED.permissions, invited_by = EXCLUDED.invited_by,
+             expires_at = now() + interval '7 days', updated_at = now()
+         RETURNING id, expires_at`,
+        [membership.merchantId, input.phoneE164, input.role, permissions, userId]
+      );
+      const row = invitation.rows[0];
+      if (!row) throw new Error("Staff invitation creation failed.");
+      await this.audit.record({
+        actorUserId: userId, action: "merchant.staff_invited", entityType: "merchant_invitation",
+        entityId: row.id, requestId: requestIdValue,
+        metadata: { phoneE164: input.phoneE164, role: input.role, permissions }
+      }, client);
+      return {
+        status: "pending" as const, invitationId: row.id, phoneE164: input.phoneE164,
+        role: input.role, permissions, expiresAt: row.expires_at.toISOString()
+      };
+    });
+  }
+
+  async updateMember(
+    userId: string,
+    targetUserId: string,
+    input: Readonly<{ role?: "manager" | "staff" | undefined; permissions?: readonly string[] | undefined; isActive?: boolean | undefined }>,
+    requestIdValue: string | null
+  ) {
+    const membership = await this.requirePermission(userId, "staff:manage");
+    const target = await this.database.query<{ role: "owner" | "manager" | "staff"; permissions: string[]; is_active: boolean }>(
+      "SELECT role, permissions, is_active FROM merchant_members WHERE merchant_id = $1 AND user_id = $2",
+      [membership.merchantId, targetUserId]
+    );
+    const row = target.rows[0];
+    if (!row) throw new NotFoundException("Staff member not found.");
+    if (row.role === "owner") throw new ConflictException("The merchant owner role cannot be changed or deactivated.");
+    if (targetUserId === userId && input.isActive === false) throw new ConflictException("You cannot deactivate your own access.");
+    const role = input.role ?? row.role;
+    const permissions = permissionsForRole(role, input.permissions ?? row.permissions);
+    const isActive = input.isActive ?? row.is_active;
     await this.database.query(
-      `INSERT INTO merchant_members (user_id, merchant_id, role) VALUES ($1,$2,$3)
-       ON CONFLICT (user_id, merchant_id) DO UPDATE SET role = EXCLUDED.role`,
-      [targetId, membership.merchantId, input.role]
+      `UPDATE merchant_members SET role = $3, permissions = $4, is_active = $5, updated_at = now()
+       WHERE merchant_id = $1 AND user_id = $2`,
+      [membership.merchantId, targetUserId, role, permissions, isActive]
     );
-    await this.recordAudit(userId, "merchant.member_added", "merchant_member", targetId, requestIdValue, { role: input.role });
-    return { userId: targetId, role: input.role };
-  }
-
-  async updateMember(userId: string, targetUserId: string, role: "manager" | "staff", requestIdValue: string | null) {
-    const membership = await this.requireManager(userId);
-    const result = await this.database.query(
-      "UPDATE merchant_members SET role = $3 WHERE merchant_id = $1 AND user_id = $2 AND role <> 'owner'",
-      [membership.merchantId, targetUserId, role]
-    );
-    if (result.rowCount === 0) throw new NotFoundException("Staff member not found or owner role cannot be changed.");
-    await this.recordAudit(userId, "merchant.member_role_updated", "merchant_member", targetUserId, requestIdValue, { role });
-    return { userId: targetUserId, role };
+    await this.recordAudit(userId, "merchant.staff_updated", "merchant_member", targetUserId, requestIdValue, { role, permissions, isActive });
+    return { userId: targetUserId, role, permissions, isActive };
   }
 
   async removeMember(userId: string, targetUserId: string, requestIdValue: string | null) {
-    const membership = await this.requireManager(userId);
+    const membership = await this.requirePermission(userId, "staff:manage");
+    if (targetUserId === userId) throw new ConflictException("You cannot remove your own access.");
     const result = await this.database.query(
       "DELETE FROM merchant_members WHERE merchant_id = $1 AND user_id = $2 AND role <> 'owner' RETURNING user_id",
       [membership.merchantId, targetUserId]
     );
     if (result.rowCount === 0) throw new NotFoundException("Staff member not found or owner cannot be removed.");
-    await this.recordAudit(userId, "merchant.member_removed", "merchant_member", targetUserId, requestIdValue);
+    await this.recordAudit(userId, "merchant.staff_removed", "merchant_member", targetUserId, requestIdValue);
     return { removed: true };
+  }
+
+  async revokeInvitation(userId: string, invitationId: string, requestIdValue: string | null) {
+    const membership = await this.requirePermission(userId, "staff:manage");
+    const result = await this.database.query(
+      `UPDATE merchant_staff_invitations SET status = 'revoked', updated_at = now()
+       WHERE id = $1 AND merchant_id = $2 AND status = 'pending' RETURNING id`,
+      [invitationId, membership.merchantId]
+    );
+    if (result.rowCount === 0) throw new NotFoundException("Pending invitation not found.");
+    await this.recordAudit(userId, "merchant.staff_invitation_revoked", "merchant_invitation", invitationId, requestIdValue);
+    return { revoked: true };
   }
 
   async fulfillmentSettings(userId: string) {
     const membership = await this.membership(userId);
-    const result = await this.database.query<{ supports_pickup: boolean; allows_scheduling: boolean; pickup_instructions: string | null }>(
-      "SELECT supports_pickup, allows_scheduling, pickup_instructions FROM merchants WHERE id = $1", [membership.merchantId]
+    const result = await this.database.query<{
+      supports_delivery: boolean; supports_pickup: boolean; allows_scheduling: boolean;
+      pickup_instructions: string | null; min_schedule_lead_minutes: number; max_schedule_days: number;
+      accepting_orders: boolean; availability_note: string | null;
+    }>(
+      `SELECT supports_delivery, supports_pickup, allows_scheduling, pickup_instructions,
+              min_schedule_lead_minutes, max_schedule_days, accepting_orders, availability_note
+       FROM merchants WHERE id = $1`, [membership.merchantId]
     );
     const row = result.rows[0];
     if (!row) throw new NotFoundException("Merchant not found.");
-    return { supportsPickup: row.supports_pickup, allowsScheduling: row.allows_scheduling, pickupInstructions: row.pickup_instructions };
+    return {
+      supportsDelivery: row.supports_delivery, supportsPickup: row.supports_pickup,
+      allowsScheduling: row.allows_scheduling, pickupInstructions: row.pickup_instructions,
+      minScheduleLeadMinutes: row.min_schedule_lead_minutes, maxScheduleDays: row.max_schedule_days,
+      acceptingOrders: row.accepting_orders, availabilityNote: row.availability_note
+    };
   }
 
-  async updateFulfillmentSettings(userId: string, input: { supportsPickup: boolean; allowsScheduling: boolean; pickupInstructions?: string }, requestIdValue: string | null) {
-    const membership = await this.requireManager(userId);
+  async updateFulfillmentSettings(
+    userId: string,
+    input: Readonly<{
+      supportsDelivery: boolean; supportsPickup: boolean; allowsScheduling: boolean;
+      pickupInstructions?: string | undefined; minScheduleLeadMinutes?: number | undefined; maxScheduleDays?: number | undefined;
+    }>,
+    requestIdValue: string | null
+  ) {
+    const membership = await this.requirePermission(userId, "settings:manage");
+    if (!input.supportsDelivery && !input.supportsPickup) throw new BadRequestException("Enable delivery, pickup, or both.");
     await this.database.query(
-      "UPDATE merchants SET supports_pickup = $2, allows_scheduling = $3, pickup_instructions = $4, updated_at = now() WHERE id = $1",
-      [membership.merchantId, input.supportsPickup, input.allowsScheduling, input.pickupInstructions ?? null]
+      `UPDATE merchants SET supports_delivery = $2, supports_pickup = $3, allows_scheduling = $4,
+              pickup_instructions = $5, min_schedule_lead_minutes = COALESCE($6, min_schedule_lead_minutes),
+              max_schedule_days = COALESCE($7, max_schedule_days), updated_at = now()
+       WHERE id = $1`,
+      [membership.merchantId, input.supportsDelivery, input.supportsPickup, input.allowsScheduling,
+        input.pickupInstructions ?? null, input.minScheduleLeadMinutes ?? null, input.maxScheduleDays ?? null]
     );
-    await this.recordAudit(userId, "merchant.fulfillment_settings_updated", "merchant", membership.merchantId, requestIdValue, input);
+    await this.recordAudit(userId, "merchant.fulfillment_settings_updated", "merchant", membership.merchantId, requestIdValue, {
+      supportsDelivery: input.supportsDelivery, supportsPickup: input.supportsPickup,
+      allowsScheduling: input.allowsScheduling, minScheduleLeadMinutes: input.minScheduleLeadMinutes ?? null,
+      maxScheduleDays: input.maxScheduleDays ?? null
+    });
     return this.fulfillmentSettings(userId);
   }
 
-  async merchantAudit(userId: string, limit: number, offset: number) {
+  async updateAvailability(userId: string, input: Readonly<{ acceptingOrders: boolean; note?: string | undefined }>, requestIdValue: string | null) {
+    const membership = await this.requirePermission(userId, "settings:manage");
+    await this.database.query(
+      "UPDATE merchants SET accepting_orders = $2, availability_note = $3, updated_at = now() WHERE id = $1",
+      [membership.merchantId, input.acceptingOrders, input.note?.trim() || null]
+    );
+    await this.recordAudit(userId, "merchant.availability_updated", "merchant", membership.merchantId, requestIdValue, {
+      acceptingOrders: input.acceptingOrders, note: input.note ?? null
+    });
+    return this.fulfillmentSettings(userId);
+  }
+
+  async closures(userId: string) {
     const membership = await this.membership(userId);
+    const result = await this.database.query<{ id: string; location_id: string | null; location_name: string | null; starts_at: Date; ends_at: Date; reason: string | null; created_at: Date }>(
+      `SELECT c.id, c.location_id, ml.name AS location_name, c.starts_at, c.ends_at, c.reason, c.created_at
+       FROM merchant_closures c LEFT JOIN merchant_locations ml ON ml.id = c.location_id
+       WHERE c.merchant_id = $1 AND c.ends_at >= now() - interval '1 day'
+       ORDER BY c.starts_at ASC`,
+      [membership.merchantId]
+    );
+    return { items: result.rows.map((row) => ({
+      id: row.id, locationId: row.location_id, locationName: row.location_name,
+      startsAt: row.starts_at.toISOString(), endsAt: row.ends_at.toISOString(),
+      reason: row.reason, createdAt: row.created_at.toISOString()
+    })) };
+  }
+
+  async createClosure(
+    userId: string,
+    input: Readonly<{ locationId?: string | undefined; startsAt: string; endsAt: string; reason?: string | undefined }>,
+    requestIdValue: string | null
+  ) {
+    const membership = await this.requirePermission(userId, "settings:manage");
+    const start = new Date(input.startsAt);
+    const end = new Date(input.endsAt);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new BadRequestException("Closure times must be valid timestamps.");
+    if (end <= start) throw new BadRequestException("Closure end time must be after the start time.");
+    if (end.getTime() - start.getTime() > 90 * 86_400_000) throw new BadRequestException("A temporary closure can last at most 90 days.");
+    if (start.getTime() > Date.now() + 366 * 86_400_000) throw new BadRequestException("Closures can be scheduled at most one year ahead.");
+    const locationId = input.locationId ?? null;
+    if (locationId) {
+      const location = await this.database.query("SELECT 1 FROM merchant_locations WHERE id = $1 AND merchant_id = $2", [locationId, membership.merchantId]);
+      if ((location.rowCount ?? 0) === 0) throw new NotFoundException("Location not found.");
+    }
+    const overlap = await this.database.query(
+      `SELECT 1 FROM merchant_closures
+       WHERE merchant_id = $1 AND starts_at < $3 AND ends_at > $2
+         AND ($4::uuid IS NULL OR location_id IS NULL OR location_id = $4)
+       LIMIT 1`,
+      [membership.merchantId, start, end, locationId]
+    );
+    if ((overlap.rowCount ?? 0) > 0) throw new ConflictException("A closure already covers part of that time window.");
+    const result = await this.database.query<{ id: string }>(
+      `INSERT INTO merchant_closures (merchant_id, location_id, starts_at, ends_at, reason, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+      [membership.merchantId, locationId, start, end, input.reason?.trim() || null, userId]
+    );
+    const id = result.rows[0]?.id;
+    if (!id) throw new Error("Closure creation failed.");
+    await this.recordAudit(userId, "merchant.closure_created", "merchant_closure", id, requestIdValue, {
+      locationId, startsAt: start.toISOString(), endsAt: end.toISOString(), reason: input.reason ?? null
+    });
+    return { id, locationId, startsAt: start.toISOString(), endsAt: end.toISOString(), reason: input.reason ?? null };
+  }
+
+  async deleteClosure(userId: string, closureId: string, requestIdValue: string | null) {
+    const membership = await this.requirePermission(userId, "settings:manage");
     const result = await this.database.query(
-      `SELECT a.id, a.actor_user_id, u.display_name AS actor_name, a.action, a.entity_type, a.entity_id, a.metadata, a.created_at
-       FROM audit_log a JOIN users u ON u.id = a.actor_user_id
-       JOIN merchant_members mm ON mm.user_id = a.actor_user_id AND mm.merchant_id = $1
-       WHERE a.action LIKE 'merchant.%' ORDER BY a.created_at DESC LIMIT $2 OFFSET $3`,
+      "DELETE FROM merchant_closures WHERE id = $1 AND merchant_id = $2 RETURNING id",
+      [closureId, membership.merchantId]
+    );
+    if (result.rowCount === 0) throw new NotFoundException("Closure not found.");
+    await this.recordAudit(userId, "merchant.closure_deleted", "merchant_closure", closureId, requestIdValue);
+    return { deleted: true };
+  }
+
+  async merchantAudit(userId: string, limit: number, offset: number) {
+    const membership = await this.requirePermission(userId, "audit:view");
+    const [result, total] = await Promise.all([
+      this.database.query(
+        `SELECT a.id, a.actor_user_id, u.display_name AS actor_name, a.action, a.entity_type, a.entity_id, a.metadata, a.created_at
+         FROM audit_log a JOIN users u ON u.id = a.actor_user_id
+         JOIN merchant_members mm ON mm.user_id = a.actor_user_id AND mm.merchant_id = $1
+         WHERE a.action LIKE 'merchant.%' ORDER BY a.created_at DESC LIMIT $2 OFFSET $3`,
+        [membership.merchantId, limit, offset]
+      ),
+      this.database.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM audit_log a
+         JOIN merchant_members mm ON mm.user_id = a.actor_user_id AND mm.merchant_id = $1
+         WHERE a.action LIKE 'merchant.%'`,
+        [membership.merchantId]
+      )
+    ]);
+    return {
+      total: total.rows[0]?.count ?? 0,
+      items: result.rows.map((row) => ({
+        id: row.id as string, actorUserId: row.actor_user_id as string, actorName: row.actor_name as string | null,
+        action: row.action as string, entityType: row.entity_type as string, entityId: row.entity_id as string | null,
+        metadata: row.metadata as Record<string, unknown>, createdAt: (row.created_at as Date).toISOString()
+      }))
+    };
+  }
+
+  async supportTickets(userId: string, limit: number, offset: number) {
+    const membership = await this.requirePermission(userId, "support:manage");
+    const result = await this.database.query(
+      `SELECT t.id, t.subject, t.category, t.status, t.priority, t.created_at, t.updated_at, o.order_number,
+              (SELECT count(*)::int FROM support_messages sm WHERE sm.ticket_id = t.id AND sm.is_internal = false) AS message_count
+       FROM support_tickets t
+       LEFT JOIN orders o ON o.id = t.order_id
+       WHERE t.merchant_id = $1 OR (t.merchant_id IS NULL AND o.merchant_id = $1)
+       ORDER BY CASE t.priority WHEN 'URGENT' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'NORMAL' THEN 2 ELSE 3 END,
+                t.created_at DESC LIMIT $2 OFFSET $3`,
       [membership.merchantId, limit, offset]
     );
     return { items: result.rows.map((row) => ({
-      id: row.id as string, actorUserId: row.actor_user_id as string, actorName: row.actor_name as string | null,
-      action: row.action as string, entityType: row.entity_type as string, entityId: row.entity_id as string | null,
-      metadata: row.metadata as Record<string, unknown>, createdAt: (row.created_at as Date).toISOString()
+      id: row.id as string, subject: row.subject as string, category: row.category as string,
+      status: row.status as string, priority: row.priority as string, orderNumber: row.order_number as string | null,
+      messageCount: row.message_count as number, createdAt: (row.created_at as Date).toISOString(),
+      updatedAt: (row.updated_at as Date).toISOString()
     })) };
+  }
+
+  async supportTicketDetail(userId: string, ticketId: string) {
+    const membership = await this.requirePermission(userId, "support:manage");
+    const ticket = await this.database.query<{
+      id: string; subject: string; category: string; status: string; priority: string; order_id: string | null;
+      order_number: string | null; requester_name: string | null; requester_phone: string | null;
+      created_at: Date; updated_at: Date;
+    }>(
+      `SELECT t.id, t.subject, t.category, t.status, t.priority, t.order_id, o.order_number,
+              u.display_name AS requester_name, u.phone_e164 AS requester_phone, t.created_at, t.updated_at
+       FROM support_tickets t
+       LEFT JOIN orders o ON o.id = t.order_id
+       LEFT JOIN users u ON u.id = t.user_id
+       WHERE t.id = $1 AND (t.merchant_id = $2 OR (t.merchant_id IS NULL AND o.merchant_id = $2))`,
+      [ticketId, membership.merchantId]
+    );
+    const row = ticket.rows[0];
+    if (!row) throw new NotFoundException("Support ticket not found.");
+    const messages = await this.database.query(
+      "SELECT id, sender_user_id, body, created_at FROM support_messages WHERE ticket_id = $1 AND is_internal = false ORDER BY created_at ASC",
+      [ticketId]
+    );
+    return {
+      id: row.id, subject: row.subject, category: row.category, status: row.status, priority: row.priority,
+      orderId: row.order_id, orderNumber: row.order_number, requesterName: row.requester_name,
+      requesterPhone: row.requester_phone, createdAt: row.created_at.toISOString(), updatedAt: row.updated_at.toISOString(),
+      messages: messages.rows.map((message) => ({
+        id: message.id as string, senderUserId: message.sender_user_id as string, body: message.body as string,
+        createdAt: (message.created_at as Date).toISOString()
+      }))
+    };
+  }
+
+  async createSupportTicket(userId: string, input: Readonly<{ subject: string; category: string; orderId: string | null; priority: string; message: string }>, requestIdValue: string | null) {
+    const membership = await this.requirePermission(userId, "support:manage");
+    if (input.orderId) {
+      const order = await this.database.query("SELECT 1 FROM orders WHERE id = $1 AND merchant_id = $2", [input.orderId, membership.merchantId]);
+      if ((order.rowCount ?? 0) === 0) throw new NotFoundException("Order not found.");
+    }
+    const result = await this.database.withTransaction(async (client) => {
+      const ticket = await client.query<{ id: string; created_at: Date }>(
+        `INSERT INTO support_tickets (user_id, merchant_id, order_id, subject, category, priority)
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, created_at`,
+        [userId, membership.merchantId, input.orderId, input.subject, input.category, input.priority]
+      );
+      const id = ticket.rows[0]?.id;
+      if (!id) throw new Error("Support ticket creation failed.");
+      await client.query("INSERT INTO support_messages (ticket_id, sender_user_id, body) VALUES ($1,$2,$3)", [id, userId, input.message]);
+      await this.audit.record({
+        actorUserId: userId, action: "merchant.support_ticket_created", entityType: "support_ticket",
+        entityId: id, requestId: requestIdValue, metadata: { category: input.category, priority: input.priority, orderId: input.orderId }
+      }, client);
+      return { id, status: "OPEN", createdAt: ticket.rows[0]?.created_at.toISOString() };
+    });
+    return result;
+  }
+
+  async replySupportTicket(userId: string, ticketId: string, body: string, requestIdValue: string | null) {
+    const membership = await this.requirePermission(userId, "support:manage");
+    const ticket = await this.database.query<{ id: string; user_id: string; status: string }>(
+      `SELECT t.id, t.user_id, t.status FROM support_tickets t
+       LEFT JOIN orders o ON o.id = t.order_id
+       WHERE t.id = $1 AND (t.merchant_id = $2 OR (t.merchant_id IS NULL AND o.merchant_id = $2))`,
+      [ticketId, membership.merchantId]
+    );
+    const row = ticket.rows[0];
+    if (!row) throw new NotFoundException("Support ticket not found.");
+    if (row.status === "CLOSED") throw new ConflictException("This support ticket is closed.");
+    await this.database.withTransaction(async (client) => {
+      await client.query("INSERT INTO support_messages (ticket_id, sender_user_id, body) VALUES ($1,$2,$3)", [ticketId, userId, body]);
+      await client.query(
+        "UPDATE support_tickets SET status = CASE WHEN status = 'OPEN' THEN 'IN_PROGRESS' ELSE status END, updated_at = now() WHERE id = $1",
+        [ticketId]
+      );
+      await this.notifications.create({
+        userId: row.user_id, type: "support.reply", title: `Reply from ${membership.merchantName}`,
+        body: body.slice(0, 160), data: { ticketId }
+      }, client);
+      await this.audit.record({
+        actorUserId: userId, action: "merchant.support_ticket_replied", entityType: "support_ticket",
+        entityId: ticketId, requestId: requestIdValue
+      }, client);
+    });
+    return { sent: true };
+  }
+
+  async setSupportTicketStatus(userId: string, ticketId: string, status: "OPEN" | "IN_PROGRESS" | "RESOLVED" | "CLOSED", requestIdValue: string | null) {
+    const membership = await this.requirePermission(userId, "support:manage");
+    const result = await this.database.query(
+      `UPDATE support_tickets t SET status = $3, updated_at = now()
+       WHERE t.id = $1 AND (
+         t.merchant_id = $2
+         OR (t.merchant_id IS NULL AND EXISTS (
+           SELECT 1 FROM orders o WHERE o.id = t.order_id AND o.merchant_id = $2
+         ))
+       )
+       RETURNING t.id`,
+      [ticketId, membership.merchantId, status]
+    );
+    if (result.rowCount === 0) throw new NotFoundException("Support ticket not found.");
+    await this.recordAudit(userId, "merchant.support_ticket_status", "support_ticket", ticketId, requestIdValue, { status });
+    return { status };
   }
 
   async updateMerchant(userId: string, input: Readonly<{ displayName?: string | undefined; description?: string | undefined; logoUrl?: string | undefined; commissionBps?: number | undefined; deliveryRadiusKm?: number | undefined; cancellationPolicy?: string | undefined; refundPolicy?: string | undefined }>) {
@@ -715,10 +1085,16 @@ export class MerchantService {
     await this.audit.record({ actorUserId: userId, action, entityType, entityId, requestId, metadata });
   }
 
-  private async requireManager(userId: string): Promise<Membership> {
+  private async requirePermission(userId: string, permission: MerchantPermission): Promise<Membership> {
     const membership = await this.membership(userId);
-    if (membership.role === "staff") throw new ConflictException("Only owners and managers can change merchant settings or the menu.");
+    if (!hasMerchantPermission(membership.role, membership.permissions, permission)) {
+      throw new ForbiddenException("Your merchant role does not include this permission.");
+    }
     return membership;
+  }
+
+  private requireManager(userId: string): Promise<Membership> {
+    return this.requirePermission(userId, "settings:manage");
   }
 }
 

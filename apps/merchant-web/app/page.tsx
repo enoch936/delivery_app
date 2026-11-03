@@ -47,17 +47,38 @@ type MerchantMe = {
     status: string; commissionBps: number; deliveryRadiusKm: number; cancellationPolicy: string | null;
     refundPolicy: string | null; minScheduleLeadMinutes: number; maxScheduleDays: number;
     rejectionReason: string | null; suspensionReason: string | null;
+    supportsDelivery: boolean; supportsPickup: boolean; pickupInstructions: string | null;
+    allowsScheduling: boolean; acceptingOrders: boolean; availabilityNote: string | null;
   };
-  membership: { role: string };
+  membership: { role: string; permissions: string[] };
   locations: MerchantLocation[];
   categories: Array<{ id: string; slug: string; display_name: string; sort_order: number }>;
   stats: { todayOrders: number; pendingOrders: number; revenueTodayMinor: number };
 };
 
-type MerchantMember = { userId: string; phoneE164: string; displayName: string | null; role: string; activeSessions: number; joinedAt: string };
-type FulfillmentSettings = { supportsPickup: boolean; allowsScheduling: boolean; pickupInstructions: string | null };
+type MerchantMember = { userId: string; phoneE164: string; email: string | null; displayName: string | null; role: string; permissions: string[]; isActive: boolean; activeSessions: number; joinedAt: string };
+type StaffInvitation = { id: string; phoneE164: string; role: string; permissions: string[]; expiresAt: string; invitedByName: string | null };
+type FulfillmentSettings = {
+  supportsDelivery: boolean; supportsPickup: boolean; allowsScheduling: boolean; pickupInstructions: string | null;
+  minScheduleLeadMinutes: number; maxScheduleDays: number; acceptingOrders: boolean; availabilityNote: string | null;
+};
+type MerchantClosure = { id: string; locationId: string | null; locationName: string | null; startsAt: string; endsAt: string; reason: string | null; createdAt: string };
 type NotificationPreferences = { pushEnabled: boolean; smsEnabled: boolean; emailEnabled: boolean; orderUpdates: boolean; promotions: boolean; securityAlerts: boolean };
 type SupportTicket = { id: string; subject: string; category: string; status: string; priority: string; orderNumber: string | null; messageCount: number; createdAt: string; updatedAt: string };
+type SupportTicketDetail = SupportTicket & {
+  orderId: string | null; requesterName: string | null; requesterPhone: string | null;
+  messages: Array<{ id: string; senderUserId: string; body: string; createdAt: string }>;
+};
+const MERCHANT_PERMISSIONS = [
+  "orders:manage", "catalog:manage", "settings:manage", "staff:manage",
+  "finance:view", "communication:manage", "support:manage", "audit:view"
+] as const;
+
+function defaultPermissions(role: "manager" | "staff"): string[] {
+  return role === "manager"
+    ? ["orders:manage", "catalog:manage", "settings:manage", "finance:view", "communication:manage", "support:manage", "audit:view"]
+    : ["orders:manage", "communication:manage"];
+}
 type UserSession = { id: string; userAgent: string | null; isCurrent: boolean; createdAt: string; expiresAt: string };
 type AuditEntry = { id: string; actorUserId: string; actorName: string | null; action: string; entityType: string; entityId: string | null; metadata: Record<string, unknown>; createdAt: string };
 
@@ -345,6 +366,7 @@ function Overview({ me, reload, notify }: { me: MerchantMe; reload: () => Promis
   }
 
   const m = me.merchant;
+  const canEdit = me.membership.role === "owner" || me.membership.permissions.includes("settings:manage");
 
   return <>
     {m.status !== "active" ? <section className="panel">
@@ -373,7 +395,7 @@ function Overview({ me, reload, notify }: { me: MerchantMe; reload: () => Promis
       <section className="panel">
         <div className="panel-head">
           <div><p className="eyebrow">PROFILE</p><h2>{me.merchant.displayName}</h2></div>
-          <button className="ghost" onClick={() => setEditing((value) => !value)}>{editing ? "Cancel" : "Edit"}</button>
+          {canEdit ? <button className="ghost" onClick={() => setEditing((value) => !value)}>{editing ? "Cancel" : "Edit"}</button> : null}
         </div>
         {editing ? <form className="stack" onSubmit={saveProfile}>
           <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} minLength={2} maxLength={120} required /></label>
@@ -1318,6 +1340,15 @@ function Business({ me, reload, notify }: { me: MerchantMe; reload: () => Promis
   const [documents, setDocuments] = useState<MerchantDocument[] | null>(null);
   const [savingDocument, setSavingDocument] = useState(false);
 
+  const [acceptingOrders, setAcceptingOrders] = useState(m.acceptingOrders);
+  const [availabilityNote, setAvailabilityNote] = useState(m.availabilityNote ?? "");
+  const [closures, setClosures] = useState<MerchantClosure[]>([]);
+  const [closureLocationId, setClosureLocationId] = useState("");
+  const [closureStartsAt, setClosureStartsAt] = useState("");
+  const [closureEndsAt, setClosureEndsAt] = useState("");
+  const [closureReason, setClosureReason] = useState("");
+  const [savingAvailability, setSavingAvailability] = useState(false);
+
   const loadDocuments = useCallback(async () => {
     try {
       const result = await api<{ items: MerchantDocument[] }>("/v1/merchant/documents");
@@ -1327,7 +1358,17 @@ function Business({ me, reload, notify }: { me: MerchantMe; reload: () => Promis
     }
   }, []);
 
+  const loadClosures = useCallback(async () => {
+    try {
+      const result = await api<{ items: MerchantClosure[] }>("/v1/merchant/closures");
+      setClosures(result.items);
+    } catch {
+      setClosures([]);
+    }
+  }, []);
+
   useEffect(() => { void loadDocuments(); }, [loadDocuments]);
+  useEffect(() => { void loadClosures(); }, [loadClosures]);
 
   async function saveStore(event: React.FormEvent) {
     event.preventDefault();
@@ -1400,7 +1441,57 @@ function Business({ me, reload, notify }: { me: MerchantMe; reload: () => Promis
     }
   }
 
-  const canManageSettings = me.membership.role === "owner" || me.membership.role === "manager";
+  async function saveAvailability(next?: boolean) {
+    const accepting = next ?? acceptingOrders;
+    setSavingAvailability(true);
+    try {
+      const result = await api<FulfillmentSettings>("/v1/merchant/settings/availability", {
+        method: "PATCH",
+        body: JSON.stringify({ acceptingOrders: accepting, note: availabilityNote })
+      });
+      setAcceptingOrders(result.acceptingOrders);
+      setAvailabilityNote(result.availabilityNote ?? "");
+      notify(accepting ? "Store is accepting orders." : "New orders are paused.");
+      await reload();
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not update store availability.");
+    } finally {
+      setSavingAvailability(false);
+    }
+  }
+
+  async function createClosure(event: React.FormEvent) {
+    event.preventDefault();
+    if (!closureStartsAt || !closureEndsAt) return notify("Choose the closure start and end times.");
+    try {
+      await api("/v1/merchant/closures", {
+        method: "POST",
+        body: JSON.stringify({
+          locationId: closureLocationId || undefined,
+          startsAt: new Date(closureStartsAt).toISOString(),
+          endsAt: new Date(closureEndsAt).toISOString(),
+          reason: closureReason
+        })
+      });
+      notify("Temporary closure scheduled.");
+      setClosureStartsAt(""); setClosureEndsAt(""); setClosureReason("");
+      await loadClosures();
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not schedule the closure.");
+    }
+  }
+
+  async function deleteClosure(closureId: string) {
+    try {
+      await api(`/v1/merchant/closures/${closureId}`, { method: "DELETE" });
+      notify("Closure removed.");
+      await loadClosures();
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not remove the closure.");
+    }
+  }
+
+  const canManageSettings = me.membership.role === "owner" || me.membership.permissions.includes("settings:manage");
 
   return <div className="stack">
     <section className="panel">
@@ -1462,6 +1553,35 @@ function Business({ me, reload, notify }: { me: MerchantMe; reload: () => Promis
     </section>
 
     <section className="panel stack">
+      <div className="panel-head">
+        <div><p className="eyebrow">AVAILABILITY</p><h2>Order intake & temporary closures</h2></div>
+        <span className={`status-pill ${acceptingOrders ? "active" : "suspended"}`}>{acceptingOrders ? "Accepting orders" : "Paused"}</span>
+      </div>
+      <label className="check-row">
+        <input type="checkbox" checked={acceptingOrders} disabled={!canManageSettings || savingAvailability} onChange={(event) => { setAcceptingOrders(event.target.checked); void saveAvailability(event.target.checked); }} />
+        Accept new orders
+      </label>
+      <label>Availability note (shown to customers when paused)
+        <input value={availabilityNote} onChange={(event) => setAvailabilityNote(event.target.value)} maxLength={300} placeholder="Kitchen is closed for maintenance until 4 PM." disabled={!canManageSettings} />
+      </label>
+      {canManageSettings ? <button className="ghost" disabled={savingAvailability} onClick={() => void saveAvailability()}>{savingAvailability ? "Saving…" : "Save availability note"}</button> : null}
+      <div className="panel-head"><div><h3>Scheduled closures</h3></div></div>
+      {closures.length === 0 ? <p className="muted">No upcoming closures.</p> : <div className="stack">{closures.map((closure) => <div className="flag-row" key={closure.id}>
+        <div><strong>{closure.locationName ?? "All locations"}</strong><p>{new Date(closure.startsAt).toLocaleString()} → {new Date(closure.endsAt).toLocaleString()}{closure.reason ? ` · ${closure.reason}` : ""}</p></div>
+        {canManageSettings ? <button className="ghost danger" onClick={() => void deleteClosure(closure.id)}>Remove</button> : null}
+      </div>)}</div>}
+      {canManageSettings ? <form className="stack" onSubmit={createClosure}>
+        <div className="form-grid">
+          <label>Location<select value={closureLocationId} onChange={(event) => setClosureLocationId(event.target.value)}><option value="">All locations</option>{me.locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
+          <label>Reason<input value={closureReason} onChange={(event) => setClosureReason(event.target.value)} maxLength={300} placeholder="Public holiday" /></label>
+          <label>Starts<input type="datetime-local" value={closureStartsAt} onChange={(event) => setClosureStartsAt(event.target.value)} required /></label>
+          <label>Ends<input type="datetime-local" value={closureEndsAt} onChange={(event) => setClosureEndsAt(event.target.value)} required /></label>
+        </div>
+        <button>Schedule closure</button>
+      </form> : null}
+    </section>
+
+    <section className="panel stack">
       <div className="panel-head"><div><p className="eyebrow">VERIFICATION</p><h2>Business documents</h2></div></div>
       {documents === null ? <p className="muted">Loading documents…</p> : documents.length === 0 ? <p className="muted">No documents uploaded yet.</p> : <div className="stack">
         {documents.map((document) => <div className="flag-row" key={document.id}>
@@ -1487,58 +1607,113 @@ function Business({ me, reload, notify }: { me: MerchantMe; reload: () => Promis
   </div>;
 }
 
+type MemberDraft = { role: "manager" | "staff"; permissions: string[]; isActive: boolean };
+
 function ControlCenter({ me, notify }: { me: MerchantMe; notify: (message: string) => void }) {
-  const canManage = me.membership.role === "owner" || me.membership.role === "manager";
+  const canManageStaff = me.membership.role === "owner" || me.membership.permissions.includes("staff:manage");
+  const canManageSettings = me.membership.role === "owner" || me.membership.permissions.includes("settings:manage");
+  const canViewAudit = me.membership.role === "owner" || me.membership.permissions.includes("audit:view");
   const [members, setMembers] = useState<MerchantMember[]>([]);
+  const [invitations, setInvitations] = useState<StaffInvitation[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, MemberDraft>>({});
   const [fulfillment, setFulfillment] = useState<FulfillmentSettings | null>(null);
   const [preferences, setPreferences] = useState<NotificationPreferences | null>(null);
   const [tickets, setTickets] = useState<SupportTicket[]>([]);
+  const [ticketDetail, setTicketDetail] = useState<SupportTicketDetail | null>(null);
   const [sessions, setSessions] = useState<UserSession[]>([]);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [phone, setPhone] = useState("");
   const [role, setRole] = useState<"manager" | "staff">("staff");
+  const [invitePermissions, setInvitePermissions] = useState<string[]>([]);
   const [ticketSubject, setTicketSubject] = useState("");
   const [ticketMessage, setTicketMessage] = useState("");
-  const [selectedTicket, setSelectedTicket] = useState<string | null>(null);
   const [reply, setReply] = useState("");
   const [loading, setLoading] = useState(true);
+
+  const openTicket = useCallback(async (ticketId: string) => {
+    try {
+      setTicketDetail(await api<SupportTicketDetail>(`/v1/merchant/support/tickets/${ticketId}`));
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : "Could not load the support ticket.");
+    }
+  }, [notify]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [memberResult, fulfillmentResult, preferenceResult, ticketResult, sessionResult, auditResult] = await Promise.all([
-        api<{ items: MerchantMember[] }>("/v1/merchant/members"),
-        api<FulfillmentSettings>("/v1/merchant/fulfillment"),
-        api<NotificationPreferences>("/v1/notifications/preferences"),
-        api<{ items: SupportTicket[] }>("/v1/support/tickets"),
-        api<{ items: UserSession[] }>("/v1/users/me/sessions"),
-        api<{ items: AuditEntry[] }>("/v1/merchant/audit-log")
+      const [staffResult, fulfillmentResult, preferenceResult, ticketResult, sessionResult, auditResult] = await Promise.all([
+        canManageStaff ? api<{ items: MerchantMember[]; invitations: StaffInvitation[] }>("/v1/merchant/staff") : Promise.resolve({ items: [], invitations: [] }),
+        optional(api<FulfillmentSettings>("/v1/merchant/settings/fulfillment"), null),
+        optional(api<NotificationPreferences>("/v1/notifications/preferences"), null),
+        optional(api<{ items: SupportTicket[] }>("/v1/merchant/support/tickets"), { items: [] }),
+        optional(api<{ items: UserSession[] }>("/v1/users/me/sessions"), { items: [] }),
+        canViewAudit ? optional(api<{ items: AuditEntry[] }>("/v1/merchant/audit-log"), { items: [] }) : Promise.resolve({ items: [] })
       ]);
-      setMembers(memberResult.items); setFulfillment(fulfillmentResult); setPreferences(preferenceResult);
-      setTickets(ticketResult.items); setSessions(sessionResult.items); setAudit(auditResult.items);
+      setMembers(staffResult.items);
+      setInvitations(staffResult.invitations);
+      setDrafts(Object.fromEntries(staffResult.items.filter((member) => member.role !== "owner").map((member) => [member.userId, {
+        role: member.role as "manager" | "staff", permissions: member.permissions, isActive: member.isActive
+      }])));
+      setFulfillment(fulfillmentResult);
+      setPreferences(preferenceResult);
+      setTickets(ticketResult.items);
+      setSessions(sessionResult.items);
+      setAudit(auditResult.items);
     } catch (cause) {
       notify(cause instanceof Error ? cause.message : "Could not load control center.");
     } finally { setLoading(false); }
-  }, [notify]);
+  }, [canManageStaff, canViewAudit, notify]);
 
   useEffect(() => { void load(); }, [load]);
 
-  async function addMember(event: React.FormEvent) {
+  function updateDraft(userId: string, patch: Partial<MemberDraft>) {
+    setDrafts((current) => {
+      const existing = current[userId];
+      if (!existing) return current;
+      return { ...current, [userId]: { ...existing, ...patch } };
+    });
+  }
+
+  async function inviteMember(event: React.FormEvent) {
     event.preventDefault();
-    try { await api("/v1/merchant/members", { method: "POST", body: JSON.stringify({ phoneE164: phone.trim(), role }) }); notify("Staff access granted."); setPhone(""); await load(); }
-    catch (cause) { notify(cause instanceof Error ? cause.message : "Could not add staff member."); }
+    try {
+      await api("/v1/merchant/staff/invitations", {
+        method: "POST",
+        body: JSON.stringify({ phoneE164: phone.trim(), role, permissions: invitePermissions.length > 0 ? invitePermissions : undefined })
+      });
+      notify("Staff invitation sent.");
+      setPhone(""); setInvitePermissions([]);
+      await load();
+    } catch (cause) { notify(cause instanceof Error ? cause.message : "Could not invite the staff member."); }
+  }
+
+  async function saveMember(userId: string) {
+    const draft = drafts[userId];
+    if (!draft) return;
+    try {
+      await api(`/v1/merchant/staff/${userId}`, { method: "PATCH", body: JSON.stringify(draft) });
+      notify("Staff access updated.");
+      await load();
+    } catch (cause) { notify(cause instanceof Error ? cause.message : "Could not update staff access."); }
   }
 
   async function removeMember(userId: string) {
-    try { await api(`/v1/merchant/members/${userId}`, { method: "DELETE" }); notify("Staff access revoked."); await load(); }
+    try { await api(`/v1/merchant/staff/${userId}`, { method: "DELETE" }); notify("Staff access revoked."); await load(); }
     catch (cause) { notify(cause instanceof Error ? cause.message : "Could not revoke staff access."); }
+  }
+
+  async function revokeInvitation(invitationId: string) {
+    try { await api(`/v1/merchant/staff/invitations/${invitationId}/revoke`, { method: "POST" }); notify("Invitation revoked."); await load(); }
+    catch (cause) { notify(cause instanceof Error ? cause.message : "Could not revoke the invitation."); }
   }
 
   async function saveFulfillment(event: React.FormEvent) {
     event.preventDefault();
     if (!fulfillment) return;
-    try { await api("/v1/merchant/fulfillment", { method: "PATCH", body: JSON.stringify(fulfillment) }); notify("Fulfillment settings updated."); await load(); }
-    catch (cause) { notify(cause instanceof Error ? cause.message : "Could not update fulfillment settings."); }
+    try {
+      setFulfillment(await api<FulfillmentSettings>("/v1/merchant/settings/fulfillment", { method: "PATCH", body: JSON.stringify(fulfillment) }));
+      notify("Fulfillment settings updated.");
+    } catch (cause) { notify(cause instanceof Error ? cause.message : "Could not update fulfillment settings."); }
   }
 
   async function savePreferences(event: React.FormEvent) {
@@ -1550,8 +1725,38 @@ function ControlCenter({ me, notify }: { me: MerchantMe; notify: (message: strin
 
   async function createTicket(event: React.FormEvent) {
     event.preventDefault();
-    try { await api("/v1/support/tickets", { method: "POST", body: JSON.stringify({ subject: ticketSubject, message: ticketMessage, category: "merchant_operations", priority: "NORMAL" }) }); notify("Support ticket opened."); setTicketSubject(""); setTicketMessage(""); await load(); }
-    catch (cause) { notify(cause instanceof Error ? cause.message : "Could not open support ticket."); }
+    try {
+      const created = await api<{ id: string }>("/v1/merchant/support/tickets", {
+        method: "POST",
+        body: JSON.stringify({ subject: ticketSubject, message: ticketMessage, category: "merchant_operations", priority: "NORMAL" })
+      });
+      notify("Support ticket opened.");
+      setTicketSubject(""); setTicketMessage("");
+      await load();
+      await openTicket(created.id);
+    } catch (cause) { notify(cause instanceof Error ? cause.message : "Could not open support ticket."); }
+  }
+
+  async function sendReply(event: React.FormEvent) {
+    event.preventDefault();
+    if (!ticketDetail || !reply.trim()) return;
+    try {
+      await api(`/v1/merchant/support/tickets/${ticketDetail.id}/messages`, { method: "POST", body: JSON.stringify({ body: reply.trim() }) });
+      notify("Reply sent.");
+      setReply("");
+      await openTicket(ticketDetail.id);
+      await load();
+    } catch (cause) { notify(cause instanceof Error ? cause.message : "Could not send reply."); }
+  }
+
+  async function setTicketStatus(status: "OPEN" | "IN_PROGRESS" | "RESOLVED" | "CLOSED") {
+    if (!ticketDetail) return;
+    try {
+      await api(`/v1/merchant/support/tickets/${ticketDetail.id}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
+      notify(`Ticket marked ${status.replace("_", " ").toLowerCase()}.`);
+      await openTicket(ticketDetail.id);
+      await load();
+    } catch (cause) { notify(cause instanceof Error ? cause.message : "Could not update the ticket."); }
   }
 
   async function revokeSession(sessionId: string) {
@@ -1569,33 +1774,93 @@ function ControlCenter({ me, notify }: { me: MerchantMe; notify: (message: strin
     <div className="two-column">
       <section className="panel stack">
         <div className="panel-head"><div><p className="eyebrow">ACCESS</p><h2>Staff accounts</h2></div><span className="status-pill active">{members.length} members</span></div>
-        {canManage ? <form className="inline-form" onSubmit={addMember}><input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+251911000001" pattern="\+[1-9]\d{7,14}" required /><select value={role} onChange={(event) => setRole(event.target.value as "manager" | "staff")}><option value="staff">Limited staff</option><option value="manager">Manager</option></select><button>Add</button></form> : <p className="muted">Only owners and managers can change staff access.</p>}
-        <p className="fine-print">The person must have verified this phone number already. Access is merchant-scoped and can be revoked at any time.</p>
-        <div className="stack">{members.map((member) => <div className="flag-row" key={member.userId}><div><strong>{member.displayName ?? member.phoneE164}</strong><p>{member.phoneE164} · {member.activeSessions} active sessions</p></div><div className="toolbar-inline"><span className="status-text">{member.role}</span>{canManage && member.role !== "owner" ? <button className="ghost danger" onClick={() => void removeMember(member.userId)}>Revoke</button> : null}</div></div>)}</div>
+        {canManageStaff ? <form className="stack" onSubmit={inviteMember}>
+          <div className="inline-form">
+            <input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+251911000001" pattern="\+[1-9]\d{7,14}" required />
+            <select value={role} onChange={(event) => setRole(event.target.value as "manager" | "staff")}><option value="staff">Limited staff</option><option value="manager">Manager</option></select>
+            <button>Invite</button>
+          </div>
+          <PermissionPicker value={invitePermissions} onChange={setInvitePermissions} />
+          <p className="fine-print">Leave permissions empty to use the role defaults. Existing users are linked immediately; new users are linked after they verify their phone.</p>
+        </form> : <p className="muted">Your role can view staff but cannot change access.</p>}
+        <div className="stack">{members.map((member) => {
+          const draft = drafts[member.userId];
+          return <div className="flag-row" key={member.userId}>
+            <div className="stack" style={{ gap: "0.4rem", flex: 1 }}>
+              <div><strong>{member.displayName ?? member.phoneE164}</strong><p>{member.phoneE164} · {member.activeSessions} active sessions</p></div>
+              {canManageStaff && member.role !== "owner" && draft ? <>
+                <div className="inline-form">
+                  <select value={draft.role} onChange={(event) => {
+                    const nextRole = event.target.value as "manager" | "staff";
+                    updateDraft(member.userId, { role: nextRole, permissions: defaultPermissions(nextRole) });
+                  }}><option value="staff">Limited staff</option><option value="manager">Manager</option></select>
+                  <label className="check-row"><input type="checkbox" checked={draft.isActive} onChange={(event) => updateDraft(member.userId, { isActive: event.target.checked })} /> Active</label>
+                </div>
+                <PermissionPicker value={draft.permissions} onChange={(permissions) => updateDraft(member.userId, { permissions })} />
+                <div className="toolbar-inline"><button className="ghost" onClick={() => void saveMember(member.userId)}>Save access</button><button className="ghost danger" onClick={() => void removeMember(member.userId)}>Remove</button></div>
+              </> : <span className="status-text">{member.role}{member.isActive ? "" : " · deactivated"}</span>}
+            </div>
+            {member.role === "owner" ? <span className="status-pill active">Owner</span> : null}
+          </div>;
+        })}</div>
+        {invitations.length > 0 ? <>
+          <div className="panel-head"><div><h3>Pending invitations</h3></div></div>
+          {invitations.map((invitation) => <div className="flag-row" key={invitation.id}>
+            <div><strong>{invitation.phoneE164}</strong><p>{invitation.role} · expires {new Date(invitation.expiresAt).toLocaleDateString()} · invited by {invitation.invitedByName ?? "merchant"}</p></div>
+            {canManageStaff ? <button className="ghost danger" onClick={() => void revokeInvitation(invitation.id)}>Revoke</button> : null}
+          </div>)}
+        </> : null}
       </section>
       <section className="panel stack">
         <div className="panel-head"><div><p className="eyebrow">FULFILLMENT</p><h2>How customers receive orders</h2></div></div>
-        {fulfillment ? <form className="stack" onSubmit={saveFulfillment}><label className="check-row"><input type="checkbox" checked={fulfillment.supportsPickup} disabled={!canManage} onChange={(event) => setFulfillment({ ...fulfillment, supportsPickup: event.target.checked })} /> Offer customer pickup</label><label className="check-row"><input type="checkbox" checked={fulfillment.allowsScheduling} disabled={!canManage} onChange={(event) => setFulfillment({ ...fulfillment, allowsScheduling: event.target.checked })} /> Accept scheduled orders</label><label>Pickup instructions<textarea value={fulfillment.pickupInstructions ?? ""} disabled={!canManage} onChange={(event) => setFulfillment({ ...fulfillment, pickupInstructions: event.target.value })} rows={3} maxLength={1000} placeholder="Where should customers collect their order?" /></label>{canManage ? <button>Save fulfillment settings</button> : null}</form> : <p className="muted">Loading fulfillment settings…</p>}
+        {fulfillment ? <form className="stack" onSubmit={saveFulfillment}>
+          <label className="check-row"><input type="checkbox" checked={fulfillment.supportsDelivery} disabled={!canManageSettings} onChange={(event) => setFulfillment({ ...fulfillment, supportsDelivery: event.target.checked })} /> Offer delivery</label>
+          <label className="check-row"><input type="checkbox" checked={fulfillment.supportsPickup} disabled={!canManageSettings} onChange={(event) => setFulfillment({ ...fulfillment, supportsPickup: event.target.checked })} /> Offer customer pickup</label>
+          <label className="check-row"><input type="checkbox" checked={fulfillment.allowsScheduling} disabled={!canManageSettings} onChange={(event) => setFulfillment({ ...fulfillment, allowsScheduling: event.target.checked })} /> Accept scheduled orders</label>
+          <div className="form-grid">
+            <label>Minimum lead (minutes)<input type="number" min={0} max={10080} value={fulfillment.minScheduleLeadMinutes} disabled={!canManageSettings} onChange={(event) => setFulfillment({ ...fulfillment, minScheduleLeadMinutes: Number(event.target.value) })} /></label>
+            <label>Maximum days ahead<input type="number" min={0} max={30} value={fulfillment.maxScheduleDays} disabled={!canManageSettings} onChange={(event) => setFulfillment({ ...fulfillment, maxScheduleDays: Number(event.target.value) })} /></label>
+          </div>
+          <label>Pickup instructions<textarea value={fulfillment.pickupInstructions ?? ""} disabled={!canManageSettings} onChange={(event) => setFulfillment({ ...fulfillment, pickupInstructions: event.target.value })} rows={3} maxLength={1000} placeholder="Where should customers collect their order?" /></label>
+          {canManageSettings ? <button>Save fulfillment settings</button> : <p className="muted">Your role can view fulfillment settings.</p>}
+        </form> : <p className="muted">Loading fulfillment settings…</p>}
       </section>
     </div>
 
     <div className="two-column">
       <section className="panel stack"><div className="panel-head"><div><p className="eyebrow">NOTIFICATIONS</p><h2>Operational alerts</h2></div></div>{preferences ? <form className="stack" onSubmit={savePreferences}>{(["pushEnabled", "smsEnabled", "emailEnabled", "orderUpdates", "promotions", "securityAlerts"] as const).map((key) => <label className="check-row" key={key}><input type="checkbox" checked={preferences[key]} onChange={(event) => setPreferences({ ...preferences, [key]: event.target.checked })} /> {key.replace(/([A-Z])/g, " $1")}</label>)}<button>Save notification preferences</button></form> : <p className="muted">Loading notification preferences…</p>}</section>
-      <section className="panel stack"><div className="panel-head"><div><p className="eyebrow">SUPPORT</p><h2>Platform support</h2></div></div><form className="stack" onSubmit={createTicket}><label>Subject<input value={ticketSubject} onChange={(event) => setTicketSubject(event.target.value)} minLength={3} maxLength={160} required /></label><label>Message<textarea value={ticketMessage} onChange={(event) => setTicketMessage(event.target.value)} rows={3} maxLength={4000} required /></label><button>Open ticket</button></form><div className="stack">{tickets.map((ticket) => <button className="ticket-row" key={ticket.id} onClick={() => setSelectedTicket(ticket.id)}><span><strong>{ticket.subject}</strong><small>{ticket.category} · {ticket.messageCount} messages</small></span><span className="status-text">{ticket.status}</span></button>)}</div>{selectedTicket ? <TicketReply ticketId={selectedTicket} value={reply} onChange={setReply} notify={notify} onSent={() => { setReply(""); void load(); }} /> : null}</section>
+      <section className="panel stack"><div className="panel-head"><div><p className="eyebrow">SUPPORT</p><h2>Platform support</h2></div></div><form className="stack" onSubmit={createTicket}><label>Subject<input value={ticketSubject} onChange={(event) => setTicketSubject(event.target.value)} minLength={3} maxLength={160} required /></label><label>Message<textarea value={ticketMessage} onChange={(event) => setTicketMessage(event.target.value)} rows={3} maxLength={4000} required /></label><button>Open ticket</button></form><div className="stack">{tickets.map((ticket) => <button className="ticket-row" key={ticket.id} onClick={() => void openTicket(ticket.id)}><span><strong>{ticket.subject}</strong><small>{ticket.category} · {ticket.messageCount} messages</small></span><span className="status-text">{ticket.status}</span></button>)}</div>
+      {ticketDetail ? <div className="stack">
+        <div className="panel-head"><div><h3>{ticketDetail.subject}</h3><p>{ticketDetail.requesterName ?? "Merchant"} · {ticketDetail.priority}</p></div><span className="status-pill">{ticketDetail.status}</span></div>
+        <div className="stack">{ticketDetail.messages.map((message) => <div className="flag-row" key={message.id}><div><p>{message.body}</p><small>{new Date(message.createdAt).toLocaleString()}</small></div></div>)}</div>
+        <div className="toolbar-inline">{(["OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"] as const).map((status) => <button key={status} className="ghost" disabled={ticketDetail.status === status} onClick={() => void setTicketStatus(status)}>{status.replace("_", " ")}</button>)}</div>
+        <form className="inline-form" onSubmit={sendReply}><input value={reply} onChange={(event) => setReply(event.target.value)} placeholder="Reply to support" maxLength={4000} required /><button>Send</button></form>
+      </div> : null}
+      </section>
     </div>
 
     <div className="two-column">
       <section className="panel stack"><div className="panel-head"><div><p className="eyebrow">SECURITY</p><h2>Active sessions</h2></div><button className="ghost" onClick={() => void revokeOthers()}>Revoke others</button></div>{sessions.map((item) => <div className="flag-row" key={item.id}><div><strong>{item.isCurrent ? "This device" : item.userAgent ?? "Unknown device"}</strong><p>Created {new Date(item.createdAt).toLocaleString()} · expires {new Date(item.expiresAt).toLocaleDateString()}</p></div>{item.isCurrent ? <span className="status-text active">Current</span> : <button className="ghost danger" onClick={() => void revokeSession(item.id)}>Revoke</button>}</div>)}</section>
-      <section className="panel stack"><div className="panel-head"><div><p className="eyebrow">AUDIT</p><h2>Important changes</h2></div></div>{audit.length === 0 ? <p className="muted">No merchant changes recorded yet.</p> : <div className="table-wrap"><table><thead><tr><th>When</th><th>Actor</th><th>Action</th></tr></thead><tbody>{audit.map((entry) => <tr key={entry.id}><td>{new Date(entry.createdAt).toLocaleString()}</td><td>{entry.actorName ?? entry.actorUserId}</td><td>{entry.action.replace("merchant.", "")}</td></tr>)}</tbody></table></div>}</section>
+      <section className="panel stack"><div className="panel-head"><div><p className="eyebrow">AUDIT</p><h2>Important changes</h2></div></div>{!canViewAudit ? <p className="muted">Your role does not include audit access.</p> : audit.length === 0 ? <p className="muted">No merchant changes recorded yet.</p> : <div className="table-wrap"><table><thead><tr><th>When</th><th>Actor</th><th>Action</th></tr></thead><tbody>{audit.map((entry) => <tr key={entry.id}><td>{new Date(entry.createdAt).toLocaleString()}</td><td>{entry.actorName ?? entry.actorUserId}</td><td>{entry.action.replace("merchant.", "")}</td></tr>)}</tbody></table></div>}</section>
     </div>
   </div>;
 }
 
-function TicketReply({ ticketId, value, onChange, notify, onSent }: { ticketId: string; value: string; onChange: (value: string) => void; notify: (message: string) => void; onSent: () => void }) {
-  async function send(event: React.FormEvent) {
-    event.preventDefault();
-    try { await api(`/v1/support/tickets/${ticketId}/messages`, { method: "POST", body: JSON.stringify({ body: value }) }); notify("Reply sent to support."); onSent(); }
-    catch (cause) { notify(cause instanceof Error ? cause.message : "Could not send reply."); }
-  }
-  return <form className="inline-form" onSubmit={send}><input value={value} onChange={(event) => onChange(event.target.value)} placeholder="Reply to support" maxLength={4000} required /><button>Send</button></form>;
+function PermissionPicker({ value, onChange }: { value: string[]; onChange: (value: string[]) => void }) {
+  return <div className="form-grid">
+    {MERCHANT_PERMISSIONS.map((permission) => <label className="check-row" key={permission}>
+      <input
+        type="checkbox"
+        checked={value.includes(permission)}
+        onChange={(event) => onChange(event.target.checked
+          ? [...value, permission]
+          : value.filter((item) => item !== permission))}
+      />
+      {permission.replace(":", " ")}
+    </label>)}
+  </div>;
+}
+
+async function optional<T>(promise: Promise<T>, fallback: T): Promise<T> {
+  try { return await promise; } catch { return fallback; }
 }

@@ -2,11 +2,12 @@ import { BadRequestException, Body, Controller, Delete, Get, Header, Param, Pars
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import type { FastifyReply } from "fastify";
 import { Type } from "class-transformer";
-import { IsArray, IsBoolean, IsIn, IsInt, IsNumber, IsObject, IsOptional, IsString, IsUUID, Length, Matches, Max, Min, ArrayMinSize, ArrayUnique, ValidateNested } from "class-validator";
+import { IsArray, IsBoolean, IsDateString, IsIn, IsInt, IsNumber, IsObject, IsOptional, IsString, IsUUID, Length, Matches, Max, Min, ArrayMaxSize, ArrayMinSize, ArrayUnique, ValidateNested } from "class-validator";
 import { requireUser, requestId } from "../../common/auth-context.js";
 import { Roles } from "../auth/roles.decorator.js";
 import { RolesGuard } from "../auth/roles.guard.js";
 import { SessionGuard, type AuthenticatedRequest } from "../auth/session.guard.js";
+import { MERCHANT_PERMISSIONS } from "./merchant.permissions.js";
 import { MerchantService } from "./merchant.service.js";
 
 class UpdateMerchantDto {
@@ -119,6 +120,55 @@ class MerchantDocumentDto {
   @IsString() @Length(3, 500) storageKey!: string;
 }
 
+class InviteStaffDto {
+  @IsString() @Matches(/^\+[1-9]\d{7,14}$/) phoneE164!: string;
+  @IsIn(["manager", "staff"]) role!: "manager" | "staff";
+  @IsOptional() @IsArray() @ArrayUnique() @ArrayMaxSize(MERCHANT_PERMISSIONS.length) @IsIn([...MERCHANT_PERMISSIONS], { each: true }) permissions?: string[];
+}
+
+class UpdateStaffDto {
+  @IsOptional() @IsIn(["manager", "staff"]) role?: "manager" | "staff";
+  @IsOptional() @IsArray() @ArrayUnique() @ArrayMaxSize(MERCHANT_PERMISSIONS.length) @IsIn([...MERCHANT_PERMISSIONS], { each: true }) permissions?: string[];
+  @IsOptional() @IsBoolean() isActive?: boolean;
+}
+
+class FulfillmentDto {
+  @IsBoolean() supportsDelivery!: boolean;
+  @IsBoolean() supportsPickup!: boolean;
+  @IsBoolean() allowsScheduling!: boolean;
+  @IsOptional() @IsString() @Length(0, 1000) pickupInstructions?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(10080) minScheduleLeadMinutes?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(30) maxScheduleDays?: number;
+}
+
+class AvailabilityDto {
+  @IsBoolean() acceptingOrders!: boolean;
+  @IsOptional() @IsString() @Length(0, 300) note?: string;
+}
+
+class ClosureDto {
+  @IsOptional() @IsUUID() locationId?: string;
+  @IsDateString() startsAt!: string;
+  @IsDateString() endsAt!: string;
+  @IsOptional() @IsString() @Length(0, 300) reason?: string;
+}
+
+class SupportTicketDto {
+  @IsString() @Length(3, 160) subject!: string;
+  @IsOptional() @IsString() @Length(1, 40) category?: string;
+  @IsOptional() @IsUUID() orderId?: string;
+  @IsOptional() @IsIn(["LOW", "NORMAL", "HIGH", "URGENT"]) priority?: string;
+  @IsString() @Length(1, 4000) message!: string;
+}
+
+class SupportReplyDto {
+  @IsString() @Length(1, 4000) body!: string;
+}
+
+class SupportStatusDto {
+  @IsIn(["OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"]) status!: "OPEN" | "IN_PROGRESS" | "RESOLVED" | "CLOSED";
+}
+
 class PageQuery {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) offset?: number;
@@ -126,17 +176,6 @@ class PageQuery {
 
 class SalesQuery {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(365) days?: number;
-}
-
-class FulfillmentSettingsDto {
-  @IsBoolean() supportsPickup!: boolean;
-  @IsBoolean() allowsScheduling!: boolean;
-  @IsOptional() @IsString() @Length(0, 1000) pickupInstructions?: string;
-}
-
-class MemberDto {
-  @IsString() @Matches(/^\+[1-9]\d{7,14}$/) phoneE164!: string;
-  @IsIn(["manager", "staff"]) role!: "manager" | "staff";
 }
 
 @ApiTags("merchant")
@@ -158,46 +197,130 @@ export class MerchantController {
     return this.service.updateMerchant(requireUser(request).id, body);
   }
 
+  @Get("staff")
+  @Roles("merchant_staff", "admin")
+  staff(@Req() request: AuthenticatedRequest) {
+    return this.service.members(requireUser(request).id);
+  }
+
   @Get("members")
   @Roles("merchant_staff", "admin")
   members(@Req() request: AuthenticatedRequest) {
     return this.service.members(requireUser(request).id);
   }
 
-  @Post("members")
+  @Post("staff/invitations")
   @Roles("merchant_staff")
-  addMember(@Req() request: AuthenticatedRequest, @Body() body: MemberDto) {
-    return this.service.addMember(requireUser(request).id, body, requestId(request));
+  inviteStaff(@Req() request: AuthenticatedRequest, @Body() body: InviteStaffDto) {
+    return this.service.inviteMember(requireUser(request).id, body, requestId(request));
   }
 
-  @Patch("members/:userId")
+  @Patch("staff/:userId")
   @Roles("merchant_staff")
-  updateMember(@Req() request: AuthenticatedRequest, @Param("userId", ParseUUIDPipe) userId: string, @Body() body: MemberDto) {
-    return this.service.updateMember(requireUser(request).id, userId, body.role, requestId(request));
+  updateStaff(@Req() request: AuthenticatedRequest, @Param("userId", ParseUUIDPipe) userId: string, @Body() body: UpdateStaffDto) {
+    return this.service.updateMember(requireUser(request).id, userId, body, requestId(request));
   }
 
-  @Delete("members/:userId")
+  @Delete("staff/:userId")
   @Roles("merchant_staff")
-  removeMember(@Req() request: AuthenticatedRequest, @Param("userId", ParseUUIDPipe) userId: string) {
+  removeStaff(@Req() request: AuthenticatedRequest, @Param("userId", ParseUUIDPipe) userId: string) {
     return this.service.removeMember(requireUser(request).id, userId, requestId(request));
   }
 
-  @Get("fulfillment")
+  @Post("staff/invitations/:invitationId/revoke")
+  @Roles("merchant_staff")
+  revokeInvitation(@Req() request: AuthenticatedRequest, @Param("invitationId", ParseUUIDPipe) invitationId: string) {
+    return this.service.revokeInvitation(requireUser(request).id, invitationId, requestId(request));
+  }
+
+  @Get("settings/fulfillment")
   @Roles("merchant_staff", "admin")
   fulfillment(@Req() request: AuthenticatedRequest) {
     return this.service.fulfillmentSettings(requireUser(request).id);
   }
 
+  @Patch("settings/fulfillment")
+  @Roles("merchant_staff")
+  updateFulfillment(@Req() request: AuthenticatedRequest, @Body() body: FulfillmentDto) {
+    return this.service.updateFulfillmentSettings(requireUser(request).id, body, requestId(request));
+  }
+
+  @Get("fulfillment")
+  @Roles("merchant_staff", "admin")
+  legacyFulfillment(@Req() request: AuthenticatedRequest) {
+    return this.service.fulfillmentSettings(requireUser(request).id);
+  }
+
   @Patch("fulfillment")
   @Roles("merchant_staff")
-  updateFulfillment(@Req() request: AuthenticatedRequest, @Body() body: FulfillmentSettingsDto) {
+  legacyUpdateFulfillment(@Req() request: AuthenticatedRequest, @Body() body: FulfillmentDto) {
     return this.service.updateFulfillmentSettings(requireUser(request).id, body, requestId(request));
+  }
+
+  @Patch("settings/availability")
+  @Roles("merchant_staff")
+  updateAvailability(@Req() request: AuthenticatedRequest, @Body() body: AvailabilityDto) {
+    return this.service.updateAvailability(requireUser(request).id, body, requestId(request));
+  }
+
+  @Get("closures")
+  @Roles("merchant_staff", "admin")
+  closures(@Req() request: AuthenticatedRequest) {
+    return this.service.closures(requireUser(request).id);
+  }
+
+  @Post("closures")
+  @Roles("merchant_staff")
+  createClosure(@Req() request: AuthenticatedRequest, @Body() body: ClosureDto) {
+    return this.service.createClosure(requireUser(request).id, body, requestId(request));
+  }
+
+  @Delete("closures/:closureId")
+  @Roles("merchant_staff")
+  deleteClosure(@Req() request: AuthenticatedRequest, @Param("closureId", ParseUUIDPipe) closureId: string) {
+    return this.service.deleteClosure(requireUser(request).id, closureId, requestId(request));
   }
 
   @Get("audit-log")
   @Roles("merchant_staff", "admin")
   merchantAudit(@Req() request: AuthenticatedRequest, @Query() query: PageQuery) {
     return this.service.merchantAudit(requireUser(request).id, query.limit ?? 50, query.offset ?? 0);
+  }
+
+  @Get("support/tickets")
+  @Roles("merchant_staff", "admin")
+  supportTickets(@Req() request: AuthenticatedRequest, @Query() query: PageQuery) {
+    return this.service.supportTickets(requireUser(request).id, query.limit ?? 50, query.offset ?? 0);
+  }
+
+  @Post("support/tickets")
+  @Roles("merchant_staff")
+  createSupportTicket(@Req() request: AuthenticatedRequest, @Body() body: SupportTicketDto) {
+    return this.service.createSupportTicket(requireUser(request).id, {
+      subject: body.subject,
+      category: body.category ?? "general",
+      orderId: body.orderId ?? null,
+      priority: body.priority ?? "NORMAL",
+      message: body.message
+    }, requestId(request));
+  }
+
+  @Get("support/tickets/:ticketId")
+  @Roles("merchant_staff", "admin")
+  supportTicket(@Req() request: AuthenticatedRequest, @Param("ticketId", ParseUUIDPipe) ticketId: string) {
+    return this.service.supportTicketDetail(requireUser(request).id, ticketId);
+  }
+
+  @Post("support/tickets/:ticketId/messages")
+  @Roles("merchant_staff")
+  replySupportTicket(@Req() request: AuthenticatedRequest, @Param("ticketId", ParseUUIDPipe) ticketId: string, @Body() body: SupportReplyDto) {
+    return this.service.replySupportTicket(requireUser(request).id, ticketId, body.body, requestId(request));
+  }
+
+  @Patch("support/tickets/:ticketId/status")
+  @Roles("merchant_staff")
+  setSupportTicketStatus(@Req() request: AuthenticatedRequest, @Param("ticketId", ParseUUIDPipe) ticketId: string, @Body() body: SupportStatusDto) {
+    return this.service.setSupportTicketStatus(requireUser(request).id, ticketId, body.status, requestId(request));
   }
 
   @Patch("locations/:locationId")
