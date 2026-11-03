@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import { DatabaseService } from "../../database/database.service.js";
 
 @Injectable()
@@ -142,6 +142,63 @@ export class BusinessService {
     return { status: decision === "approve" ? "active" : "closed" };
   }
 
+  async bulkAttach(userId: string, accountId: string, items: readonly { costCenter?: string | null; referenceCode?: string | null }[] & readonly { orderId?: string }[]) {
+    await this.requireMember(userId, accountId);
+    return this.database.withTransaction(async (client) => {
+      const linked: string[] = [];
+      for (const item of items) {
+        const orderId = (item as { orderId: string }).orderId;
+        const order = await client.query("SELECT 1 FROM orders WHERE id = $1 AND user_id = $2", [orderId, userId]);
+        if ((order.rowCount ?? 0) === 0) throw new NotFoundException(`Order ${orderId} not found.`);
+        const existing = await client.query("SELECT 1 FROM business_orders WHERE order_id = $1", [orderId]);
+        if ((existing.rowCount ?? 0) > 0) throw new ConflictException(`Order ${orderId} is already linked.`);
+        await client.query(
+          "INSERT INTO business_orders (order_id, business_account_id, cost_center, reference_code, created_by) VALUES ($1,$2,$3,$4,$5)",
+          [orderId, accountId, item.costCenter ?? null, item.referenceCode ?? null, userId]
+        );
+        linked.push(orderId);
+      }
+      return { linkedCount: linked.length, orderIds: linked };
+    });
+  }
+
+  async importOrders(userId: string, accountId: string, csv: string, dryRun: boolean) {
+    await this.requireMember(userId, accountId);
+    const lines = csv.trim().split(/\r?\n/);
+    const header = (lines[0] ?? "").split(",").map((value) => value.trim().toLowerCase());
+    const required = ["order_id"];
+    for (const field of required) {
+      if (!header.includes(field)) throw new BadRequestException(`CSV is missing required column: ${field}.`);
+    }
+    const rows: Array<{ orderId: string; costCenter: string | null; referenceCode: string | null; valid: boolean; error?: string }> = [];
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      if (!line.trim()) continue;
+      const values = line.split(",").map((value) => value.trim());
+      const record: Record<string, string> = {};
+      header.forEach((key, index) => { record[key] = values[index] ?? ""; });
+      const orderId = record["order_id"] ?? "";
+      let valid = true;
+      let error: string | undefined;
+      const order = await this.database.query("SELECT 1 FROM orders WHERE id = $1 AND user_id = $2", [orderId, userId]);
+      if ((order.rowCount ?? 0) === 0) { valid = false; error = "Order not found or not owned by you."; }
+      const existing = valid ? await this.database.query("SELECT 1 FROM business_orders WHERE order_id = $1", [orderId]) : { rowCount: 0 };
+      if (valid && (existing.rowCount ?? 0) > 0) { valid = false; error = "Order already linked to a business account."; }
+      rows.push({ orderId, costCenter: record["cost_center"] || null, referenceCode: record["reference_code"] || null, valid, ...(error ? { error } : {}) });
+    }
+    if (!dryRun) {
+      await this.database.withTransaction(async (client) => {
+        for (const row of rows) {
+          if (!row.valid) continue;
+          await client.query(
+            "INSERT INTO business_orders (order_id, business_account_id, cost_center, reference_code, created_by) VALUES ($1,$2,$3,$4,$5)",
+            [row.orderId, accountId, row.costCenter, row.referenceCode, userId]
+          );
+        }
+      });
+    }
+    return { dryRun, totalRows: rows.length, validRows: rows.filter((row) => row.valid).length, rows };
+  }
   private async requireMember(userId: string, accountId: string): Promise<{ role: string }> {
     const result = await this.database.query<{ member_role: string }>("SELECT member_role FROM business_members WHERE business_account_id = $1 AND user_id = $2", [accountId, userId]);
     const row = result.rows[0];

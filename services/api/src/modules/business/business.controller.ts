@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import { Type } from "class-transformer";
-import { IsEmail, IsIn, IsInt, IsLatitude, IsLongitude, IsOptional, IsString, IsUUID, Length, Matches, Max, Min } from "class-validator";
+import { IsArray, IsBoolean, IsEmail, IsIn, IsInt, IsLatitude, IsLongitude, IsOptional, IsString, IsUUID, Length, Matches, Max, Min, ValidateNested } from "class-validator";
 import { requireUser } from "../../common/auth-context.js";
 import { Roles } from "../auth/roles.decorator.js";
 import { RolesGuard } from "../auth/roles.guard.js";
@@ -32,8 +32,18 @@ class AddLocationDto {
 }
 
 class AttachOrderDto {
+  @IsUUID() orderId!: string;
   @IsOptional() @IsString() @Length(0, 80) costCenter?: string;
   @IsOptional() @IsString() @Length(0, 80) referenceCode?: string;
+}
+
+class BulkAttachDto {
+  @IsArray() @ValidateNested({ each: true }) items!: AttachOrderDto[];
+}
+
+class CsvImportDto {
+  @IsString() @Length(1, 1_000_000) csv!: string;
+  @IsOptional() @IsBoolean() dryRun?: boolean;
 }
 
 class ReviewBusinessDto {
@@ -89,9 +99,14 @@ export class BusinessController {
     return this.service.attachOrder(requireUser(request).id, accountId, orderId, { costCenter: body.costCenter ?? null, referenceCode: body.referenceCode ?? null });
   }
 
-  @Get("business/accounts/:accountId/orders")
-  orders(@Req() request: AuthenticatedRequest, @Param("accountId", ParseUUIDPipe) accountId: string, @Query() query: PageQuery) {
-    return this.service.orders(requireUser(request).id, accountId, query.limit ?? 50, query.offset ?? 0);
+  @Post("business/accounts/:accountId/orders/bulk")
+  bulkAttach(@Req() request: AuthenticatedRequest, @Param("accountId", ParseUUIDPipe) accountId: string, @Body() body: BulkAttachDto) {
+    return this.service.bulkAttach(requireUser(request).id, accountId, body.items);
+  }
+
+  @Post("business/accounts/:accountId/orders/import")
+  importOrders(@Req() request: AuthenticatedRequest, @Param("accountId", ParseUUIDPipe) accountId: string, @Body() body: CsvImportDto) {
+    return this.service.importOrders(requireUser(request).id, accountId, body.csv, body.dryRun ?? true);
   }
 
   @Get("admin/business-accounts")
