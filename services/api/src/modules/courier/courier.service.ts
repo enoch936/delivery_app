@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import {
   allowedCourierActions,
   effectiveProofMode,
@@ -160,11 +160,24 @@ export class CourierService {
     return { isOnline: input.isOnline, acceptingOffers: input.acceptingOffers ?? true };
   }
 
-  async recordLocation(userId: string, input: Readonly<{ latitude: number; longitude: number; accuracyMeters?: number | undefined; headingDegrees?: number | undefined; speedMps?: number | undefined }>) {
-    const availability = await this.database.query<{ active_order_id: string | null; is_online: boolean }>("SELECT active_order_id, is_online FROM courier_availability WHERE courier_user_id = $1", [userId]);
-    const state = availability.rows[0];
-    if (!state) throw new NotFoundException("Courier availability not initialized.");
-    await this.database.withTransaction(async (client) => {
+  async recordLocation(userId: string, input: Readonly<{ latitude: number; longitude: number; accuracyMeters?: number | undefined; headingDegrees?: number | undefined; speedMps?: number | undefined }>, idempotencyKey: string | undefined) {
+    if (!idempotencyKey || !/^[A-Za-z0-9_-]{16,128}$/.test(idempotencyKey)) {
+      throw new BadRequestException("A valid Idempotency-Key header is required.");
+    }
+    const requestPath = "/v1/courier/location";
+    return this.database.withTransaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`courier:${userId}:${idempotencyKey}`]);
+      const existing = await client.query<{ request_path: string; response_body: { recorded: boolean } }>(
+        "SELECT request_path, response_body FROM idempotency_records WHERE user_id = $1 AND idempotency_key = $2",
+        [userId, idempotencyKey]
+      );
+      if (existing.rows[0]) {
+        if (existing.rows[0].request_path !== requestPath) throw new ConflictException("This operation ID was already used for a different request.");
+        return existing.rows[0].response_body;
+      }
+      const availability = await client.query<{ active_order_id: string | null; is_online: boolean }>("SELECT active_order_id, is_online FROM courier_availability WHERE courier_user_id = $1", [userId]);
+      const state = availability.rows[0];
+      if (!state) throw new NotFoundException("Courier availability not initialized.");
       await client.query(
         `UPDATE courier_availability SET last_location = ST_SetSRID(ST_MakePoint($2,$3),4326), last_seen_at = now(), updated_at = now() WHERE courier_user_id = $1`,
         [userId, input.longitude, input.latitude]
@@ -180,8 +193,14 @@ export class CourierService {
           [userId, state.active_order_id, assignment.rows[0]?.id ?? null, input.latitude, input.longitude, input.accuracyMeters ?? null, input.headingDegrees ?? null, input.speedMps ?? null]
         );
       }
+      const response = { recorded: true };
+      await client.query(
+        `INSERT INTO idempotency_records (user_id, idempotency_key, request_path, response_status, response_body)
+         VALUES ($1,$2,$3,200,$4)`,
+        [userId, idempotencyKey, requestPath, JSON.stringify(response)]
+      );
+      return response;
     });
-    return { recorded: true };
   }
 
   async deliveries(userId: string, scope: "active" | "history", limit: number, offset: number) {
@@ -191,7 +210,8 @@ export class CourierService {
        ORDER BY da.created_at DESC LIMIT $3 OFFSET $4`,
       [userId, scope === "active" ? ["accepted", "arrived_pickup", "picked_up"] : ["delivered", "cancelled", "failed"], limit, offset]
     );
-    return { items: result.rows.map((row) => this.mapDelivery(row)) };
+    // Contact details are only exposed while the delivery is live.
+    return { items: result.rows.map((row) => this.mapDelivery(row, scope === "active")) };
   }
 
   async activeDelivery(userId: string) {
@@ -217,7 +237,9 @@ export class CourierService {
        FROM order_status_events WHERE order_id = $1 ORDER BY created_at ASC, id ASC LIMIT 100`,
       [orderId]
     );
-    const delivery = this.mapDelivery(row);
+    const includeContact = ["accepted", "arrived_pickup", "picked_up"].includes(row.assignment_status)
+      || row.return_status === "pending";
+    const delivery = this.mapDelivery(row, includeContact);
     return {
       delivery,
       allowedActions: allowedCourierActions({
@@ -244,7 +266,7 @@ export class CourierService {
        ORDER BY da.cancelled_at DESC NULLS LAST, da.created_at DESC LIMIT 50`,
       [userId]
     );
-    return { items: result.rows.map((row) => this.mapDelivery(row)) };
+    return { items: result.rows.map((row) => this.mapDelivery(row, false)) };
   }
 
   async transition(
@@ -259,8 +281,12 @@ export class CourierService {
       failureReason?: FailureReasonCode | undefined;
       returnRequired?: boolean | undefined;
     }>,
-    requestIdValue: string | null
+    requestIdValue: string | null,
+    idempotencyKey: string | undefined
   ) {
+    if (!idempotencyKey || !/^[A-Za-z0-9_-]{16,128}$/.test(idempotencyKey)) {
+      throw new BadRequestException("A valid Idempotency-Key header is required.");
+    }
     const statuses = action === "returned" ? ["failed"] : ["accepted", "arrived_pickup", "picked_up"];
     const assignment = await this.database.query(
       `SELECT 1 FROM delivery_assignments WHERE order_id = $1 AND courier_user_id = $2 AND status = ANY($3::text[])`,
@@ -278,11 +304,12 @@ export class CourierService {
       failureReason: input.failureReason,
       returnRequired: input.returnRequired,
       requestId: requestIdValue,
-      ipHash: null
+      ipHash: null,
+      idempotencyKey
     });
   }
 
-  private mapDelivery(row: CourierDeliveryRow) {
+  private mapDelivery(row: CourierDeliveryRow, includeContact = true) {
     const proofMode = effectiveProofMode({
       proofMode: row.delivery_proof_mode,
       proofRequired: row.delivery_proof_required
@@ -304,9 +331,9 @@ export class CourierService {
       pickupAddress: row.pickup_address,
       deliveryAddress: row.delivery_address,
       deliveryAddressSnapshot: row.delivery_address_snapshot,
-      deliveryInstructions: row.delivery_instructions,
+      deliveryInstructions: includeContact ? row.delivery_instructions : null,
       customerName: row.customer_name,
-      customerPhone: row.customer_phone,
+      customerPhone: includeContact ? row.customer_phone : null,
       deliveryProofRequired: row.delivery_proof_required,
       deliveryProofMode: proofMode,
       deliveryEstimateMinutes: row.delivery_estimate_minutes,
@@ -315,17 +342,17 @@ export class CourierService {
         address: row.pickup_address,
         latitude: row.pickup_lat === null ? null : Number(row.pickup_lat),
         longitude: row.pickup_lng === null ? null : Number(row.pickup_lng),
-        contactName: row.merchant_contact_name,
-        contactPhone: row.merchant_contact_phone
+        contactName: includeContact ? row.merchant_contact_name : null,
+        contactPhone: includeContact ? row.merchant_contact_phone : null
       },
       dropoff: {
         name: row.delivery_recipient_name ?? row.customer_name,
         address: row.delivery_address,
         latitude: row.delivery_lat === null ? null : Number(row.delivery_lat),
         longitude: row.delivery_lng === null ? null : Number(row.delivery_lng),
-        contactName: row.customer_name,
-        contactPhone: row.delivery_contact_phone ?? row.customer_phone,
-        instructions: row.delivery_instructions
+        contactName: includeContact ? row.customer_name : null,
+        contactPhone: includeContact ? row.delivery_contact_phone ?? row.customer_phone : null,
+        instructions: includeContact ? row.delivery_instructions : null
       },
       failure: row.failure_reason_code === null ? null : {
         reasonCode: row.failure_reason_code,
