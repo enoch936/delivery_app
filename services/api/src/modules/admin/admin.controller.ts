@@ -140,10 +140,10 @@ export class AdminController {
     return this.service.courierDocuments(courierUserId);
   }
 
-  @Get("courier-documents/:documentId/file")
-  @Roles("admin", "operations", "support")
-  courierDocumentFile(@Req() request: AuthenticatedRequest, @Param("documentId", ParseUUIDPipe) documentId: string) {
-    return this.service.courierDocumentFile(requireUser(request).id, documentId, requireUser(request).roles);
+  @Patch("courier-documents/:documentId/review")
+  @Roles("admin", "operations")
+  reviewDocument(@Req() request: AuthenticatedRequest, @Param("documentId", ParseUUIDPipe) documentId: string, @Body() body: DocumentReviewDto) {
+    return this.service.reviewDocument(requireUser(request).id, documentId, body.status, body.notes ?? null, requestId(request));
   }
 
   @Get("users")
