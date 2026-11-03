@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import { Type } from "class-transformer";
-import { IsArray, IsBoolean, IsEmail, IsIn, IsInt, IsLatitude, IsLongitude, IsOptional, IsString, IsUUID, Length, Matches, Max, Min, ValidateNested } from "class-validator";
+import { IsArray, IsBoolean, IsDateString, IsEmail, IsIn, IsInt, IsLatitude, IsLongitude, IsOptional, IsString, IsUUID, Length, Matches, Max, Min, ValidateNested } from "class-validator";
 import { requireUser } from "../../common/auth-context.js";
 import { Roles } from "../auth/roles.decorator.js";
 import { RolesGuard } from "../auth/roles.guard.js";
@@ -44,6 +44,29 @@ class BulkAttachDto {
 class CsvImportDto {
   @IsString() @Length(1, 1_000_000) csv!: string;
   @IsOptional() @IsBoolean() dryRun?: boolean;
+}
+
+class ScheduleDeliveryDto {
+  @IsUUID() orderId!: string;
+  @IsIn(["daily", "weekly", "monthly"]) frequency!: "daily" | "weekly" | "monthly";
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(12) intervalCount?: number;
+  @IsDateString() nextRunAt!: string;
+  @IsOptional() @IsDateString() endAt?: string;
+}
+
+class StopDto {
+  @IsIn(["pickup", "dropoff", "waypoint"]) stopType!: "pickup" | "dropoff" | "waypoint";
+  @Type(() => Number) @IsInt() @Min(1) sequenceNumber!: number;
+  @IsOptional() @IsString() @Length(0, 80) label?: string;
+  @IsString() @Length(3, 300) addressLine!: string;
+  @IsOptional() @IsLatitude() latitude?: number;
+  @IsOptional() @IsLongitude() longitude?: number;
+  @IsOptional() @IsString() @Length(0, 120) contactName?: string;
+  @IsOptional() @IsString() @Matches(/^\+[1-9]\d{7,14}$/) contactPhone?: string;
+}
+
+class MultiStopDto {
+  @IsArray() @ValidateNested({ each: true }) stops!: StopDto[];
 }
 
 class ReviewBusinessDto {
@@ -109,7 +132,27 @@ export class BusinessController {
     return this.service.importOrders(requireUser(request).id, accountId, body.csv, body.dryRun ?? true);
   }
 
-  @Get("admin/business-accounts")
+  @Get("business/accounts/:accountId/orders")
+  orders(@Req() request: AuthenticatedRequest, @Param("accountId", ParseUUIDPipe) accountId: string, @Query() query: PageQuery) {
+    return this.service.orders(requireUser(request).id, accountId, query.limit ?? 50, query.offset ?? 0);
+  }
+
+  @Post("business/accounts/:accountId/orders/:orderId/schedule")
+  schedule(@Req() request: AuthenticatedRequest, @Param("accountId", ParseUUIDPipe) accountId: string, @Param("orderId", ParseUUIDPipe) orderId: string, @Body() body: ScheduleDeliveryDto) {
+    return this.service.schedule(requireUser(request).id, accountId, orderId, {
+      frequency: body.frequency, intervalCount: body.intervalCount ?? 1, nextRunAt: body.nextRunAt, endAt: body.endAt ?? null
+    });
+  }
+
+  @Post("business/accounts/:accountId/orders/:orderId/stops")
+  multiStop(@Req() request: AuthenticatedRequest, @Param("accountId", ParseUUIDPipe) accountId: string, @Param("orderId", ParseUUIDPipe) orderId: string, @Body() body: MultiStopDto) {
+    return this.service.multiStop(requireUser(request).id, accountId, orderId, body.stops);
+  }
+
+  @Get("business/accounts/:accountId/schedules")
+  schedules(@Req() request: AuthenticatedRequest, @Param("accountId", ParseUUIDPipe) accountId: string) {
+    return this.service.schedules(requireUser(request).id, accountId);
+  }
   @Roles("admin", "operations", "finance")
   adminList(@Query() query: PageQuery) {
     return this.service.adminList(query.status, query.limit ?? 50, query.offset ?? 0);
