@@ -900,9 +900,12 @@ class _CourierHomeState extends State<CourierHome> with WidgetsBindingObserver {
       final returnResult = asMap(
         await widget.client.get('/v1/courier/returns'),
       );
-      final disputeResult = asMap(
-        await widget.client.get('/v1/courier/earnings/disputes'),
-      );
+      Map<String, dynamic> disputeResult = <String, dynamic>{};
+      try {
+        disputeResult = asMap(await widget.client.get('/v1/courier/earnings/disputes'));
+      } catch (_) {
+        // Older backends may not expose earnings disputes yet.
+      }
       if (!mounted) return;
       setState(() {
         profile = result;
@@ -958,9 +961,12 @@ class _CourierHomeState extends State<CourierHome> with WidgetsBindingObserver {
       final returnResult = asMap(
         await widget.client.get('/v1/courier/returns'),
       );
-      final disputeResult = asMap(
-        await widget.client.get('/v1/courier/earnings/disputes'),
-      );
+      Map<String, dynamic> disputeResult = <String, dynamic>{};
+      try {
+        disputeResult = asMap(await widget.client.get('/v1/courier/earnings/disputes'));
+      } catch (_) {
+        // Older backends may not expose earnings disputes yet.
+      }
       if (!mounted) return;
       setState(() {
         activeDelivery = active['delivery'] == null
