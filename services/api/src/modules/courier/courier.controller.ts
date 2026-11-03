@@ -2,6 +2,7 @@ import { BadRequestException, Body, Controller, Get, Param, ParseUUIDPipe, Patch
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import { Type } from "class-transformer";
 import { IsBoolean, IsIn, IsInt, IsLatitude, IsLongitude, IsNumber, IsOptional, IsString, IsUUID, Length, Max, Min } from "class-validator";
+import { FAILURE_REASONS, isCourierAction, type CourierAction, type FailureReasonCode } from "@delivery-app/domain";
 import { requireUser, requestId } from "../../common/auth-context.js";
 import { Roles } from "../auth/roles.decorator.js";
 import { RolesGuard } from "../auth/roles.guard.js";
@@ -45,8 +46,12 @@ class LocationDto {
 }
 
 class TransitionDto {
-  @IsOptional() @IsString() @Length(4, 12) proofCode?: string;
+  @IsOptional() @IsString() @Length(4, 256) proofCode?: string;
+  @IsOptional() @IsString() @Length(3, 700_000) proofStorageKey?: string;
+  @IsOptional() @IsString() @Length(2, 120) recipientName?: string;
   @IsOptional() @IsString() @Length(0, 500) notes?: string;
+  @IsOptional() @IsIn(FAILURE_REASONS.map((reason) => reason.code)) failureReason?: FailureReasonCode;
+  @IsOptional() @IsBoolean() returnRequired?: boolean;
 }
 
 class PageQuery {
@@ -108,11 +113,23 @@ export class CourierController {
     return this.service.deliveries(requireUser(request).id, scope === "active" ? "active" : "history", query.limit ?? 30, query.offset ?? 0);
   }
 
+  @Get("returns")
+  @Roles("courier")
+  returns(@Req() request: AuthenticatedRequest) {
+    return this.service.pendingReturns(requireUser(request).id);
+  }
+
+  @Get("deliveries/:orderId")
+  @Roles("courier")
+  delivery(@Req() request: AuthenticatedRequest, @Param("orderId", ParseUUIDPipe) orderId: string) {
+    return this.service.delivery(requireUser(request).id, orderId);
+  }
+
   @Post("deliveries/:orderId/:action")
   @Roles("courier")
   transition(@Req() request: AuthenticatedRequest, @Param("orderId", ParseUUIDPipe) orderId: string, @Param("action") action: string, @Body() body: TransitionDto) {
-    if (!["arrived_pickup", "picked_up", "in_transit", "delivered", "failed"].includes(action)) throw new BadRequestException("Unsupported delivery action.");
-    return this.service.transition(requireUser(request).id, orderId, action as "arrived_pickup" | "picked_up" | "in_transit" | "delivered" | "failed", body, requestId(request));
+    if (!isCourierAction(action)) throw new BadRequestException("Unsupported delivery action.");
+    return this.service.transition(requireUser(request).id, orderId, action as CourierAction, body, requestId(request));
   }
 
   @Get("earnings")

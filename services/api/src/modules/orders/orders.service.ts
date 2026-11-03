@@ -9,7 +9,17 @@ import {
 } from "@nestjs/common";
 import { createHmac, randomInt, randomUUID } from "node:crypto";
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
-import { canTransition, decideCancellation, type OrderStatus } from "@delivery-app/domain";
+import {
+  allowedCourierActions,
+  canTransition,
+  decideCancellation,
+  effectiveProofMode,
+  failureReason,
+  parseQrPayload,
+  type CourierAction,
+  type FailureReasonCode,
+  type OrderStatus
+} from "@delivery-app/domain";
 import { readRuntimeConfig, type RuntimeConfig } from "../../config/runtime-config.js";
 import { DatabaseService } from "../../database/database.service.js";
 import { AuditService } from "../../common/audit.service.js";
@@ -76,6 +86,8 @@ type OrderRow = {
   distance_meters: number | null;
   delivery_otp_hash: string | null;
   delivery_proof_required: boolean;
+  delivery_proof_mode: string | null;
+  delivery_attempt_count: number;
   created_at: Date;
   updated_at: Date;
   accepted_at: Date | null;
@@ -699,7 +711,19 @@ export class OrdersService {
     return this.detail(input.orderId, { userId: input.actorUserId, roles: ["merchant_staff"] });
   }
 
-  async courierTransition(input: Readonly<{ orderId: string; courierUserId: string; action: "arrived_pickup" | "picked_up" | "in_transit" | "delivered" | "failed"; proofCode?: string | undefined; notes?: string | undefined; requestId: string | null; ipHash: string | null }>): Promise<OrderDetailRecord> {
+  async courierTransition(input: Readonly<{
+    orderId: string;
+    courierUserId: string;
+    action: CourierAction;
+    proofCode?: string | undefined;
+    proofStorageKey?: string | undefined;
+    recipientName?: string | undefined;
+    notes?: string | undefined;
+    failureReason?: FailureReasonCode | undefined;
+    returnRequired?: boolean | undefined;
+    requestId: string | null;
+    ipHash: string | null;
+  }>): Promise<OrderDetailRecord> {
     await this.database.withTransaction(async (client) => {
       const orderResult = await client.query<OrderRow>(
         `SELECT o.*, COALESCE(o.merchant_name_snapshot, m.display_name) AS merchant_name
@@ -709,63 +733,169 @@ export class OrdersService {
       );
       const order = orderResult.rows[0];
       if (!order) throw new NotFoundException("Order not found.");
-      const assignment = await client.query<{ id: string; status: string }>(
-        "SELECT id, status FROM delivery_assignments WHERE order_id = $1 AND courier_user_id = $2 AND status IN ('accepted','arrived_pickup','picked_up') FOR UPDATE",
+      const assignment = await client.query<{ id: string; status: string; return_required: boolean; return_status: string }>(
+        `SELECT id, status, return_required, return_status FROM delivery_assignments
+         WHERE order_id = $1 AND courier_user_id = $2
+           AND status IN ('accepted','arrived_pickup','picked_up','failed')
+         ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
         [order.id, input.courierUserId]
       );
       const active = assignment.rows[0];
       if (!active) throw new ForbiddenException("You are not assigned to this delivery.");
+
+      const allowed = allowedCourierActions({
+        assignmentStatus: active.status,
+        orderStatus: order.status,
+        returnRequired: active.return_required,
+        returnStatus: active.return_status
+      });
+      if (!allowed.includes(input.action)) {
+        throw new ConflictException(this.actionConflictMessage(input.action, order.status, active.status, allowed));
+      }
+
+      if (input.action === "returned") {
+        const returnNotes = input.notes?.trim() || null;
+        await client.query(
+          `UPDATE delivery_assignments SET return_status = 'completed', return_confirmed_at = now(), return_notes = $2, updated_at = now() WHERE id = $1`,
+          [active.id, returnNotes]
+        );
+        await this.insertEvent(client, order.id, order.status, order.status, input.courierUserId, returnNotes ? `Returned to merchant: ${returnNotes}` : "Returned to merchant");
+        await this.notifications.create({
+          userId: order.user_id, type: "order.returned", title: "Return completed",
+          body: `Order ${order.order_number} was returned to the merchant.`, data: { orderId: order.id, status: order.status }
+        }, client);
+        await this.audit.record({ actorUserId: input.courierUserId, action: "courier.returned", entityType: "order", entityId: order.id, requestId: input.requestId, ipHash: input.ipHash, metadata: { assignmentId: active.id, notes: returnNotes } }, client);
+        return;
+      }
+
       const target: OrderStatus =
         input.action === "arrived_pickup" ? "COURIER_ARRIVING_PICKUP" :
         input.action === "picked_up" ? "PICKED_UP" :
         input.action === "in_transit" ? "IN_TRANSIT" :
         input.action === "delivered" ? "DELIVERED" : "FAILED";
       if (!canTransition(order.kind, order.status as OrderStatus, target)) throw new ConflictException(`Cannot move this order from ${order.status} to ${target}.`);
-      if (input.action === "delivered" && order.delivery_proof_required) {
-        if (!input.proofCode) throw new BadRequestException("A delivery verification code is required.");
-        if (this.hashCode(input.proofCode) !== order.delivery_otp_hash) throw new BadRequestException("The delivery verification code is incorrect.");
+
+      const proofMode = effectiveProofMode({ proofMode: order.delivery_proof_mode, proofRequired: order.delivery_proof_required });
+      const proofNotes = input.notes?.trim() || null;
+      let proofType: string | null = null;
+      let proofStorageKey: string | null = null;
+      let recipientName: string | null = null;
+      if (input.action === "delivered") {
+        if (proofMode === "otp" || proofMode === "qr") {
+          const raw = input.proofCode?.trim() ?? "";
+          let code = raw;
+          if (proofMode === "qr") {
+            const parsed = parseQrPayload(raw);
+            if (!parsed || (parsed.orderId !== "" && parsed.orderId !== order.id)) {
+              throw new BadRequestException("Scan a valid delivery QR code for this order.");
+            }
+            code = parsed.code;
+          }
+          if (!/^\d{4,12}$/.test(code)) {
+            throw new BadRequestException(proofMode === "qr" ? "Scan a valid delivery QR code." : "Enter the delivery verification code.");
+          }
+          if (!order.delivery_otp_hash || this.hashCode(code) !== order.delivery_otp_hash) {
+            throw new BadRequestException("The delivery verification code is incorrect.");
+          }
+          proofType = proofMode;
+        } else if (proofMode === "photo" || proofMode === "signature") {
+          const evidence = input.proofStorageKey?.trim() ?? "";
+          if (!this.isValidProofEvidence(evidence)) {
+            throw new BadRequestException(proofMode === "photo" ? "Capture a delivery photo before completing the delivery." : "Capture the recipient signature before completing the delivery.");
+          }
+          const signer = input.recipientName?.trim() ?? "";
+          if (proofMode === "signature" && signer.length < 2) throw new BadRequestException("Record who signed for the delivery.");
+          proofType = proofMode;
+          proofStorageKey = evidence;
+          recipientName = signer || null;
+        } else {
+          proofType = "customer_handoff";
+          recipientName = input.recipientName?.trim() || null;
+        }
       }
-      if (input.action === "arrived_pickup" && active.status !== "accepted") throw new ConflictException("This assignment is not in an accepted state.");
-      if (input.action === "picked_up" && active.status !== "arrived_pickup") throw new ConflictException("Confirm arrival at the merchant before pickup.");
-      if (input.action === "in_transit" && active.status !== "picked_up") throw new ConflictException("Confirm pickup before starting transit.");
-      if (input.action === "delivered" && active.status !== "picked_up" && order.status !== "IN_TRANSIT") throw new ConflictException("The order has not been picked up.");
-      const assignmentStatus = input.action === "arrived_pickup" ? "arrived_pickup" : input.action === "picked_up" ? "picked_up" : input.action === "delivered" ? "delivered" : active.status;
-      const assignmentTimeColumn = input.action === "arrived_pickup" ? "arrived_at" : input.action === "picked_up" ? "picked_up_at" : input.action === "delivered" ? "delivered_at" : null;
-      await client.query(
-        `UPDATE delivery_assignments SET status = $2${assignmentTimeColumn ? `, ${assignmentTimeColumn} = now()` : ""} WHERE id = $1`,
-        [active.id, assignmentStatus]
-      );
+
+      if (input.action === "failed") {
+        const reason = input.failureReason ? failureReason(input.failureReason) : undefined;
+        if (!reason) throw new BadRequestException("Select a reason for the failed delivery.");
+        const failureNotes = input.notes?.trim() ?? "";
+        if (reason.requiresNotes && failureNotes.length < 10) throw new BadRequestException("Describe what happened in at least 10 characters.");
+        const returnRequired = input.returnRequired ?? reason.requiresReturn;
+        await client.query(
+          `UPDATE delivery_assignments SET status = 'failed', cancelled_at = now(), cancellation_reason = $2,
+             failure_reason_code = $3, failure_notes = $4, return_required = $5,
+             return_status = CASE WHEN $5 THEN 'pending' ELSE 'not_required' END, updated_at = now()
+           WHERE id = $1`,
+          [active.id, `${reason.label}${failureNotes ? `: ${failureNotes}` : ""}`, reason.code, failureNotes || null, returnRequired]
+        );
+        await client.query("UPDATE dispatch_offers SET status = 'cancelled', responded_at = now() WHERE order_id = $1 AND status = 'pending'", [order.id]);
+        await client.query("UPDATE courier_availability SET active_order_id = NULL, updated_at = now() WHERE courier_user_id = $1", [input.courierUserId]);
+      } else {
+        const assignmentStatus = input.action === "arrived_pickup" ? "arrived_pickup" : input.action === "picked_up" ? "picked_up" : input.action === "delivered" ? "delivered" : active.status;
+        const assignmentTimeColumn = input.action === "arrived_pickup" ? "arrived_at" : input.action === "picked_up" ? "picked_up_at" : input.action === "delivered" ? "delivered_at" : null;
+        await client.query(
+          `UPDATE delivery_assignments SET status = $2${assignmentTimeColumn ? `, ${assignmentTimeColumn} = now()` : ""}, updated_at = now() WHERE id = $1`,
+          [active.id, assignmentStatus]
+        );
+      }
+
       await client.query(
         `UPDATE orders SET status = $2, version = version + 1,
            delivered_at = CASE WHEN $2 = 'DELIVERED' THEN now() ELSE delivered_at END,
+           delivery_attempt_count = delivery_attempt_count + CASE WHEN $2 = 'FAILED' THEN 1 ELSE 0 END,
            courier_user_id = $3
          WHERE id = $1`,
         [order.id, target, input.courierUserId]
       );
       if (input.action === "delivered") {
         await client.query(
-          `INSERT INTO delivery_proofs (order_id, assignment_id, proof_type, notes, captured_by)
-           VALUES ($1,$2,$3,$4,$5)`,
-          [order.id, active.id, order.delivery_proof_required ? "otp" : "customer_handoff", input.notes ?? null, input.courierUserId]
+          `INSERT INTO delivery_proofs (order_id, assignment_id, proof_type, storage_key, recipient_name, notes, captured_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [order.id, active.id, proofType, proofStorageKey, recipientName, proofNotes, input.courierUserId]
         );
         await client.query("UPDATE courier_profiles SET completed_deliveries = completed_deliveries + 1 WHERE user_id = $1", [input.courierUserId]);
         await client.query("UPDATE courier_availability SET active_order_id = NULL, updated_at = now() WHERE courier_user_id = $1", [input.courierUserId]);
         await this.awardLoyaltyPoints(client, order.user_id, Number(order.items_subtotal_minor), `order:${order.id}`);
       }
-      if (input.action === "failed") {
-        await client.query("UPDATE delivery_assignments SET status = 'failed', cancelled_at = now(), cancellation_reason = $2 WHERE id = $1", [active.id, input.notes ?? "Delivery failed"]);
-        await client.query("UPDATE dispatch_offers SET status = 'cancelled', responded_at = now() WHERE order_id = $1 AND status = 'pending'", [order.id]);
-        await client.query("UPDATE courier_availability SET active_order_id = NULL, updated_at = now() WHERE courier_user_id = $1", [input.courierUserId]);
-      }
-      await this.insertEvent(client, order.id, order.status, target, input.courierUserId, input.notes ?? `Courier ${input.action}`);
+      await this.insertEvent(
+        client,
+        order.id,
+        order.status,
+        target,
+        input.courierUserId,
+        input.action === "failed"
+          ? `Delivery failed (${input.failureReason})${proofNotes ? `: ${proofNotes}` : ""}`
+          : proofNotes ?? `Courier ${input.action}`
+      );
       await this.notifications.create({
         userId: order.user_id, type: `order.${target.toLowerCase()}`, title: "Delivery update",
         body: `Order ${order.order_number} is now ${labelStatus(target)}.`, data: { orderId: order.id, status: target }
       }, client);
       await client.query("INSERT INTO outbox_events (event_type, aggregate_type, aggregate_id, payload) VALUES ('order.status_changed','order',$1,$2)", [order.id, JSON.stringify({ orderId: order.id, status: target })]);
-      await this.audit.record({ actorUserId: input.courierUserId, action: `courier.${input.action}`, entityType: "order", entityId: order.id, requestId: input.requestId, ipHash: input.ipHash, metadata: { from: order.status, to: target } }, client);
+      await this.audit.record({
+        actorUserId: input.courierUserId, action: `courier.${input.action}`, entityType: "order", entityId: order.id,
+        requestId: input.requestId, ipHash: input.ipHash,
+        metadata: { from: order.status, to: target, assignmentId: active.id, proofMode, proofType, failureReason: input.failureReason ?? null }
+      }, client);
     });
     return this.detail(input.orderId, { userId: input.courierUserId, roles: ["courier"] });
+  }
+
+  private actionConflictMessage(action: CourierAction, orderStatus: string, assignmentStatus: string, allowed: readonly CourierAction[]): string {
+    if (assignmentStatus === "failed") return "This delivery is closed. Confirm the merchant return if one is pending.";
+    if (assignmentStatus === "delivered") return "This delivery is already complete.";
+    if (assignmentStatus === "cancelled") return "This delivery was cancelled and can no longer be updated.";
+    if (action === "picked_up" && assignmentStatus !== "arrived_pickup") return "Confirm arrival at the merchant before confirming pickup.";
+    if (action === "in_transit" && assignmentStatus !== "picked_up") return "Confirm pickup before starting the delivery.";
+    if (action === "delivered" && assignmentStatus !== "picked_up") return "The package has not been picked up yet.";
+    if (action === "returned") return "No merchant return is pending for this delivery.";
+    if (action === "arrived_pickup") return "Arrival can only be confirmed once the delivery is accepted.";
+    return `This action is not allowed from order status ${orderStatus}. Allowed actions: ${allowed.length > 0 ? allowed.join(", ") : "none"}.`;
+  }
+
+  private isValidProofEvidence(value: string): boolean {
+    if (value.length < 3 || value.length > 700_000) return false;
+    if (value.startsWith("data:image/")) return /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/.test(value);
+    return /^[A-Za-z0-9][A-Za-z0-9._/-]{2,499}$/.test(value) && !value.includes("..");
   }
 
   async markPaymentSucceeded(orderId: string, paymentId: string, requestId: string | null, existingClient?: PoolClient): Promise<void> {

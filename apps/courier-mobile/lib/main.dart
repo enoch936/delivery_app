@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 
+import 'delivery_execution_screen.dart';
 import 'design/floating_bars.dart';
 
 import 'package:geolocator/geolocator.dart';
@@ -389,12 +390,16 @@ class ApiClient {
       return false;
     }
   }
-
   String _message(dynamic body, int status) {
-    if (body is Map && body['message'] != null) {
-      final message = body['message'];
-      if (message is List) return message.join(', ');
-      return message.toString();
+    if (body is Map) {
+      if (body['error'] is Map && body['error']['message'] != null) {
+        return body['error']['message'].toString();
+      }
+      if (body['message'] != null) {
+        final message = body['message'];
+        if (message is List) return message.join(', ');
+        return message.toString();
+      }
     }
     return 'Request failed ($status)';
   }
@@ -762,6 +767,7 @@ class _CourierHomeState extends State<CourierHome> {
   Map<String, dynamic>? profile;
   Map<String, dynamic>? activeDelivery;
   List<Map<String, dynamic>> offers = [];
+  List<Map<String, dynamic>> pendingReturns = [];
   Map<String, dynamic>? earnings;
   bool busy = false;
   String? error;
@@ -769,6 +775,7 @@ class _CourierHomeState extends State<CourierHome> {
   String _todayFilter = 'all';
   String _earningsFilter = 'all';
   final LocationService _location = LocationService();
+  Timer? _offerCountdown;
 
   @override
   void initState() {
@@ -780,6 +787,8 @@ class _CourierHomeState extends State<CourierHome> {
   @override
   void dispose() {
     widget.client.pendingSync.removeListener(_onPendingSync);
+    _offerCountdown?.cancel();
+    _offerCountdown = null;
     unawaited(_location.stop());
     super.dispose();
   }
@@ -802,6 +811,9 @@ class _CourierHomeState extends State<CourierHome> {
       final earningsResult = asMap(
         await widget.client.get('/v1/courier/earnings'),
       );
+      final returnResult = asMap(
+        await widget.client.get('/v1/courier/returns'),
+      );
       if (!mounted) return;
       setState(() {
         profile = result;
@@ -809,24 +821,42 @@ class _CourierHomeState extends State<CourierHome> {
             ? null
             : asMap(active['delivery']);
         offers = asList(offerResult['items']);
+        pendingReturns = asList(returnResult['items']);
         earnings = earningsResult;
         needsOnboarding = false;
       });
+      _startOfferCountdown();
       _syncLocationHeartbeat();
     } on ApiException catch (cause) {
       if (cause.statusCode == 403 || cause.statusCode == 404) {
-        if (mounted) setState(() => needsOnboarding = true);
+        if (mounted) {
+          setState(() {
+            needsOnboarding = true;
+            error = null;
+          });
+        }
       } else if (mounted) {
         setState(() => error = cause.message);
       }
     } catch (cause) {
-      if (mounted) setState(() => error = cause.toString());
+      if (mounted) {
+        final isNotFound = cause.toString().contains('404') || cause.toString().contains('403');
+        setState(() {
+          if (isNotFound) {
+            needsOnboarding = true;
+            error = null;
+          } else {
+            error = cause.toString();
+          }
+        });
+      }
     } finally {
       if (mounted) setState(() => initializing = false);
     }
   }
 
   Future<void> _refreshData() async {
+    if (needsOnboarding || profile == null) return;
     try {
       final active = asMap(
         await widget.client.get('/v1/courier/deliveries/active'),
@@ -835,17 +865,73 @@ class _CourierHomeState extends State<CourierHome> {
       final earningsResult = asMap(
         await widget.client.get('/v1/courier/earnings'),
       );
+      final returnResult = asMap(
+        await widget.client.get('/v1/courier/returns'),
+      );
       if (!mounted) return;
       setState(() {
         activeDelivery = active['delivery'] == null
             ? null
             : asMap(active['delivery']);
         offers = asList(offerResult['items']);
+        pendingReturns = asList(returnResult['items']);
         earnings = earningsResult;
       });
+      _startOfferCountdown();
     } catch (cause) {
       if (mounted) setState(() => error = cause.toString());
     }
+  }
+
+  DateTime? _offerExpiresAt(Map<String, dynamic> offer) {
+    final raw = offer['expiresAt']?.toString();
+    if (raw == null) return null;
+    return DateTime.tryParse(raw);
+  }
+
+  Duration _offerRemaining(Map<String, dynamic> offer) {
+    final expiresAt = _offerExpiresAt(offer);
+    if (expiresAt == null) return const Duration(seconds: 0);
+    final remaining = expiresAt.difference(DateTime.now());
+    return remaining.isNegative ? const Duration(seconds: 0) : remaining;
+  }
+
+  bool _offerExpired(Map<String, dynamic> offer) =>
+      _offerRemaining(offer) <= Duration.zero;  bool _canAcceptOffer(Map<String, dynamic> offer) {
+    if (busy) return false;
+    if (_offerExpired(offer)) return false;
+    final availability = asMap(profile?['availability']);
+    final online = availability['isOnline'] == true;
+    final acceptingOffers = availability['acceptingOffers'] == true;
+    final approved = (profile?['status']?.toString() ?? '') == 'approved';
+    if (!online || !acceptingOffers || !approved) return false;
+    if (activeDelivery != null) return false;
+    return true;
+  }
+
+  void _startOfferCountdown() {
+    _stopOfferCountdown();
+    if (offers.isEmpty) return;
+    _offerCountdown = Timer.periodic(const Duration(seconds: 1), (_) {
+      unawaited(_tickOfferCountdown());
+    });
+  }
+
+  void _stopOfferCountdown() {
+    _offerCountdown?.cancel();
+    _offerCountdown = null;
+  }
+
+  Future<void> _tickOfferCountdown() async {
+    if (!mounted) return;
+    for (final offer in offers) {
+      if (_offerExpired(offer)) {
+        // Offers past their expiry are dropped by the backend on the next sync.
+        await _refreshData();
+        return;
+      }
+    }
+    if (mounted) setState(() {});
   }
 
   Future<void> _setAvailability({bool? online, bool? accepting}) async {
@@ -874,6 +960,11 @@ class _CourierHomeState extends State<CourierHome> {
         };
       });
       _syncLocationHeartbeat();
+      if (!isOnline) {
+        _stopOfferCountdown();
+      } else {
+        _startOfferCountdown();
+      }
       await _refreshData();
     } catch (cause) {
       if (mounted) setState(() => error = cause.toString());
@@ -982,112 +1073,17 @@ class _CourierHomeState extends State<CourierHome> {
     }
   }
 
-  Future<void> _transition(
-    String orderId,
-    String action, {
-    String? proofCode,
-    String? notes,
-  }) async {
-    setState(() {
-      busy = true;
-      error = null;
-    });
-    try {
-      await widget.client.post('/v1/courier/deliveries/$orderId/$action', {
-        'proofCode': ?proofCode,
-        'notes': ?notes,
-      });
-      await _refreshData();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Delivery updated: ${label(action)}.')),
-        );
-      }
-    } catch (cause) {
-      if (mounted) setState(() => error = cause.toString());
-    } finally {
-      if (mounted) setState(() => busy = false);
-    }
-  }
-
-  Future<void> _deliver(Map<String, dynamic> delivery) async {
-    final proofController = TextEditingController();
-    final notesController = TextEditingController();
-    final required = delivery['deliveryProofRequired'] == true;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Complete delivery'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (required)
-              TextField(
-                controller: proofController,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  labelText: "Customer's delivery code",
-                ),
-              ),
-            if (required) const SizedBox(height: 10),
-            TextField(
-              controller: notesController,
-              decoration: const InputDecoration(labelText: 'Notes (optional)'),
-            ),
-          ],
+  Future<void> _openDelivery(Map<String, dynamic> delivery) async {
+    await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => DeliveryExecutionScreen(
+          client: widget.client,
+          orderId: delivery['orderId'].toString(),
+          initial: delivery,
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Confirm delivery'),
-          ),
-        ],
       ),
     );
-    final proof = proofController.text.trim();
-    final notes = notesController.text.trim();
-    proofController.dispose();
-    notesController.dispose();
-    if (confirmed != true) return;
-    await _transition(
-      delivery['orderId'] as String,
-      'delivered',
-      proofCode: proof.isEmpty ? null : proof,
-      notes: notes.isEmpty ? null : notes,
-    );
-  }
-
-  Future<void> _fail(Map<String, dynamic> delivery) async {
-    final notesController = TextEditingController();
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Report a failed delivery'),
-        content: TextField(
-          controller: notesController,
-          maxLines: 3,
-          decoration: const InputDecoration(labelText: 'What happened?'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Back'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Report failure'),
-          ),
-        ],
-      ),
-    );
-    final notes = notesController.text.trim();
-    notesController.dispose();
-    if (confirmed != true || notes.isEmpty) return;
-    await _transition(delivery['orderId'] as String, 'failed', notes: notes);
+    if (mounted) await _refreshData();
   }
 
   Future<void> _signOut() async {
@@ -1391,6 +1387,28 @@ class _CourierHomeState extends State<CourierHome> {
                       ),
                     ],
                   ),
+                if (showStatus)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _statCard(
+                          'Capacity',
+                          '${profile?['capacityUnits'] ?? 1} units',
+                          Icons.inventory_2_outlined,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: _statCard(
+                          'Workload',
+                          activeDelivery == null ? 'Idle' : 'On delivery',
+                          activeDelivery == null
+                              ? Icons.hourglass_empty_outlined
+                              : Icons.local_shipping_outlined,
+                        ),
+                      ),
+                    ],
+                  ),
                 const SizedBox(height: 20),
                 if (showActive) ...[
                   Text(
@@ -1412,6 +1430,17 @@ class _CourierHomeState extends State<CourierHome> {
                     )
                   else
                     _activeDeliveryCard(activeDelivery!),
+                  const SizedBox(height: 20),
+                ],
+                if (pendingReturns.isNotEmpty) ...[
+                  Text(
+                    'Returns to merchant',
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  ...pendingReturns.map(_returnCard),
                   const SizedBox(height: 20),
                 ],
                 if (showOffers) ...[
@@ -1489,6 +1518,36 @@ class _CourierHomeState extends State<CourierHome> {
 
   Widget _offerCard(Map<String, dynamic> offer) {
     final theme = Theme.of(context);
+    final remaining = _offerRemaining(offer);
+    final expired = remaining <= Duration.zero;
+    final secondsLeft = remaining.inSeconds;
+    final minutesLeft = (secondsLeft ~/ 60).toString().padLeft(2, '0');
+    final seconds = (secondsLeft % 60).toString().padLeft(2, '0');
+    final canAccept = _canAcceptOffer(offer);
+    final compensationMinor = (offer['compensationMinor'] as num? ?? 0).toInt();
+    final tipMinor = (offer['tipMinor'] as num? ?? 0).toInt();
+    final deductionsMinor = (offer['deductionsMinor'] as num? ?? 0).toInt();
+    final deliveryDistance = offer['deliveryDistanceMeters'] as num?;
+    final estimatedMinutes = offer['estimatedMinutes'] as num?;
+    final availability = asMap(profile?['availability']);
+    final online = availability['isOnline'] == true;
+    final acceptingOffers = availability['acceptingOffers'] == true;
+    final approved = (profile?['status']?.toString() ?? '') == 'approved';
+    String? eligibilityNote;
+    if (busy) {
+      eligibilityNote = 'Updating your delivery state.';
+    } else if (expired) {
+      eligibilityNote = 'This offer expired. Waiting for the next delivery.';
+    } else if (activeDelivery != null) {
+      eligibilityNote = 'Finish your current delivery before accepting another offer.';
+    } else if (!online) {
+      eligibilityNote = 'You are offline. Go online to receive and accept offers.';
+    } else if (!acceptingOffers) {
+      eligibilityNote = 'Offer intake is paused. Resume accepting offers to take this delivery.';
+    } else if (!approved) {
+      eligibilityNote = 'Your courier account is still awaiting operations approval.';
+    }
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Card(
@@ -1509,7 +1568,7 @@ class _CourierHomeState extends State<CourierHome> {
                   ),
                   Text(
                     money(
-                      offer['compensationMinor'] as num?,
+                      compensationMinor,
                       offer['currency']?.toString(),
                     ),
                     style: const TextStyle(fontWeight: FontWeight.w800),
@@ -1521,32 +1580,198 @@ class _CourierHomeState extends State<CourierHome> {
                 '${offer['merchantName'] ?? 'Merchant'} · ${((offer['distanceToPickupMeters'] as num? ?? 0) / 1000).toStringAsFixed(1)} km away',
                 style: const TextStyle(color: Color(0xFF6B7468), fontSize: 13),
               ),
-              if (offer['deliveryAddress'] != null) ...[
-                const SizedBox(height: 4),
-                Text(
-                  'Deliver to ${offer['deliveryAddress']}',
-                  style: const TextStyle(fontSize: 13),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: expired
+                      ? const Color(0xFFFFEBEE)
+                      : secondsLeft <= 20
+                          ? const Color(0xFFFFE0B2)
+                          : const Color(0xFFE4F0E8),
+                  borderRadius: BorderRadius.circular(999),
                 ),
-              ],
+                child: Row(
+                  children: [
+                    Icon(
+                      expired
+                          ? Icons.timer_off_outlined
+                          : secondsLeft <= 20
+                              ? Icons.timer_outlined
+                              : Icons.hourglass_empty_outlined,
+                      size: 14,
+                      color: expired
+                          ? const Color(0xFFB71C1C)
+                          : secondsLeft <= 20
+                              ? const Color(0xFFB26A00)
+                              : const Color(0xFF2F6B4F),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      expired
+                          ? 'Offer expired'
+                          : 'Accepting in $minutesLeft:$seconds',
+                      style: TextStyle(
+                        color: expired
+                            ? const Color(0xFFB71C1C)
+                            : secondsLeft <= 20
+                                ? const Color(0xFFB26A00)
+                                : const Color(0xFF2F6B4F),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+              _stopRow(
+                Icons.storefront,
+                'Pickup',
+                offer['merchantName']?.toString() ?? 'Merchant',
+                offer['pickupAddress']?.toString(),
+              ),
+              const SizedBox(height: 8),
+              _stopRow(
+                Icons.location_on_outlined,
+                'Deliver to',
+                offer['customerName']?.toString() ?? 'Customer',
+                offer['deliveryAddress']?.toString(),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(Icons.route_outlined, size: 16, color: Color(0xFF2F6B4F)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Pickup ${((offer['distanceToPickupMeters'] as num? ?? 0) / 1000).toStringAsFixed(1)} km away · Delivery ${deliveryDistance == null ? '—' : ((deliveryDistance / 1000).toStringAsFixed(1))} km away',
+                      style: const TextStyle(fontSize: 13, color: Color(0xFF6B7468)),
+                    ),
+                  ),
+                ],
+              ),
+              if (estimatedMinutes != null)
+                Text(
+                  'Estimated travel time about $estimatedMinutes minutes.',
+                  style: const TextStyle(fontSize: 13, color: Color(0xFF6B7468)),
+                ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF7F5EC),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.payments_outlined, size: 16, color: Color(0xFF2F6B4F)),
+                        const SizedBox(width: 8),
+                        const Text(
+                          'Compensation',
+                          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        const Expanded(child: Text('Total', style: TextStyle(fontSize: 13, color: Color(0xFF6B7468)))),
+                        Text(money(compensationMinor, offer['currency']?.toString()), style: const TextStyle(fontWeight: FontWeight.w800)),
+                      ],
+                    ),
+                    if (tipMinor > 0) ...[
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          const Expanded(child: Text('Tip', style: TextStyle(fontSize: 13, color: Color(0xFF6B7468)))),
+                          Text(money(tipMinor, offer['currency']?.toString()), style: const TextStyle(fontWeight: FontWeight.w800)),
+                        ],
+                      ),
+                    ],
+                    if (deductionsMinor > 0) ...[
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          const Expanded(child: Text('Deductions', style: TextStyle(fontSize: 13, color: Color(0xFFB71C1C)))),
+                          Text(money(deductionsMinor, offer['currency']?.toString()), style: TextStyle(fontWeight: FontWeight.w800, color: const Color(0xFFB71C1C))),
+                        ],
+                      ),
+                    ],
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        const Expanded(child: Text('Estimated payout', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700))),
+                        Text(money(compensationMinor - (deductionsMinor > 0 ? deductionsMinor : 0), offer['currency']?.toString()), style: const TextStyle(fontWeight: FontWeight.w800)),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                '${label(profile?['vehicleType']?.toString())} · capacity ${profile?['capacityUnits'] ?? 1} units',
+                style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468)),
+              ),
               const SizedBox(height: 12),
               Row(
                 children: [
                   Expanded(
                     child: FilledButton(
-                      onPressed: busy ? null : () => _acceptOffer(offer),
+                      onPressed: canAccept ? () => _acceptOffer(offer) : null,
                       child: const Text('Accept'),
                     ),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: OutlinedButton(
-                      onPressed: busy ? null : () => _rejectOffer(offer),
+                      onPressed: (!busy && !expired) ? () => _rejectOffer(offer) : null,
                       child: const Text('Pass'),
                     ),
                   ),
                 ],
               ),
+              if (eligibilityNote != null) ...[
+                const SizedBox(height: 10),
+                Text(
+                  eligibilityNote,
+                  style: const TextStyle(color: Color(0xFFB26A00), fontSize: 12, height: 1.4),
+                ),
+              ],
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _returnCard(Map<String, dynamic> delivery) {
+    final failure = asMap(delivery['failure']);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Card(
+        child: ListTile(
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 6,
+          ),
+          leading: const Icon(
+            Icons.assignment_return_outlined,
+            color: Color(0xFFB26A00),
+          ),
+          title: Text(
+            delivery['orderNumber']?.toString() ?? 'Return',
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+          subtitle: Text(
+            '${delivery['merchantName'] ?? 'Merchant'} · ${failure['reasonLabel'] ?? 'Failed delivery'}',
+          ),
+          trailing: TextButton(
+            onPressed: () => _openDelivery(delivery),
+            child: const Text('Open'),
           ),
         ),
       ),
@@ -1556,22 +1781,6 @@ class _CourierHomeState extends State<CourierHome> {
   Widget _activeDeliveryCard(Map<String, dynamic> delivery) {
     final theme = Theme.of(context);
     final assignmentStatus = delivery['assignmentStatus']?.toString();
-    final orderStatus = delivery['orderStatus']?.toString();
-    String action;
-    String actionLabel;
-    if (assignmentStatus == 'accepted') {
-      action = 'arrived_pickup';
-      actionLabel = 'Arrived at merchant';
-    } else if (assignmentStatus == 'arrived_pickup') {
-      action = 'picked_up';
-      actionLabel = 'Confirm pickup';
-    } else if (orderStatus != 'IN_TRANSIT') {
-      action = 'in_transit';
-      actionLabel = 'Start delivery';
-    } else {
-      action = 'delivered';
-      actionLabel = 'Complete delivery';
-    }
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(18),
@@ -1650,21 +1859,10 @@ class _CourierHomeState extends State<CourierHome> {
               ],
             ),
             const SizedBox(height: 14),
-            FilledButton(
-              onPressed: busy
-                  ? null
-                  : action == 'delivered'
-                  ? () => _deliver(delivery)
-                  : () => _transition(delivery['orderId'] as String, action),
-              child: Text(busy ? 'Updating…' : actionLabel),
-            ),
-            const SizedBox(height: 6),
-            TextButton(
-              onPressed: busy ? null : () => _fail(delivery),
-              style: TextButton.styleFrom(
-                foregroundColor: const Color(0xFFA63A32),
-              ),
-              child: const Text('Report a problem'),
+            FilledButton.icon(
+              onPressed: busy ? null : () => _openDelivery(delivery),
+              icon: const Icon(Icons.assignment_outlined),
+              label: const Text('Open delivery'),
             ),
           ],
         ),
@@ -1768,10 +1966,50 @@ class _CourierHomeState extends State<CourierHome> {
                           children: [
                             Expanded(
                               child: _darkStat(
+                                'Gross earnings',
+                                money(
+                                  (data['lifetimeEarningsMinor'] as num? ?? 0) -
+                                      (data['tipsMinor'] as num? ?? 0),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: _darkStat(
                                 'Tips',
                                 money(data['tipsMinor'] as num?),
                               ),
                             ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _darkStat(
+                                'Deductions',
+                                money(_lifetimeDeductions(payouts)),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: _darkStat(
+                                'Net payable',
+                                money(data['pendingPayoutMinor'] as num?),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _darkStat(
+                                'Settled earnings',
+                                money(_settledEarnings(payouts)),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
                             Expanded(
                               child: _darkStat(
                                 'Pending payout',
@@ -1859,7 +2097,9 @@ class _CourierHomeState extends State<CourierHome> {
                         title: Text(
                           '${shortDate(payout['periodStart']?.toString())} – ${shortDate(payout['periodEnd']?.toString())}',
                         ),
-                        subtitle: Text(label(payout['status']?.toString())),
+                        subtitle: Text(
+                          '${label(payout['status']?.toString())} · Gross ${money(payout['grossEarningsMinor'] as num?, payout['currency']?.toString())} · Deductions ${money(payout['deductionsMinor'] as num?, payout['currency']?.toString())}',
+                        ),
                         trailing: Text(
                           money(
                             payout['netPayableMinor'] as num?,
@@ -1877,6 +2117,24 @@ class _CourierHomeState extends State<CourierHome> {
         ),
       ],
     );
+  }
+
+  num _lifetimeDeductions(List<Map<String, dynamic>> payouts) {
+    var total = 0;
+    for (final payout in payouts) {
+      total += (payout['deductionsMinor'] as num? ?? 0).toInt();
+    }
+    return total;
+  }
+
+  num _settledEarnings(List<Map<String, dynamic>> payouts) {
+    var total = 0;
+    for (final payout in payouts) {
+      if ((payout['status']?.toString() ?? '') == 'paid') {
+        total += (payout['netPayableMinor'] as num? ?? 0).toInt();
+      }
+    }
+    return total;
   }
 
   Widget _darkStat(String title, String value) {
@@ -1897,6 +2155,103 @@ class _CourierHomeState extends State<CourierHome> {
         ),
       ],
     );
+  }
+
+  Future<void> _uploadDocumentModal([String? initialType]) async {
+    String selectedType = initialType ?? 'national_id';
+    final fileKeyController = TextEditingController(text: 'documents/courier_${DateTime.now().millisecondsSinceEpoch}.jpg');
+    final docTypes = {
+      'national_id': 'National ID / Passport',
+      'driving_license': 'Driving License',
+      'vehicle_registration': 'Vehicle Logbook / Registration',
+      'insurance': 'Vehicle Insurance Policy',
+      'profile_photo': 'Courier Profile Photo',
+    };
+
+    final submitted = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            return Padding(
+              padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + MediaQuery.of(sheetContext).viewInsets.bottom),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.upload_file_rounded, color: Color(0xFF2F6B4F)),
+                      const SizedBox(width: 8),
+                      Text('Upload Verification Document', style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  const Text('Upload clear photos of your official identity or vehicle documents for Operations review.', style: TextStyle(color: Color(0xFF6B7468), fontSize: 13)),
+                  const SizedBox(height: 14),
+                  DropdownButtonFormField<String>(
+                    initialValue: selectedType,
+                    decoration: const InputDecoration(labelText: 'Document Type'),
+                    items: docTypes.entries.map((e) => DropdownMenuItem(value: e.key, child: Text(e.value))).toList(),
+                    onChanged: (val) {
+                      if (val != null) setSheetState(() => selectedType = val);
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: fileKeyController,
+                    decoration: const InputDecoration(
+                      labelText: 'Storage Reference / Document Key',
+                      hintText: 'documents/courier_id.jpg',
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: () => Navigator.pop(sheetContext, true),
+                      icon: const Icon(Icons.cloud_upload_outlined),
+                      label: const Text('Submit Document for Review'),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    if (submitted == true && mounted) {
+      final key = fileKeyController.text.trim();
+      fileKeyController.dispose();
+      if (key.isEmpty) return;
+      setState(() => busy = true);
+      try {
+        await widget.client.post('/v1/courier/documents', {
+          'documentType': selectedType,
+          'storageKey': key,
+        });
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Document submitted successfully for Operations review.')),
+        );
+        _load();
+      } catch (cause) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(cause.toString())),
+        );
+      } finally {
+        if (mounted) setState(() => busy = false);
+      }
+    } else {
+      fileKeyController.dispose();
+    }
   }
 
   Widget _profileView(String roles) {
@@ -1983,35 +2338,137 @@ class _CourierHomeState extends State<CourierHome> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Documents',
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                if (documents.isEmpty)
-                  const Text(
-                    'No documents uploaded.',
-                    style: TextStyle(color: Color(0xFF6B7468)),
-                  ),
-                ...documents.map(
-                  (document) => ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    dense: true,
-                    title: Text(label(document['documentType']?.toString())),
-                    subtitle: Text(
-                      document['reviewNotes']?.toString() ??
-                          shortDate(document['createdAt']?.toString()),
-                    ),
-                    trailing: Text(
-                      label(document['status']?.toString()),
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        fontSize: 12,
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Verification Documents',
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
                       ),
                     ),
+                    OutlinedButton.icon(
+                      onPressed: busy ? null : () => _uploadDocumentModal(),
+                      icon: const Icon(Icons.add, size: 16),
+                      label: const Text('Upload', style: TextStyle(fontSize: 12)),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        minimumSize: const Size(0, 32),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                if (documents.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: Text(
+                      'No verification documents uploaded yet. Upload your National ID and Driving License to get approved.',
+                      style: TextStyle(color: Color(0xFF6B7468), fontSize: 13),
+                    ),
                   ),
+                ...documents.map(
+                  (document) {
+                    final docStatus = document['status']?.toString() ?? 'pending';
+                    final isRejected = docStatus == 'rejected';
+                    final isApproved = docStatus == 'approved';
+                    final docType = document['documentType']?.toString() ?? '';
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isApproved
+                            ? const Color(0xFFE8F5E9)
+                            : isRejected
+                                ? const Color(0xFFFFEBEE)
+                                : const Color(0xFFF5F2E8),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: isApproved
+                              ? const Color(0xFFA5D6A7)
+                              : isRejected
+                                  ? const Color(0xFFEF9A9A)
+                                  : const Color(0xFFD9D5C7),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(
+                                isApproved
+                                    ? Icons.check_circle_outline
+                                    : isRejected
+                                        ? Icons.error_outline
+                                        : Icons.hourglass_empty,
+                                color: isApproved
+                                    ? const Color(0xFF2E7D32)
+                                    : isRejected
+                                        ? const Color(0xFFC62828)
+                                        : const Color(0xFFB26A00),
+                                size: 18,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  label(docType),
+                                  style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: isApproved
+                                      ? const Color(0xFFC8E6C9)
+                                      : isRejected
+                                          ? const Color(0xFFFFCDD2)
+                                          : const Color(0xFFFFE0B2),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  label(docStatus).toUpperCase(),
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w800,
+                                    color: isApproved
+                                        ? const Color(0xFF1B5E20)
+                                        : isRejected
+                                            ? const Color(0xFFB71C1C)
+                                            : const Color(0xFFE65100),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          if (document['reviewNotes'] != null) ...[
+                            const SizedBox(height: 6),
+                            Text(
+                              document['reviewNotes'].toString(),
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: isRejected ? const Color(0xFFC62828) : const Color(0xFF6B7468),
+                              ),
+                            ),
+                          ],
+                          if (isRejected) ...[
+                            const SizedBox(height: 8),
+                            OutlinedButton.icon(
+                              onPressed: busy ? null : () => _uploadDocumentModal(docType),
+                              icon: const Icon(Icons.refresh, size: 14),
+                              label: const Text('Re-upload Document', style: TextStyle(fontSize: 11)),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: const Color(0xFFC62828),
+                                side: const BorderSide(color: Color(0xFFEF9A9A)),
+                                minimumSize: const Size(0, 30),
+                                padding: const EdgeInsets.symmetric(horizontal: 10),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    );
+                  },
                 ),
                 if (vehicles.isNotEmpty) ...[
                   const Divider(height: 26),
@@ -2141,6 +2598,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Future<void> _register() async {
+    final name = nameController.text.trim();
+    if (name.length < 2) {
+      setState(() => error = 'Please enter your full name (at least 2 characters).');
+      return;
+    }
     setState(() {
       busy = true;
       error = null;
@@ -2148,7 +2610,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     try {
       final result = asMap(
         await widget.client.post('/v1/courier/register', {
-          'fullName': nameController.text.trim(),
+          'fullName': name,
           'vehicleType': vehicleType,
           if (plateController.text.trim().isNotEmpty)
             'vehiclePlate': plateController.text.trim(),

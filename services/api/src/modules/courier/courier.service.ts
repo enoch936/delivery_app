@@ -1,6 +1,30 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  allowedCourierActions,
+  effectiveProofMode,
+  failureReason,
+  type CourierAction,
+  type FailureReasonCode
+} from "@delivery-app/domain";
 import { DatabaseService } from "../../database/database.service.js";
 import { OrdersService } from "../orders/orders.service.js";
+
+type CourierDeliveryRow = {
+  assignment_id: string; assignment_status: string; accepted_at: Date | null; arrived_at: Date | null;
+  picked_up_at: Date | null; delivered_at: Date | null;
+  failure_reason_code: string | null; failure_notes: string | null; return_required: boolean;
+  return_status: string; return_confirmed_at: Date | null; return_notes: string | null;
+  order_id: string; order_number: string; order_status: string; order_kind: string; payment_status: string;
+  total_minor: string; currency: string; delivery_fee_minor: string; tip_minor: string;
+  delivery_estimate_minutes: number | null; delivery_address_snapshot: Record<string, unknown> | null;
+  delivery_instructions: string | null; delivery_proof_required: boolean; delivery_proof_mode: string | null;
+  delivery_lat: number | null; delivery_lng: number | null;
+  merchant_name: string; pickup_address: string | null;
+  merchant_contact_name: string | null; merchant_contact_phone: string | null;
+  pickup_lat: number | null; pickup_lng: number | null;
+  delivery_address: string | null; delivery_recipient_name: string | null; delivery_contact_phone: string | null;
+  customer_name: string | null; customer_phone: string | null;
+};
 
 type CourierProfileRow = {
   user_id: string; status: string; full_name: string | null; vehicle_type: string; vehicle_plate: string | null;
@@ -9,6 +33,31 @@ type CourierProfileRow = {
   is_online: boolean | null; accepting_offers: boolean | null; last_seen_at: Date | null;
   latitude: number | null; longitude: number | null; active_order_id: string | null;
 };
+
+const DELIVERY_SELECT = `
+  SELECT da.id AS assignment_id, da.status AS assignment_status, da.accepted_at, da.arrived_at,
+         da.picked_up_at, da.delivered_at,
+         da.failure_reason_code, da.failure_notes, da.return_required, da.return_status,
+         da.return_confirmed_at, da.return_notes,
+         o.id AS order_id, o.order_number, o.status AS order_status, o.kind AS order_kind,
+         o.payment_status, o.total_minor, o.currency, o.delivery_fee_minor, o.tip_minor,
+         o.delivery_estimate_minutes, o.delivery_address_snapshot, o.delivery_instructions,
+         o.delivery_proof_required, o.delivery_proof_mode, o.delivery_lat, o.delivery_lng,
+         COALESCE(o.merchant_name_snapshot, m.display_name) AS merchant_name,
+         ml.address_line AS pickup_address,
+         ml.contact_name AS merchant_contact_name, ml.contact_phone_e164 AS merchant_contact_phone,
+         ST_Y(ml.location::geometry) AS pickup_lat, ST_X(ml.location::geometry) AS pickup_lng,
+         COALESCE(o.delivery_address_snapshot->>'addressLine', ca.address_line) AS delivery_address,
+         COALESCE(o.delivery_address_snapshot->>'recipientName', ca.recipient_name) AS delivery_recipient_name,
+         COALESCE(o.delivery_address_snapshot->>'phoneE164', ca.phone_e164) AS delivery_contact_phone,
+         cusr.display_name AS customer_name, cusr.phone_e164 AS customer_phone
+  FROM delivery_assignments da
+  JOIN orders o ON o.id = da.order_id
+  JOIN merchants m ON m.id = o.merchant_id
+  LEFT JOIN merchant_locations ml ON ml.id = o.merchant_location_id
+  LEFT JOIN customer_addresses ca ON ca.id = o.delivery_address_id
+  LEFT JOIN users cusr ON cusr.id = o.user_id
+`;
 
 @Injectable()
 export class CourierService {
@@ -136,37 +185,13 @@ export class CourierService {
   }
 
   async deliveries(userId: string, scope: "active" | "history", limit: number, offset: number) {
-    const result = await this.database.query(
-      `SELECT da.id AS assignment_id, da.status AS assignment_status, da.accepted_at, da.picked_up_at, da.delivered_at,
-              o.id AS order_id, o.order_number, o.status AS order_status, o.payment_status, o.total_minor, o.currency,
-              o.delivery_fee_minor, o.tip_minor, o.delivery_estimate_minutes, o.delivery_address_snapshot, o.delivery_proof_required,
-              COALESCE(o.merchant_name_snapshot, m.display_name) AS merchant_name, ml.address_line AS pickup_address,
-              COALESCE(o.delivery_address_snapshot->>'addressLine', ca.address_line) AS delivery_address,
-              cusr.display_name AS customer_name, cusr.phone_e164 AS customer_phone
-       FROM delivery_assignments da JOIN orders o ON o.id = da.order_id
-       JOIN merchants m ON m.id = o.merchant_id
-       LEFT JOIN merchant_locations ml ON ml.id = o.merchant_location_id
-       LEFT JOIN customer_addresses ca ON ca.id = o.delivery_address_id
-       LEFT JOIN users cusr ON cusr.id = o.user_id
+    const result = await this.database.query<CourierDeliveryRow>(
+      `${DELIVERY_SELECT}
        WHERE da.courier_user_id = $1 AND da.status = ANY($2::text[])
        ORDER BY da.created_at DESC LIMIT $3 OFFSET $4`,
       [userId, scope === "active" ? ["accepted", "arrived_pickup", "picked_up"] : ["delivered", "cancelled", "failed"], limit, offset]
     );
-    return {
-      items: result.rows.map((row) => ({
-        assignmentId: row.assignment_id as string, assignmentStatus: row.assignment_status as string,
-        orderId: row.order_id as string, orderNumber: row.order_number as string, orderStatus: row.order_status as string,
-        paymentStatus: row.payment_status as string, totalMinor: Number(row.total_minor), currency: row.currency as string,
-        courierEarningMinor: Number(row.delivery_fee_minor) + Number(row.tip_minor), tipMinor: Number(row.tip_minor),
-        merchantName: row.merchant_name as string, pickupAddress: row.pickup_address as string | null,
-        deliveryAddress: row.delivery_address as string | null, deliveryAddressSnapshot: row.delivery_address_snapshot,
-        customerName: row.customer_name as string | null, customerPhone: row.customer_phone as string | null,
-        deliveryProofRequired: row.delivery_proof_required as boolean, deliveryEstimateMinutes: row.delivery_estimate_minutes as number | null,
-        acceptedAt: (row.accepted_at as Date | null)?.toISOString() ?? null,
-        pickedUpAt: (row.picked_up_at as Date | null)?.toISOString() ?? null,
-        deliveredAt: (row.delivered_at as Date | null)?.toISOString() ?? null
-      }))
-    };
+    return { items: result.rows.map((row) => this.mapDelivery(row)) };
   }
 
   async activeDelivery(userId: string) {
@@ -174,10 +199,148 @@ export class CourierService {
     return { delivery: result.items[0] ?? null };
   }
 
-  async transition(userId: string, orderId: string, action: "arrived_pickup" | "picked_up" | "in_transit" | "delivered" | "failed", input: Readonly<{ proofCode?: string | undefined; notes?: string | undefined }>, requestIdValue: string | null) {
-    const assignment = await this.database.query("SELECT 1 FROM delivery_assignments WHERE order_id = $1 AND courier_user_id = $2 AND status IN ('accepted','arrived_pickup','picked_up')", [orderId, userId]);
-    if ((assignment.rowCount ?? 0) === 0) throw new ForbiddenException("No active assignment for this order.");
-    return this.orders.courierTransition({ orderId, courierUserId: userId, action, proofCode: input.proofCode, notes: input.notes, requestId: requestIdValue, ipHash: null });
+  /**
+   * Full execution view for one assigned delivery. Only the courier holding the
+   * assignment may read it, so customer and merchant contact data stay scoped.
+   */
+  async delivery(userId: string, orderId: string) {
+    const result = await this.database.query<CourierDeliveryRow>(
+      `${DELIVERY_SELECT}
+       WHERE da.courier_user_id = $1 AND o.id = $2
+       ORDER BY da.created_at DESC LIMIT 1`,
+      [userId, orderId]
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundException("Delivery not found.");
+    const events = await this.database.query<{ from_status: string | null; to_status: string; note: string | null; created_at: Date }>(
+      `SELECT from_status, to_status, metadata->>'note' AS note, created_at
+       FROM order_status_events WHERE order_id = $1 ORDER BY created_at ASC, id ASC LIMIT 100`,
+      [orderId]
+    );
+    const delivery = this.mapDelivery(row);
+    return {
+      delivery,
+      allowedActions: allowedCourierActions({
+        assignmentStatus: row.assignment_status,
+        orderStatus: row.order_status,
+        returnRequired: row.return_required,
+        returnStatus: row.return_status
+      }),
+      timeline: events.rows.map((event) => ({
+        fromStatus: event.from_status,
+        toStatus: event.to_status,
+        note: event.note,
+        at: event.created_at.toISOString()
+      }))
+    };
+  }
+
+  /** Failed deliveries whose goods must be returned to the merchant. */
+  async pendingReturns(userId: string) {
+    const result = await this.database.query<CourierDeliveryRow>(
+      `${DELIVERY_SELECT}
+       WHERE da.courier_user_id = $1 AND da.status = 'failed'
+         AND da.return_required = true AND da.return_status = 'pending'
+       ORDER BY da.cancelled_at DESC NULLS LAST, da.created_at DESC LIMIT 50`,
+      [userId]
+    );
+    return { items: result.rows.map((row) => this.mapDelivery(row)) };
+  }
+
+  async transition(
+    userId: string,
+    orderId: string,
+    action: CourierAction,
+    input: Readonly<{
+      proofCode?: string | undefined;
+      proofStorageKey?: string | undefined;
+      recipientName?: string | undefined;
+      notes?: string | undefined;
+      failureReason?: FailureReasonCode | undefined;
+      returnRequired?: boolean | undefined;
+    }>,
+    requestIdValue: string | null
+  ) {
+    const statuses = action === "returned" ? ["failed"] : ["accepted", "arrived_pickup", "picked_up"];
+    const assignment = await this.database.query(
+      `SELECT 1 FROM delivery_assignments WHERE order_id = $1 AND courier_user_id = $2 AND status = ANY($3::text[])`,
+      [orderId, userId, statuses]
+    );
+    if ((assignment.rowCount ?? 0) === 0) throw new ForbiddenException("No matching assignment for this order.");
+    return this.orders.courierTransition({
+      orderId,
+      courierUserId: userId,
+      action,
+      proofCode: input.proofCode,
+      proofStorageKey: input.proofStorageKey,
+      recipientName: input.recipientName,
+      notes: input.notes,
+      failureReason: input.failureReason,
+      returnRequired: input.returnRequired,
+      requestId: requestIdValue,
+      ipHash: null
+    });
+  }
+
+  private mapDelivery(row: CourierDeliveryRow) {
+    const proofMode = effectiveProofMode({
+      proofMode: row.delivery_proof_mode,
+      proofRequired: row.delivery_proof_required
+    });
+    const reason = row.failure_reason_code ? failureReason(row.failure_reason_code) : undefined;
+    return {
+      assignmentId: row.assignment_id,
+      assignmentStatus: row.assignment_status,
+      orderId: row.order_id,
+      orderNumber: row.order_number,
+      orderStatus: row.order_status,
+      orderKind: row.order_kind,
+      paymentStatus: row.payment_status,
+      totalMinor: Number(row.total_minor),
+      currency: row.currency,
+      courierEarningMinor: Number(row.delivery_fee_minor) + Number(row.tip_minor),
+      tipMinor: Number(row.tip_minor),
+      merchantName: row.merchant_name,
+      pickupAddress: row.pickup_address,
+      deliveryAddress: row.delivery_address,
+      deliveryAddressSnapshot: row.delivery_address_snapshot,
+      deliveryInstructions: row.delivery_instructions,
+      customerName: row.customer_name,
+      customerPhone: row.customer_phone,
+      deliveryProofRequired: row.delivery_proof_required,
+      deliveryProofMode: proofMode,
+      deliveryEstimateMinutes: row.delivery_estimate_minutes,
+      pickup: {
+        name: row.merchant_name,
+        address: row.pickup_address,
+        latitude: row.pickup_lat === null ? null : Number(row.pickup_lat),
+        longitude: row.pickup_lng === null ? null : Number(row.pickup_lng),
+        contactName: row.merchant_contact_name,
+        contactPhone: row.merchant_contact_phone
+      },
+      dropoff: {
+        name: row.delivery_recipient_name ?? row.customer_name,
+        address: row.delivery_address,
+        latitude: row.delivery_lat === null ? null : Number(row.delivery_lat),
+        longitude: row.delivery_lng === null ? null : Number(row.delivery_lng),
+        contactName: row.customer_name,
+        contactPhone: row.delivery_contact_phone ?? row.customer_phone,
+        instructions: row.delivery_instructions
+      },
+      failure: row.failure_reason_code === null ? null : {
+        reasonCode: row.failure_reason_code,
+        reasonLabel: reason?.label ?? row.failure_reason_code,
+        notes: row.failure_notes,
+        returnRequired: row.return_required,
+        returnStatus: row.return_status,
+        returnConfirmedAt: row.return_confirmed_at?.toISOString() ?? null,
+        returnNotes: row.return_notes
+      },
+      acceptedAt: row.accepted_at?.toISOString() ?? null,
+      arrivedAt: row.arrived_at?.toISOString() ?? null,
+      pickedUpAt: row.picked_up_at?.toISOString() ?? null,
+      deliveredAt: row.delivered_at?.toISOString() ?? null
+    };
   }
 
   async earnings(userId: string) {

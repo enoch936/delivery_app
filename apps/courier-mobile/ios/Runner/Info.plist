@@ -26,6 +26,10 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Used to scan the customer delivery QR code and capture proof of delivery photos.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Used to attach proof of delivery photos when the camera is unavailable.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Your location is used to receive nearby delivery offers and share live delivery progress with customers.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
