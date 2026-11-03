@@ -815,8 +815,8 @@ export class MerchantService {
     const now = new Date();
     const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
     const to = now;
-    const merchantRow = await this.database.query<{ display_name: string; commission_bps: number; currency: string }>(
-      `SELECT display_name, commission_bps, currency FROM merchants WHERE id = $1`, [membership.merchantId]
+    const merchantRow = await this.database.query<{ display_name: string; commission_bps: number }>(
+      `SELECT display_name, commission_bps FROM merchants WHERE id = $1`, [membership.merchantId]
     );
     const merchant = merchantRow.rows[0];
     const commissionBps = membership.commissionBps;
@@ -869,7 +869,7 @@ export class MerchantService {
 
     return {
       period: { from: from.toISOString(), to: to.toISOString(), days },
-      currency: merchant?.currency ?? "ETB",
+      currency: "ETB",
       commissionBps,
       orders: {
         received,
@@ -889,7 +889,7 @@ export class MerchantService {
       netAfterCommissionMinor: grossMinor - commissionMinor - refundsMinor,
       averageOrderMinor: received > 0 ? Math.round((grossMinor / received) * 100) / 100 : 0,
       calculationRules: {
-        currency: merchant?.currency ?? "ETB",
+        currency: "ETB",
         commissionBps,
         commissionRatePercent: Math.round((commissionBps / 10000) * 1000) / 10,
         grossSalesFormula: "sum(items_subtotal_minor) over orders created in the period excluding CANCELLED/FAILED",
