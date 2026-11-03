@@ -1,10 +1,14 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { DatabaseService } from "../../database/database.service.js";
 import { AuditService } from "../../common/audit.service.js";
+import { NotificationsService } from "../notifications/notifications.service.js";
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly database: DatabaseService, private readonly audit: AuditService) {}
+  constructor(private readonly database: DatabaseService, private readonly audit: AuditService, private readonly notifications: NotificationsService) {}
 
   async dashboard() {
     const result = await this.database.query<{
@@ -287,17 +291,26 @@ export class AdminService {
     };
   }
 
-  async reviewCourier(actorUserId: string, courierUserId: string, decision: "approve" | "reject" | "suspend", reason: string | null, requestId: string | null) {
-    const status = decision === "approve" ? "approved" : decision === "reject" ? "rejected" : "suspended";
+  async reviewCourier(actorUserId: string, courierUserId: string, decision: "approve" | "reject" | "suspend" | "reactivate", reason: string | null, requestId: string | null) {
+    const status = decision === "approve" || decision === "reactivate" ? "approved" : decision === "reject" ? "rejected" : "suspended";
+    const profile = await this.database.query<{ status: string }>("SELECT status FROM courier_profiles WHERE user_id = $1", [courierUserId]);
+    const fromStatus = profile.rows[0]?.status ?? null;
+    if (!profile.rows[0]) throw new NotFoundException("Courier not found.");
     const result = await this.database.query(
-      `UPDATE courier_profiles SET status = $2, rejection_reason = $3, approved_by = CASE WHEN $2 = 'approved' THEN $4 ELSE approved_by END,
-              approved_at = CASE WHEN $2 = 'approved' THEN now() ELSE approved_at END, updated_at = now()
+      `UPDATE courier_profiles SET status = $2, rejection_reason = $3, last_decision_reason = $4,
+              approved_by = CASE WHEN $2 = 'approved' THEN $5 ELSE approved_by END,
+              approved_at = CASE WHEN $2 = 'approved' AND approved_at IS NULL THEN now() ELSE approved_at END,
+              suspended_at = CASE WHEN $2 = 'suspended' THEN now() ELSE suspended_at END,
+              reactivated_at = CASE WHEN $2 = 'approved' AND $6 = 'reactivate' THEN now() ELSE reactivated_at END,
+              updated_at = now()
        WHERE user_id = $1`,
-      [courierUserId, status, decision === "approve" ? null : reason, actorUserId]
+      [courierUserId, status, decision === "approve" || decision === "reactivate" ? null : reason, reason, actorUserId, decision]
     );
     if (result.rowCount === 0) throw new NotFoundException("Courier not found.");
     if (status !== "approved") await this.database.query("UPDATE courier_availability SET is_online = false, accepting_offers = false WHERE courier_user_id = $1", [courierUserId]);
-    await this.audit.record({ actorUserId, action: `admin.courier_${status}`, entityType: "courier", entityId: courierUserId, requestId, metadata: { reason } });
+    await this.database.query("INSERT INTO courier_verification_events (courier_user_id, actor_user_id, from_status, to_status, reason, metadata) VALUES ($1,$2,$3,$4,$5,$6)", [courierUserId, actorUserId, fromStatus, status, reason, JSON.stringify({ decision })]);
+    await this.audit.record({ actorUserId, action: `admin.courier_${status}`, entityType: "courier", entityId: courierUserId, requestId, metadata: { reason, decision } });
+    await this.notifications.create({ userId: courierUserId, type: `courier.${status}`, title: `Courier account ${status}`, body: reason ? `Your courier account was ${status}: ${reason}` : `Your courier account was ${status}.`, data: { status, reason } });
     return { courierUserId, status };
   }
 
@@ -311,15 +324,31 @@ export class AdminService {
 
   async reviewDocument(actorUserId: string, documentId: string, status: "approved" | "rejected", notes: string | null, requestId: string | null) {
     const result = await this.database.query(
-      "UPDATE courier_documents SET status = $2, review_notes = $3, reviewed_by = $4, reviewed_at = now() WHERE id = $1 RETURNING courier_user_id",
+      "UPDATE courier_documents SET status = $2, review_notes = $3, reviewed_by = $4, reviewed_at = now() WHERE id = $1 RETURNING courier_user_id, document_type",
       [documentId, status, notes, actorUserId]
     );
     const row = result.rows[0];
     if (!row) throw new NotFoundException("Document not found.");
-    await this.audit.record({ actorUserId, action: `admin.document_${status}`, entityType: "courier_document", entityId: documentId, requestId, metadata: { courierUserId: row.courier_user_id } });
+    await this.database.query("INSERT INTO courier_verification_events (courier_user_id, document_id, actor_user_id, from_status, to_status, reason, metadata) VALUES ($1,$2,$3,'pending',$4,$5,$6)", [row.courier_user_id, documentId, actorUserId, status, notes, JSON.stringify({ documentType: row.document_type })]);
+    await this.audit.record({ actorUserId, action: `admin.document_${status}`, entityType: "courier_document", entityId: documentId, requestId, metadata: { courierUserId: row.courier_user_id, notes } });
+    await this.notifications.create({ userId: row.courier_user_id, type: `courier.document_${status}`, title: `Document ${status}`, body: notes ? `Your ${String(row.document_type).replaceAll("_", " ")} was ${status}: ${notes}` : `Your ${String(row.document_type).replaceAll("_", " ")} was ${status}.`, data: { documentId, status, notes } });
     return { documentId, status };
   }
 
+  async courierDocumentFile(actorUserId: string, documentId: string, roles: readonly string[]) {
+    const result = await this.database.query<{ id: string; courier_user_id: string; storage_key: string; content_type: string | null; original_name: string | null }>(
+      "SELECT id, courier_user_id, storage_key, content_type, original_name FROM courier_documents WHERE id = $1",
+      [documentId]
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundException("Document not found.");
+    const isAdmin = roles.includes("admin") || roles.includes("operations") || roles.includes("support");
+    if (!isAdmin) throw new ForbiddenException("You cannot access this document.");
+    const storageRoot = process.env.COURIER_DOCUMENT_STORAGE_DIR || join(process.cwd(), "var", "courier-documents");
+    const file = await readFile(join(storageRoot, row.storage_key));
+    await this.audit.record({ actorUserId, action: "admin.courier_document_downloaded", entityType: "courier_document", entityId: documentId, requestId: null, metadata: { courierUserId: row.courier_user_id } });
+    return { id: row.id, courierUserId: row.courier_user_id, fileName: row.original_name, contentType: row.content_type ?? "application/octet-stream", dataBase64: file.toString("base64") };
+  }
   async users(search: string | undefined, limit: number, offset: number) {
     const result = await this.database.query(
       `SELECT u.id, u.phone_e164, u.email, u.display_name, u.account_status, u.created_at,

@@ -5,10 +5,12 @@ import 'package:geolocator/geolocator.dart';
 
 class LocationService {
   StreamSubscription<Position>? _subscription;
+  bool _backgroundEnabled = false;
 
   bool get isRunning => _subscription != null;
+  bool get backgroundEnabled => _backgroundEnabled;
 
-  Future<void> ensurePermission() async {
+  Future<LocationPermission> ensurePermission() async {
     if (!await Geolocator.isLocationServiceEnabled()) {
       throw LocationServiceException('Turn on location services to receive deliveries.');
     }
@@ -16,9 +18,11 @@ class LocationService {
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
-    if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+    if (permission != LocationPermission.whileInUse &&
+      permission != LocationPermission.always) {
       throw LocationServiceException('Location permission is required while you are online.');
     }
+    return permission;
   }
 
   Future<void> start({
@@ -26,33 +30,44 @@ class LocationService {
     required void Function(Object error) onError,
     required String notificationTitle,
     required String notificationText,
+    required bool activeDelivery,
   }) async {
-    await ensurePermission();
+    final permission = await ensurePermission();
     if (_subscription != null) return;
+    _backgroundEnabled = permission == LocationPermission.always;
+    final accuracy = activeDelivery
+        ? LocationAccuracy.high
+        : LocationAccuracy.medium;
+    final distanceFilter = activeDelivery ? 15 : 50;
+    final interval = activeDelivery
+        ? const Duration(seconds: 20)
+        : const Duration(seconds: 60);
     final settings = Platform.isAndroid
         ? AndroidSettings(
-            accuracy: LocationAccuracy.high,
-            distanceFilter: 10,
-            intervalDuration: const Duration(seconds: 15),
-            foregroundNotificationConfig: ForegroundNotificationConfig(
-              notificationTitle: notificationTitle,
-              notificationText: notificationText,
-              notificationChannelName: 'Courier location',
-              enableWakeLock: true,
-              setOngoing: true,
-            ),
+            accuracy: accuracy,
+            distanceFilter: distanceFilter,
+            intervalDuration: interval,
+            foregroundNotificationConfig: _backgroundEnabled
+                ? ForegroundNotificationConfig(
+                    notificationTitle: notificationTitle,
+                    notificationText: notificationText,
+                    notificationChannelName: 'Courier location',
+                    enableWakeLock: true,
+                    setOngoing: true,
+                  )
+                : null,
           )
         : Platform.isIOS
             ? AppleSettings(
-                accuracy: LocationAccuracy.high,
-                distanceFilter: 10,
-                allowBackgroundLocationUpdates: true,
-                showBackgroundLocationIndicator: true,
+            accuracy: accuracy,
+            distanceFilter: distanceFilter,
+            allowBackgroundLocationUpdates: _backgroundEnabled,
+            showBackgroundLocationIndicator: _backgroundEnabled,
                 pauseLocationUpdatesAutomatically: false,
               )
             : const LocationSettings(
-                accuracy: LocationAccuracy.high,
-                distanceFilter: 10,
+              accuracy: LocationAccuracy.medium,
+              distanceFilter: 50,
               );
     _subscription = Geolocator.getPositionStream(locationSettings: settings).listen(
       onPosition,
@@ -64,6 +79,7 @@ class LocationService {
   Future<void> stop() async {
     await _subscription?.cancel();
     _subscription = null;
+    _backgroundEnabled = false;
   }
 
   Future<Position> currentPosition() async {
@@ -72,6 +88,8 @@ class LocationService {
       locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
     );
   }
+
+  Future<bool> openAppSettings() => Geolocator.openAppSettings();
 }
 
 class LocationServiceException implements Exception {

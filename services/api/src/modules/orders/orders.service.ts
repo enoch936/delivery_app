@@ -723,8 +723,24 @@ export class OrdersService {
     returnRequired?: boolean | undefined;
     requestId: string | null;
     ipHash: string | null;
+    idempotencyKey?: string | undefined;
   }>): Promise<OrderDetailRecord> {
-    await this.database.withTransaction(async (client) => {
+    if (input.idempotencyKey && !/^[A-Za-z0-9_-]{16,128}$/.test(input.idempotencyKey)) {
+      throw new BadRequestException("A valid Idempotency-Key header is required.");
+    }
+    const requestPath = `/v1/courier/deliveries/${input.orderId}/${input.action}`;
+    return this.database.withTransaction(async (client) => {
+      if (input.idempotencyKey) {
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`courier:${input.courierUserId}:${input.idempotencyKey}`]);
+        const existing = await client.query<{ request_path: string; response_body: OrderDetailRecord }>(
+          "SELECT request_path, response_body FROM idempotency_records WHERE user_id = $1 AND idempotency_key = $2",
+          [input.courierUserId, input.idempotencyKey]
+        );
+        if (existing.rows[0]) {
+          if (existing.rows[0].request_path !== requestPath) throw new ConflictException("This operation ID was already used for a different request.");
+          return existing.rows[0].response_body;
+        }
+      }
       const orderResult = await client.query<OrderRow>(
         `SELECT o.*, COALESCE(o.merchant_name_snapshot, m.display_name) AS merchant_name
          FROM orders o JOIN merchants m ON m.id = o.merchant_id
@@ -765,7 +781,15 @@ export class OrdersService {
           body: `Order ${order.order_number} was returned to the merchant.`, data: { orderId: order.id, status: order.status }
         }, client);
         await this.audit.record({ actorUserId: input.courierUserId, action: "courier.returned", entityType: "order", entityId: order.id, requestId: input.requestId, ipHash: input.ipHash, metadata: { assignmentId: active.id, notes: returnNotes } }, client);
-        return;
+        const detail = await this.loadDetail(client, input.orderId, { userId: input.courierUserId, roles: ["courier"] });
+        if (input.idempotencyKey) {
+          await client.query(
+            `INSERT INTO idempotency_records (user_id, idempotency_key, request_path, response_status, response_body)
+             VALUES ($1,$2,$3,200,$4)`,
+            [input.courierUserId, input.idempotencyKey, requestPath, JSON.stringify(detail)]
+          );
+        }
+        return detail;
       }
 
       const target: OrderStatus =
@@ -876,8 +900,16 @@ export class OrdersService {
         requestId: input.requestId, ipHash: input.ipHash,
         metadata: { from: order.status, to: target, assignmentId: active.id, proofMode, proofType, failureReason: input.failureReason ?? null }
       }, client);
+      const detail = await this.loadDetail(client, input.orderId, { userId: input.courierUserId, roles: ["courier"] });
+      if (input.idempotencyKey) {
+        await client.query(
+          `INSERT INTO idempotency_records (user_id, idempotency_key, request_path, response_status, response_body)
+           VALUES ($1,$2,$3,200,$4)`,
+          [input.courierUserId, input.idempotencyKey, requestPath, JSON.stringify(detail)]
+        );
+      }
+      return detail;
     });
-    return this.detail(input.orderId, { userId: input.courierUserId, roles: ["courier"] });
   }
 
   private actionConflictMessage(action: CourierAction, orderStatus: string, assignmentStatus: string, allowed: readonly CourierAction[]): string {

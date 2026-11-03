@@ -9,6 +9,7 @@ import 'delivery_execution_screen.dart';
 import 'design/floating_bars.dart';
 
 import 'package:geolocator/geolocator.dart';
+import 'package:image_picker/image_picker.dart';
 
 import 'app_localizations.dart';
 import 'app_storage.dart';
@@ -191,8 +192,10 @@ class ApiClient {
   final HttpClient _http = HttpClient();
   final AppStorage storage;
   final ValueNotifier<int> pendingSync = ValueNotifier(0);
+  final ValueNotifier<int> rejectedSync = ValueNotifier(0);
+  final ValueNotifier<bool> connected = ValueNotifier(true);
+  final ValueNotifier<DateTime?> lastLocationSync = ValueNotifier(null);
   Session? session;
-  StreamSubscription<List<ConnectivityResult>>? _connectivity;
   bool _flushing = false;
   bool offline = false;
 
@@ -220,17 +223,26 @@ class ApiClient {
         await storage.clearSession();
       }
     }
-    pendingSync.value = storage.queue().length;
+    pendingSync.value = (await storage.queue()).length;
+    rejectedSync.value = (await storage.rejectedQueue()).length;
+    lastLocationSync.value = await storage.readLastLocationSync();
   }
 
   Future<void> startSync() async {
-    pendingSync.value = storage.queue().length;
-    _connectivity = Connectivity().onConnectivityChanged.listen((results) {
-      final online = results.any((result) => result != ConnectivityResult.none);
-      offline = !online;
-      if (online) unawaited(flushQueue());
+    pendingSync.value = (await storage.queue()).length;
+    final initialConnectivity = await Connectivity().checkConnectivity();
+    _updateConnectivity(initialConnectivity);
+    Connectivity().onConnectivityChanged.listen((results) {
+      _updateConnectivity(results);
     });
     await flushQueue();
+  }
+
+  void _updateConnectivity(List<ConnectivityResult> results) {
+    final online = results.any((result) => result != ConnectivityResult.none);
+    offline = !online;
+    connected.value = online;
+    if (online) unawaited(flushQueue());
   }
 
   Future<dynamic> postQueued(
@@ -238,37 +250,61 @@ class ApiClient {
     Object? body,
     Map<String, String>? headers,
   ]) async {
+    if (path.startsWith('/v1/courier/deliveries/')) {
+      final queued = (await storage.queue()).where(
+        (item) => item.method == 'POST' && item.path == path,
+      );
+      if (queued.isNotEmpty) {
+        return {'queued': true, 'operationId': queued.first.id};
+      }
+    }
+    final operationId = headers?['idempotency-key'] ?? storage.newOperationId();
+    final operationHeaders = {...?headers, 'idempotency-key': operationId};
     try {
-      return await post(path, body, headers);
+      return await post(path, body, operationHeaders);
     } on ApiException catch (error) {
       if (error.statusCode != 0) rethrow;
       await storage.enqueue(
         method: 'POST',
         path: path,
         body: body,
-        headers: headers,
+        headers: operationHeaders,
+        operationId: operationId,
       );
-      pendingSync.value = storage.queue().length;
+      pendingSync.value = (await storage.queue()).length;
+      rejectedSync.value = (await storage.rejectedQueue()).length;
       return {'queued': true};
     }
   }
 
   Future<dynamic> putQueued(String path, [Object? body]) async {
+    final operationId = storage.newOperationId();
     try {
-      return await put(path, body);
+      return await _send(
+        'PUT',
+        path,
+        body: body,
+        headers: {'idempotency-key': operationId},
+      );
     } on ApiException catch (error) {
       if (error.statusCode != 0) rethrow;
-      await storage.enqueue(method: 'PUT', path: path, body: body);
-      pendingSync.value = storage.queue().length;
+      await storage.enqueue(
+        method: 'PUT',
+        path: path,
+        body: body,
+        headers: {'idempotency-key': operationId},
+        operationId: operationId,
+      );
+      pendingSync.value = (await storage.queue()).length;
       return {'queued': true};
     }
   }
 
   Future<int> flushQueue() async {
-    if (_flushing || session == null) return storage.queue().length;
+    if (_flushing || session == null) return (await storage.queue()).length;
     _flushing = true;
     try {
-      for (final item in storage.queue()) {
+      for (final item in await storage.queue()) {
         try {
           await _send(
             item.method,
@@ -277,6 +313,11 @@ class ApiClient {
             headers: item.headers,
           );
           await storage.removeQueued(item.id);
+          if (item.path == '/v1/courier/location') {
+            final syncedAt = DateTime.now();
+            lastLocationSync.value = syncedAt;
+            await storage.saveLastLocationSync(syncedAt);
+          }
         } on ApiException catch (error) {
           final permanent =
               error.statusCode >= 400 &&
@@ -284,7 +325,7 @@ class ApiClient {
               error.statusCode != 408 &&
               error.statusCode != 429;
           if (permanent) {
-            await storage.removeQueued(item.id);
+            await storage.rejectQueued(item.id, error.message);
             continue;
           }
           break;
@@ -292,7 +333,9 @@ class ApiClient {
           break;
         }
       }
-      pendingSync.value = storage.queue().length;
+      final queue = await storage.queue();
+      pendingSync.value = queue.length;
+      rejectedSync.value = (await storage.rejectedQueue()).length;
       return pendingSync.value;
     } finally {
       _flushing = false;
@@ -330,6 +373,7 @@ class ApiClient {
       }
       if (response.statusCode >= 200 && response.statusCode < 300) {
         offline = false;
+        connected.value = true;
         if (method == 'GET' &&
             path.startsWith('/v1/') &&
             !path.contains('/auth/')) {
@@ -363,10 +407,11 @@ class ApiClient {
     }
   }
 
-  dynamic _networkFailure(String method, String path, String message) {
+  Future<dynamic> _networkFailure(String method, String path, String message) async {
     offline = true;
+    connected.value = false;
     if (method == 'GET') {
-      final cached = storage.readCachedResponse(path);
+      final cached = await storage.readCachedResponse(path);
       if (cached != null) return cached;
     }
     throw ApiException('You are offline. $message', 0);
@@ -433,9 +478,10 @@ class ApiClient {
   Future<void> signOut() async {
     final current = session;
     session = null;
-    await storage.clearSession();
-    await storage.clearQueued();
+    await storage.clearSensitiveData();
     pendingSync.value = 0;
+    rejectedSync.value = 0;
+    lastLocationSync.value = null;
     if (current == null) return;
     try {
       await _send(
@@ -451,7 +497,10 @@ class ApiClient {
   }
 
   void dispose() {
-    _connectivity?.cancel();
+    unawaited(storage.clearSensitiveData());
+    pendingSync.value = 0;
+    rejectedSync.value = 0;
+    lastLocationSync.value = null;
     _http.close(force: true);
   }
 }
@@ -760,7 +809,7 @@ class CourierHome extends StatefulWidget {
   State<CourierHome> createState() => _CourierHomeState();
 }
 
-class _CourierHomeState extends State<CourierHome> {
+class _CourierHomeState extends State<CourierHome> with WidgetsBindingObserver {
   int index = 0;
   bool initializing = true;
   bool needsOnboarding = false;
@@ -768,10 +817,14 @@ class _CourierHomeState extends State<CourierHome> {
   Map<String, dynamic>? activeDelivery;
   List<Map<String, dynamic>> offers = [];
   List<Map<String, dynamic>> pendingReturns = [];
+  List<Map<String, dynamic>> disputes = [];
   Map<String, dynamic>? earnings;
   bool busy = false;
   String? error;
   bool _sendingLocation = false;
+  bool _locationConsent = false;
+  bool? _trackingForDelivery;
+  int _lastPendingSync = 0;
   String _todayFilter = 'all';
   String _earningsFilter = 'all';
   final LocationService _location = LocationService();
@@ -780,21 +833,54 @@ class _CourierHomeState extends State<CourierHome> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.client.pendingSync.addListener(_onPendingSync);
-    _load();
+    widget.client.rejectedSync.addListener(_onPendingSync);
+    widget.client.connected.addListener(_onPendingSync);
+    widget.client.lastLocationSync.addListener(_onPendingSync);
+    _lastPendingSync = widget.client.pendingSync.value;
+    unawaited(_initialize());
+  }
+
+  Future<void> _initialize() async {
+    _locationConsent = await widget.client.storage.hasLocationConsent();
+    await _load();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.client.pendingSync.removeListener(_onPendingSync);
+    widget.client.rejectedSync.removeListener(_onPendingSync);
+    widget.client.connected.removeListener(_onPendingSync);
+    widget.client.lastLocationSync.removeListener(_onPendingSync);
     _offerCountdown?.cancel();
     _offerCountdown = null;
     unawaited(_location.stop());
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(widget.client.flushQueue());
+      if (_locationConsent) {
+        unawaited(_location.stop().then((_) {
+          _trackingForDelivery = null;
+          _syncLocationHeartbeat();
+        }));
+      }
+    }
+  }
+
   void _onPendingSync() {
+    final pending = widget.client.pendingSync.value;
+    final completed = _lastPendingSync > 0 && pending == 0;
+    _lastPendingSync = pending;
     if (mounted) setState(() {});
+    if (completed && mounted && widget.client.session != null && profile != null) {
+      unawaited(_refreshData());
+    }
   }
 
   Future<void> _load() async {
@@ -814,6 +900,9 @@ class _CourierHomeState extends State<CourierHome> {
       final returnResult = asMap(
         await widget.client.get('/v1/courier/returns'),
       );
+      final disputeResult = asMap(
+        await widget.client.get('/v1/courier/earnings/disputes'),
+      );
       if (!mounted) return;
       setState(() {
         profile = result;
@@ -822,6 +911,7 @@ class _CourierHomeState extends State<CourierHome> {
             : asMap(active['delivery']);
         offers = asList(offerResult['items']);
         pendingReturns = asList(returnResult['items']);
+        disputes = asList(disputeResult['items']);
         earnings = earningsResult;
         needsOnboarding = false;
       });
@@ -868,6 +958,9 @@ class _CourierHomeState extends State<CourierHome> {
       final returnResult = asMap(
         await widget.client.get('/v1/courier/returns'),
       );
+      final disputeResult = asMap(
+        await widget.client.get('/v1/courier/earnings/disputes'),
+      );
       if (!mounted) return;
       setState(() {
         activeDelivery = active['delivery'] == null
@@ -875,9 +968,11 @@ class _CourierHomeState extends State<CourierHome> {
             : asMap(active['delivery']);
         offers = asList(offerResult['items']);
         pendingReturns = asList(returnResult['items']);
+        disputes = asList(disputeResult['items']);
         earnings = earningsResult;
       });
       _startOfferCountdown();
+      _syncLocationHeartbeat();
     } catch (cause) {
       if (mounted) setState(() => error = cause.toString());
     }
@@ -897,7 +992,9 @@ class _CourierHomeState extends State<CourierHome> {
   }
 
   bool _offerExpired(Map<String, dynamic> offer) =>
-      _offerRemaining(offer) <= Duration.zero;  bool _canAcceptOffer(Map<String, dynamic> offer) {
+      _offerRemaining(offer) <= Duration.zero;
+
+  bool _canAcceptOffer(Map<String, dynamic> offer) {
     if (busy) return false;
     if (_offerExpired(offer)) return false;
     final availability = asMap(profile?['availability']);
@@ -937,6 +1034,9 @@ class _CourierHomeState extends State<CourierHome> {
   Future<void> _setAvailability({bool? online, bool? accepting}) async {
     final availability = asMap(profile?['availability']);
     final isOnline = online ?? availability['isOnline'] == true;
+    if (isOnline && availability['isOnline'] != true) {
+      if (!await _confirmLocationSharing()) return;
+    }
     setState(() {
       busy = true;
       error = null;
@@ -953,6 +1053,10 @@ class _CourierHomeState extends State<CourierHome> {
         }),
       );
       if (!mounted) return;
+      if (isOnline) {
+        _locationConsent = true;
+        await widget.client.storage.saveLocationConsent(true);
+      }
       setState(() {
         profile = {
           ...?profile,
@@ -973,45 +1077,199 @@ class _CourierHomeState extends State<CourierHome> {
     }
   }
 
+  Future<bool> _confirmLocationSharing() async {
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Location sharing while on duty'),
+        content: const Text(
+          'When you go online, the app sends your location to support dispatch and active delivery progress. Location updates may continue in the background while you are on duty; your device will show its location indicator or foreground notification. During an active delivery, limited location samples are encrypted on this device if the network is unavailable and are removed after the server accepts them. Tracking stops when you go offline.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    return accepted == true;
+  }
+
+  Future<void> _enableLocationSharing() async {
+    if (!await _confirmLocationSharing()) return;
+    try {
+      await _location.currentPosition();
+      _locationConsent = true;
+      await widget.client.storage.saveLocationConsent(true);
+      _syncLocationHeartbeat();
+    } catch (cause) {
+      if (mounted) setState(() => error = cause.toString());
+    }
+  }
+
+  Future<void> _openBackgroundLocationSettings() async {
+    final openSettings = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Allow background location'),
+        content: const Text(
+          'To keep delivery progress current while the app is in the background, change this app’s location access to “Allow all the time” in system settings. Foreground tracking remains available if you do not enable it.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Open settings'),
+          ),
+        ],
+      ),
+    );
+    if (openSettings == true) await _location.openAppSettings();
+  }
+
+  Future<void> _showRejectedOperations() async {
+    final rejected = await widget.client.storage.rejectedQueue();
+    if (!mounted || rejected.isEmpty) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Updates needing attention'),
+        content: SizedBox(
+          width: 440,
+          child: ListView.separated(
+            shrinkWrap: true,
+            itemCount: rejected.length,
+            separatorBuilder: (_, _) => const Divider(height: 20),
+            itemBuilder: (context, index) {
+              final item = rejected[index];
+              final segments = item.path.split('/');
+              final action = segments.isNotEmpty ? segments.last : item.path;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label(action), style: const TextStyle(fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 4),
+                  Text(item.rejection ?? 'The server did not accept this update.'),
+                  const SizedBox(height: 4),
+                  Text(shortDate(item.createdAt.toIso8601String()), style: Theme.of(context).textTheme.bodySmall),
+                ],
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await widget.client.storage.clearRejected();
+              widget.client.rejectedSync.value = 0;
+              if (dialogContext.mounted) Navigator.pop(dialogContext);
+            },
+            child: const Text('Dismiss reviewed updates'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _syncLocationHeartbeat() {
     final online = asMap(profile?['availability'])['isOnline'] == true;
-    if (!online) {
-      unawaited(_location.stop());
+    if ((!online && activeDelivery == null) || !_locationConsent) {
+      unawaited(_location.stop().then((_) {
+        if (mounted) setState(() {});
+      }));
+      _trackingForDelivery = null;
       return;
     }
     unawaited(_startLocationTracking());
   }
 
   Future<void> _startLocationTracking() async {
-    if (_location.isRunning) return;
-    final l10n = AppLocalizations.of(context);
+    final active = activeDelivery != null;
+    if (_location.isRunning && _trackingForDelivery == active) return;
+    if (_location.isRunning) await _location.stop();
+    final l10n = mounted ? AppLocalizations.of(context) : null;
+    final notificationTitle = l10n?.courierLocationTitle ?? 'Courier location';
+    final notificationText = l10n?.courierLocationText ?? 'Sharing location';
     try {
       await _location.start(
         onPosition: (position) => unawaited(_reportPosition(position)),
         onError: (cause) {
           if (mounted) setState(() => error = cause.toString());
         },
-        notificationTitle: l10n.courierLocationTitle,
-        notificationText: l10n.courierLocationText,
+        notificationTitle: notificationTitle,
+        notificationText: notificationText,
+        activeDelivery: active,
       );
+      _trackingForDelivery = active;
+      if (mounted) setState(() {});
     } catch (cause) {
       if (mounted) setState(() => error = cause.toString());
     }
   }
 
-  Future<void> _reportPosition(Position position) async {
-    if (_sendingLocation) return;
+  Future<bool> _reportPosition(Position position) async {
+    final online = asMap(profile?['availability'])['isOnline'] == true;
+    if (_sendingLocation ||
+        !_locationConsent ||
+        widget.client.session == null ||
+        (!online && activeDelivery == null)) {
+      return false;
+    }
     _sendingLocation = true;
+    final operationId = widget.client.storage.newOperationId();
+    final headers = {'idempotency-key': operationId};
+    final body = {
+      'latitude': position.latitude,
+      'longitude': position.longitude,
+      'accuracyMeters': position.accuracy,
+      'headingDegrees': position.heading,
+      'speedMps': position.speed,
+    };
     try {
-      await widget.client.post('/v1/courier/location', {
-        'latitude': position.latitude,
-        'longitude': position.longitude,
-        'accuracyMeters': position.accuracy,
-        'headingDegrees': position.heading,
-        'speedMps': position.speed,
-      });
-    } catch (_) {
-      // Heartbeats are best effort; the next position update retries.
+      final result = activeDelivery != null
+          ? await widget.client.postQueued(
+              '/v1/courier/location',
+              body,
+              headers,
+            )
+          : await widget.client.post(
+              '/v1/courier/location',
+              body,
+              headers,
+            );
+      if (result is Map && result['queued'] == true) return false;
+      final syncedAt = DateTime.now();
+      widget.client.lastLocationSync.value = syncedAt;
+      await widget.client.storage.saveLastLocationSync(syncedAt);
+      return true;
+    } catch (cause) {
+      if (cause is ApiException &&
+          cause.statusCode >= 400 &&
+          widget.client.session != null) {
+        try {
+          await widget.client.storage.recordRejected(
+            id: operationId,
+            method: 'POST',
+            path: '/v1/courier/location',
+            body: body,
+            headers: headers,
+            reason: cause.message,
+          );
+          widget.client.rejectedSync.value =
+              (await widget.client.storage.rejectedQueue()).length;
+        } catch (_) {
+          if (mounted) setState(() => error = cause.message);
+        }
+      }
+      return false;
     } finally {
       _sendingLocation = false;
     }
@@ -1025,7 +1283,9 @@ class _CourierHomeState extends State<CourierHome> {
     });
     try {
       final position = await _location.currentPosition();
-      await _reportPosition(position);
+      if (!await _reportPosition(position)) {
+        throw ApiException('Location is waiting for network sync.', 0);
+      }
       if (!mounted) return;
       final l10n = AppLocalizations.of(context);
       ScaffoldMessenger.of(context)
@@ -1246,6 +1506,7 @@ class _CourierHomeState extends State<CourierHome> {
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
           child: _todayFilterBar(),
         ),
+        _syncStatusBar(online),
         Expanded(
           child: RefreshIndicator(
             onRefresh: _load,
@@ -1354,7 +1615,11 @@ class _CourierHomeState extends State<CourierHome> {
                         ),
                         const SizedBox(height: 8),
                         OutlinedButton.icon(
-                          onPressed: busy ? null : _sendLocation,
+                          onPressed: busy ||
+                                  !_locationConsent ||
+                                  (!online && activeDelivery == null)
+                              ? null
+                              : _sendLocation,
                           icon: const Icon(Icons.my_location),
                           label: const Text('Send location heartbeat'),
                           style: OutlinedButton.styleFrom(
@@ -1480,6 +1745,83 @@ class _CourierHomeState extends State<CourierHome> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _syncStatusBar(bool onDuty) {
+    final connected = widget.client.connected.value;
+    final lastSync = widget.client.lastLocationSync.value;
+    final pending = widget.client.pendingSync.value;
+    final rejected = widget.client.rejectedSync.value;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(20, 10, 20, 2),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFDF7),
+        border: Border.all(color: const Color(0xFFD9D5C7)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                connected ? Icons.wifi : Icons.wifi_off,
+                size: 18,
+                color: connected ? const Color(0xFF28744C) : const Color(0xFFA63A32),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  connected ? 'Network connected' : 'Offline; saved data available',
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                ),
+              ),
+              if (pending > 0)
+                TextButton.icon(
+                  onPressed: () => unawaited(widget.client.flushQueue()),
+                  icon: const Icon(Icons.sync, size: 16),
+                  label: Text('$pending pending'),
+                ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.only(left: 26),
+            child: Text(
+              'Last location sync: ${lastSync == null ? 'Never' : shortDate(lastSync.toIso8601String())}  ·  ${(onDuty || activeDelivery != null) && _locationConsent ? (_location.backgroundEnabled ? 'Background tracking active' : 'Foreground tracking only') : 'Location sharing off'}',
+              style: const TextStyle(color: Color(0xFF667066), fontSize: 11),
+            ),
+          ),
+          if ((onDuty || activeDelivery != null) && !_locationConsent)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                onPressed: _enableLocationSharing,
+                child: const Text('Enable location updates'),
+              ),
+            ),
+          if ((onDuty || activeDelivery != null) && _locationConsent && !_location.backgroundEnabled)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: _openBackgroundLocationSettings,
+                icon: const Icon(Icons.location_searching, size: 17),
+                label: const Text('Allow background access'),
+              ),
+            ),
+          if (rejected > 0)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: _showRejectedOperations,
+                icon: const Icon(Icons.warning_amber_outlined, size: 17),
+                label: Text('$rejected update${rejected == 1 ? '' : 's'} rejected; review'),
+                style: TextButton.styleFrom(foregroundColor: const Color(0xFFA63A32)),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -2159,8 +2501,7 @@ class _CourierHomeState extends State<CourierHome> {
 
   Future<void> _uploadDocumentModal([String? initialType]) async {
     String selectedType = initialType ?? 'national_id';
-    final fileKeyController = TextEditingController(text: 'documents/courier_${DateTime.now().millisecondsSinceEpoch}.jpg');
-    final docTypes = {
+    final docTypes = <String, String>{
       'national_id': 'National ID / Passport',
       'driving_license': 'Driving License',
       'vehicle_registration': 'Vehicle Logbook / Registration',
@@ -2168,7 +2509,32 @@ class _CourierHomeState extends State<CourierHome> {
       'profile_photo': 'Courier Profile Photo',
     };
 
-    final submitted = await showModalBottomSheet<bool>(
+    final picker = ImagePicker();
+    final picked = await picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 1600,
+      imageQuality: 85,
+    );
+    if (picked == null || !mounted) return;
+    final bytes = await picked.readAsBytes();
+    if (bytes.length > 5 * 1024 * 1024) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Document must be 5 MB or smaller.')),
+      );
+      return;
+    }
+    final contentType = picked.mimeType ?? 'image/jpeg';
+    if (!const {'image/jpeg', 'image/png', 'image/webp', 'application/pdf'}.contains(contentType)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Use a JPEG, PNG, WebP, or PDF document.')),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    final confirmed = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
@@ -2185,29 +2551,21 @@ class _CourierHomeState extends State<CourierHome> {
                 children: [
                   Row(
                     children: [
-                      const Icon(Icons.upload_file_rounded, color: Color(0xFF2F6B4F)),
+                      const Icon(Icons.verified_outlined, color: Color(0xFF2F6B4F)),
                       const SizedBox(width: 8),
-                      Text('Upload Verification Document', style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+                      Text('Upload verification document', style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
                     ],
                   ),
                   const SizedBox(height: 6),
-                  const Text('Upload clear photos of your official identity or vehicle documents for Operations review.', style: TextStyle(color: Color(0xFF6B7468), fontSize: 13)),
+                  Text('Selected: ${picked.name} (${(bytes.length / 1024).toStringAsFixed(0)} KB)', style: const TextStyle(color: Color(0xFF6B7468), fontSize: 13)),
                   const SizedBox(height: 14),
                   DropdownButtonFormField<String>(
                     initialValue: selectedType,
-                    decoration: const InputDecoration(labelText: 'Document Type'),
-                    items: docTypes.entries.map((e) => DropdownMenuItem(value: e.key, child: Text(e.value))).toList(),
-                    onChanged: (val) {
-                      if (val != null) setSheetState(() => selectedType = val);
+                    decoration: const InputDecoration(labelText: 'Document type'),
+                    items: docTypes.entries.map((entry) => DropdownMenuItem(value: entry.key, child: Text(entry.value))).toList(),
+                    onChanged: (value) {
+                      if (value != null) setSheetState(() => selectedType = value);
                     },
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: fileKeyController,
-                    decoration: const InputDecoration(
-                      labelText: 'Storage Reference / Document Key',
-                      hintText: 'documents/courier_id.jpg',
-                    ),
                   ),
                   const SizedBox(height: 16),
                   SizedBox(
@@ -2215,7 +2573,7 @@ class _CourierHomeState extends State<CourierHome> {
                     child: FilledButton.icon(
                       onPressed: () => Navigator.pop(sheetContext, true),
                       icon: const Icon(Icons.cloud_upload_outlined),
-                      label: const Text('Submit Document for Review'),
+                      label: const Text('Submit for review'),
                     ),
                   ),
                 ],
@@ -2226,31 +2584,27 @@ class _CourierHomeState extends State<CourierHome> {
       },
     );
 
-    if (submitted == true && mounted) {
-      final key = fileKeyController.text.trim();
-      fileKeyController.dispose();
-      if (key.isEmpty) return;
-      setState(() => busy = true);
-      try {
-        await widget.client.post('/v1/courier/documents', {
-          'documentType': selectedType,
-          'storageKey': key,
-        });
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Document submitted successfully for Operations review.')),
-        );
-        _load();
-      } catch (cause) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(cause.toString())),
-        );
-      } finally {
-        if (mounted) setState(() => busy = false);
-      }
-    } else {
-      fileKeyController.dispose();
+    if (confirmed != true || !mounted) return;
+    setState(() => busy = true);
+    try {
+      await widget.client.post('/v1/courier/documents/upload', {
+        'documentType': selectedType,
+        'fileName': picked.name,
+        'contentType': contentType,
+        'dataBase64': base64Encode(bytes),
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Document submitted successfully for Operations review.')),
+      );
+      _load();
+    } catch (cause) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(cause.toString())),
+      );
+    } finally {
+      if (mounted) setState(() => busy = false);
     }
   }
 
@@ -2585,7 +2939,11 @@ class OnboardingScreen extends StatefulWidget {
 
 class _OnboardingScreenState extends State<OnboardingScreen> {
   final nameController = TextEditingController();
+  final emailController = TextEditingController();
   final plateController = TextEditingController();
+  final vehicleModelController = TextEditingController();
+  final licenseController = TextEditingController();
+  final capacityController = TextEditingController(text: '1');
   String vehicleType = 'motorcycle';
   bool busy = false;
   String? error;
@@ -2593,7 +2951,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   @override
   void dispose() {
     nameController.dispose();
+    emailController.dispose();
     plateController.dispose();
+    vehicleModelController.dispose();
+    licenseController.dispose();
+    capacityController.dispose();
     super.dispose();
   }
 
@@ -2611,10 +2973,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       final result = asMap(
         await widget.client.post('/v1/courier/register', {
           'fullName': name,
+          if (emailController.text.trim().isNotEmpty)
+            'email': emailController.text.trim(),
           'vehicleType': vehicleType,
+          if (vehicleModelController.text.trim().isNotEmpty)
+            'vehicleModel': vehicleModelController.text.trim(),
           if (plateController.text.trim().isNotEmpty)
             'vehiclePlate': plateController.text.trim(),
-          'capacityUnits': 1,
+          if (licenseController.text.trim().isNotEmpty)
+            'licenseNumber': licenseController.text.trim(),
+          'capacityUnits': int.tryParse(capacityController.text.trim()) ?? 1,
         }),
       );
       widget.onRegistered(result);
@@ -2678,6 +3046,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             decoration: const InputDecoration(labelText: 'Full name'),
           ),
           const SizedBox(height: 12),
+          TextField(
+            controller: emailController,
+            keyboardType: TextInputType.emailAddress,
+            decoration: const InputDecoration(labelText: 'Email (optional)'),
+          ),
+          const SizedBox(height: 12),
           DropdownButtonFormField<String>(
             initialValue: vehicleType,
             decoration: const InputDecoration(labelText: 'Vehicle'),
@@ -2693,11 +3067,28 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           ),
           const SizedBox(height: 12),
           TextField(
+            controller: vehicleModelController,
+            textCapitalization: TextCapitalization.words,
+            decoration: const InputDecoration(labelText: 'Vehicle model (optional)'),
+          ),
+          const SizedBox(height: 12),
+          TextField(
             controller: plateController,
             textCapitalization: TextCapitalization.characters,
             decoration: const InputDecoration(
               labelText: 'Vehicle plate (optional)',
             ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: licenseController,
+            decoration: const InputDecoration(labelText: 'License number (optional)'),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: capacityController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(labelText: 'Capacity units'),
           ),
           const SizedBox(height: 20),
           FilledButton(

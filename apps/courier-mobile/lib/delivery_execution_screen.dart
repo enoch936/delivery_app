@@ -35,6 +35,7 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
   Map<String, dynamic>? _detail;
   bool _loading = true;
   bool _busy = false;
+  bool _hasQueuedChanges = false;
   String? _error;
 
   Map<String, dynamic> get _delivery =>
@@ -52,7 +53,25 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
   @override
   void initState() {
     super.initState();
+    widget.client.pendingSync.addListener(_onSyncChanged);
+    widget.client.connected.addListener(_onSyncChanged);
     _load();
+  }
+
+  @override
+  void dispose() {
+    widget.client.pendingSync.removeListener(_onSyncChanged);
+    widget.client.connected.removeListener(_onSyncChanged);
+    super.dispose();
+  }
+
+  void _onSyncChanged() {
+    if (!mounted) return;
+    if (widget.client.pendingSync.value == 0 && _hasQueuedChanges) {
+      _hasQueuedChanges = false;
+      unawaited(_load());
+    }
+    setState(() {});
   }
 
   Future<void> _load() async {
@@ -96,6 +115,15 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
       );
       final queued = result is Map && result['queued'] == true;
       if (!mounted) return true;
+      if (queued) {
+        _hasQueuedChanges = true;
+        await _applyQueuedAction(action, body);
+        if (widget.client.pendingSync.value == 0) {
+          _hasQueuedChanges = false;
+          await _load();
+        }
+      }
+      if (!mounted) return true;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -105,7 +133,7 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
           ),
         ),
       );
-      await _load();
+      if (!queued) await _load();
       return true;
     } on ApiException catch (cause) {
       if (cause.statusCode == 404 || cause.statusCode == 409) await _load();
@@ -119,6 +147,59 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _applyQueuedAction(
+    String action,
+    Map<String, Object?> body,
+  ) async {
+    final delivery = Map<String, dynamic>.from(_delivery);
+    var allowedActions = <String>[];
+    switch (action) {
+      case 'arrived_pickup':
+        delivery['assignmentStatus'] = 'arrived_pickup';
+        delivery['orderStatus'] = 'COURIER_ARRIVING_PICKUP';
+        allowedActions = ['picked_up', 'failed'];
+      case 'picked_up':
+        delivery['assignmentStatus'] = 'picked_up';
+        delivery['orderStatus'] = 'PICKED_UP';
+        allowedActions = ['in_transit', 'failed'];
+      case 'in_transit':
+        delivery['orderStatus'] = 'IN_TRANSIT';
+        allowedActions = ['delivered', 'failed'];
+      case 'delivered':
+        delivery['assignmentStatus'] = 'delivered';
+        delivery['orderStatus'] = 'DELIVERED';
+      case 'failed':
+        final returnRequired = body['returnRequired'] == true;
+        delivery['assignmentStatus'] = 'failed';
+        delivery['orderStatus'] = 'FAILED';
+        delivery['failure'] = {
+          'reasonCode': body['failureReason'],
+          'notes': body['notes'],
+          'returnRequired': returnRequired,
+          'returnStatus': returnRequired ? 'pending' : 'not_required',
+        };
+        if (returnRequired) allowedActions = ['returned'];
+      case 'returned':
+        final failure = Map<String, dynamic>.from(asMap(delivery['failure']));
+        delivery['failure'] = {...failure, 'returnStatus': 'completed'};
+      default:
+        return;
+    }
+    final detail = {
+      ...?_detail,
+      'delivery': delivery,
+      'allowedActions': allowedActions,
+    };
+    setState(() {
+      _detail = detail;
+      _loading = false;
+    });
+    await widget.client.storage.cacheResponse(
+      '/v1/courier/deliveries/${widget.orderId}',
+      detail,
+    );
   }
 
   Future<bool> _confirm({
@@ -359,6 +440,7 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
     final address = (stop['address']?.toString() ?? '').trim();
     if (latitude == null || longitude == null) {
       if (address.isEmpty) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('$fallbackName has no map location yet.')),
         );
@@ -430,6 +512,37 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(18, 8, 18, 32),
                 children: [
+                  if (widget.client.pendingSync.value > 0 ||
+                      !widget.client.connected.value)
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF3D8),
+                        border: Border.all(color: const Color(0xFFE7D3A4)),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.sync, size: 18, color: Color(0xFF8A5A00)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              !widget.client.connected.value
+                                  ? 'Offline${widget.client.pendingSync.value > 0 ? ' · ${widget.client.pendingSync.value} updates pending' : '; saved delivery data available'}'
+                                  : '${widget.client.pendingSync.value} update${widget.client.pendingSync.value == 1 ? '' : 's'} waiting for server confirmation',
+                              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                          if (widget.client.pendingSync.value > 0)
+                            IconButton(
+                              tooltip: 'Sync pending updates',
+                              onPressed: () => unawaited(widget.client.flushQueue()),
+                              icon: const Icon(Icons.cloud_upload_outlined),
+                            ),
+                        ],
+                      ),
+                    ),
                   if (_error != null) ...[
                     ErrorBanner(message: _error!),
                     const SizedBox(height: 12),

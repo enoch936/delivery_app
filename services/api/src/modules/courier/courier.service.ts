@@ -1,4 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
   allowedCourierActions,
   effectiveProofMode,
@@ -8,6 +11,7 @@ import {
 } from "@delivery-app/domain";
 import { DatabaseService } from "../../database/database.service.js";
 import { OrdersService } from "../orders/orders.service.js";
+import { SupportService } from "../support/support.service.js";
 
 type CourierDeliveryRow = {
   assignment_id: string; assignment_status: string; accepted_at: Date | null; arrived_at: Date | null;
@@ -27,9 +31,11 @@ type CourierDeliveryRow = {
 };
 
 type CourierProfileRow = {
-  user_id: string; status: string; full_name: string | null; vehicle_type: string; vehicle_plate: string | null;
-  service_zone_id: string | null; capacity_units: number; rating_average: string; completed_deliveries: number;
-  rejection_reason: string | null; created_at: Date;
+  user_id: string; status: string; full_name: string | null; email: string | null; vehicle_type: string; vehicle_plate: string | null;
+  vehicle_model: string | null; license_number: string | null; service_zone_id: string | null; city_id: string | null;
+  service_category_slug: string | null; capacity_units: number; rating_average: string; completed_deliveries: number;
+  rejection_reason: string | null; last_decision_reason: string | null; availability_preferences: Record<string, unknown> | null;
+  verification_submitted_at: Date | null; suspended_at: Date | null; reactivated_at: Date | null; created_at: Date;
   is_online: boolean | null; accepting_offers: boolean | null; last_seen_at: Date | null;
   latitude: number | null; longitude: number | null; active_order_id: string | null;
 };
@@ -61,7 +67,7 @@ const DELIVERY_SELECT = `
 
 @Injectable()
 export class CourierService {
-  constructor(private readonly database: DatabaseService, private readonly orders: OrdersService) {}
+  constructor(private readonly database: DatabaseService, private readonly orders: OrdersService, private readonly support: SupportService) {}
 
   async profile(userId: string) {
     const result = await this.database.query<CourierProfileRow>(
@@ -74,46 +80,62 @@ export class CourierService {
     const row = result.rows[0];
     if (!row) throw new NotFoundException("Courier profile not found. Complete courier registration first.");
     const [documents, vehicles] = await Promise.all([
-      this.database.query("SELECT id, document_type, status, review_notes, created_at FROM courier_documents WHERE courier_user_id = $1 ORDER BY created_at DESC", [userId]),
+      this.database.query("SELECT id, document_type, status, review_notes, original_name, content_type, size_bytes, expires_at, created_at FROM courier_documents WHERE courier_user_id = $1 ORDER BY created_at DESC", [userId]),
       this.database.query("SELECT id, vehicle_type, plate_number, make_model, is_active FROM courier_vehicles WHERE courier_user_id = $1 ORDER BY created_at DESC", [userId])
     ]);
     return {
-      userId: row.user_id, status: row.status, fullName: row.full_name, vehicleType: row.vehicle_type,
-      vehiclePlate: row.vehicle_plate, serviceZoneId: row.service_zone_id, capacityUnits: row.capacity_units,
-      ratingAverage: Number(row.rating_average), completedDeliveries: row.completed_deliveries, rejectionReason: row.rejection_reason,
+      userId: row.user_id, status: row.status, fullName: row.full_name, email: row.email, vehicleType: row.vehicle_type,
+      vehicleModel: row.vehicle_model, vehiclePlate: row.vehicle_plate, licenseNumber: row.license_number,
+      serviceZoneId: row.service_zone_id, cityId: row.city_id, serviceCategorySlug: row.service_category_slug,
+      capacityUnits: row.capacity_units, ratingAverage: Number(row.rating_average), completedDeliveries: row.completed_deliveries,
+      rejectionReason: row.rejection_reason, lastDecisionReason: row.last_decision_reason,
+      availabilityPreferences: row.availability_preferences ?? {},
+      verificationSubmittedAt: row.verification_submitted_at?.toISOString() ?? null,
+      suspendedAt: row.suspended_at?.toISOString() ?? null, reactivatedAt: row.reactivated_at?.toISOString() ?? null,
       availability: {
         isOnline: row.is_online ?? false, acceptingOffers: row.accepting_offers ?? false,
         lastSeenAt: row.last_seen_at?.toISOString() ?? null, activeOrderId: row.active_order_id,
         latitude: row.latitude === null ? null : Number(row.latitude), longitude: row.longitude === null ? null : Number(row.longitude)
       },
-      documents: documents.rows.map((doc) => ({ id: doc.id, documentType: doc.document_type, status: doc.status, reviewNotes: doc.review_notes, createdAt: (doc.created_at as Date).toISOString() })),
+      documents: documents.rows.map((doc) => ({ id: doc.id, documentType: doc.document_type, status: doc.status, reviewNotes: doc.review_notes, originalName: doc.original_name, contentType: doc.content_type, sizeBytes: doc.size_bytes, expiresAt: (doc.expires_at as Date | null)?.toISOString() ?? null, createdAt: (doc.created_at as Date).toISOString() })),
       vehicles: vehicles.rows.map((vehicle) => ({ id: vehicle.id, vehicleType: vehicle.vehicle_type, plateNumber: vehicle.plate_number, makeModel: vehicle.make_model, isActive: vehicle.is_active })),
       createdAt: row.created_at.toISOString()
     };
   }
 
-  async register(userId: string, input: Readonly<{ fullName: string; vehicleType: string; vehiclePlate?: string | undefined; serviceZoneId?: string | undefined; capacityUnits?: number | undefined }>) {
+  async register(userId: string, input: Readonly<{ fullName: string; email?: string | undefined; cityId?: string | undefined; serviceCategorySlug?: string | undefined; vehicleType: string; vehicleModel?: string | undefined; vehiclePlate?: string | undefined; licenseNumber?: string | undefined; serviceZoneId?: string | undefined; capacityUnits?: number | undefined; availabilityPreferences?: Record<string, unknown> | undefined }>) {
     return this.database.withTransaction(async (client) => {
       const existing = await client.query("SELECT 1 FROM courier_profiles WHERE user_id = $1", [userId]);
       if ((existing.rowCount ?? 0) > 0) throw new ConflictException("A courier profile already exists.");
       await client.query(
-        `INSERT INTO courier_profiles (user_id, full_name, vehicle_type, vehicle_plate, service_zone_id, capacity_units)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [userId, input.fullName, input.vehicleType, input.vehiclePlate ?? null, input.serviceZoneId ?? null, input.capacityUnits ?? 1]
+        `INSERT INTO courier_profiles (user_id, full_name, email, city_id, service_category_slug, vehicle_type, vehicle_model, vehicle_plate, license_number, service_zone_id, capacity_units, availability_preferences)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        [userId, input.fullName, input.email ?? null, input.cityId ?? null, input.serviceCategorySlug ?? null, input.vehicleType, input.vehicleModel ?? null, input.vehiclePlate ?? null, input.licenseNumber ?? null, input.serviceZoneId ?? null, input.capacityUnits ?? 1, JSON.stringify(input.availabilityPreferences ?? {})]
       );
       await client.query("INSERT INTO courier_availability (courier_user_id) VALUES ($1) ON CONFLICT DO NOTHING", [userId]);
       await client.query("INSERT INTO user_role_assignments (user_id, role) VALUES ($1,'courier') ON CONFLICT DO NOTHING", [userId]);
+      await client.query("INSERT INTO courier_verification_events (courier_user_id, actor_user_id, to_status, reason) VALUES ($1,$1,'pending','Courier registration created')", [userId]);
       return this.profile(userId);
     });
   }
 
-  async updateProfile(userId: string, input: Readonly<{ fullName?: string | undefined; vehicleType?: string | undefined; vehiclePlate?: string | undefined; serviceZoneId?: string | undefined; capacityUnits?: number | undefined }>) {
+  async updateProfile(userId: string, input: Readonly<{ fullName?: string | undefined; email?: string | undefined; cityId?: string | undefined; serviceCategorySlug?: string | undefined; vehicleType?: string | undefined; vehicleModel?: string | undefined; vehiclePlate?: string | undefined; licenseNumber?: string | undefined; serviceZoneId?: string | undefined; capacityUnits?: number | undefined; availabilityPreferences?: Record<string, unknown> | undefined }>) {
     const result = await this.database.query(
-      `UPDATE courier_profiles SET full_name = COALESCE($2, full_name), vehicle_type = COALESCE($3, vehicle_type),
-              vehicle_plate = COALESCE($4, vehicle_plate), service_zone_id = COALESCE($5, service_zone_id),
-              capacity_units = COALESCE($6, capacity_units), updated_at = now()
+      `UPDATE courier_profiles SET
+         full_name = COALESCE($2, full_name),
+         email = COALESCE($3, email),
+         city_id = COALESCE($4, city_id),
+         service_category_slug = COALESCE($5, service_category_slug),
+         vehicle_type = COALESCE($6, vehicle_type),
+         vehicle_model = COALESCE($7, vehicle_model),
+         vehicle_plate = COALESCE($8, vehicle_plate),
+         license_number = COALESCE($9, license_number),
+         service_zone_id = COALESCE($10, service_zone_id),
+         capacity_units = COALESCE($11, capacity_units),
+         availability_preferences = COALESCE($12, availability_preferences),
+         updated_at = now()
        WHERE user_id = $1`,
-      [userId, input.fullName ?? null, input.vehicleType ?? null, input.vehiclePlate ?? null, input.serviceZoneId ?? null, input.capacityUnits ?? null]
+      [userId, input.fullName ?? null, input.email ?? null, input.cityId ?? null, input.serviceCategorySlug ?? null, input.vehicleType ?? null, input.vehicleModel ?? null, input.vehiclePlate ?? null, input.licenseNumber ?? null, input.serviceZoneId ?? null, input.capacityUnits ?? null, input.availabilityPreferences ? JSON.stringify(input.availabilityPreferences) : null]
     );
     if (result.rowCount === 0) throw new NotFoundException("Courier profile not found.");
     return this.profile(userId);
@@ -127,6 +149,91 @@ export class CourierService {
       [userId, input.documentType, input.storageKey]
     );
     return { id: result.rows[0]?.id, status: "pending" };
+  }
+
+  async requirements(userId: string, cityId?: string, serviceCategorySlug?: string, vehicleType?: string) {
+    const profile = await this.database.query<{ city_id: string | null; service_category_slug: string | null; vehicle_type: string }>("SELECT city_id, service_category_slug, vehicle_type FROM courier_profiles WHERE user_id = $1", [userId]);
+    const resolvedCityId = cityId ?? profile.rows[0]?.city_id ?? null;
+    const resolvedCategory = serviceCategorySlug ?? profile.rows[0]?.service_category_slug ?? null;
+    const resolvedVehicle = vehicleType ?? profile.rows[0]?.vehicle_type ?? null;
+    const result = await this.database.query<{ document_type: string; is_required: boolean; requires_expiry: boolean; max_age_days: number | null; sort_order: number }>(
+      `SELECT document_type, is_required, requires_expiry, max_age_days, sort_order
+       FROM courier_verification_requirements
+       WHERE is_active = true
+         AND (city_id IS NULL OR city_id = $1)
+         AND (service_category_slug IS NULL OR service_category_slug = $2)
+         AND (vehicle_type IS NULL OR vehicle_type = $3)
+       ORDER BY sort_order ASC, document_type ASC`,
+      [resolvedCityId, resolvedCategory, resolvedVehicle]
+    );
+    const deduped = new Map<string, { documentType: string; required: boolean; requiresExpiry: boolean; maxAgeDays: number | null; sortOrder: number }>();
+    for (const row of result.rows) {
+      if (!deduped.has(row.document_type)) {
+        deduped.set(row.document_type, { documentType: row.document_type, required: row.is_required, requiresExpiry: row.requires_expiry, maxAgeDays: row.max_age_days, sortOrder: row.sort_order });
+      }
+    }
+    return { cityId: resolvedCityId, serviceCategorySlug: resolvedCategory, vehicleType: resolvedVehicle, items: [...deduped.values()] };
+  }
+
+  async uploadDocument(userId: string, input: Readonly<{ documentType: string; fileName: string; contentType: string; dataBase64: string; expiresAt?: string | undefined; replacesDocumentId?: string | undefined }>) {
+    const profile = await this.database.query("SELECT 1 FROM courier_profiles WHERE user_id = $1", [userId]);
+    if ((profile.rowCount ?? 0) === 0) throw new NotFoundException("Courier profile not found.");
+    const base64 = input.dataBase64.includes(",") ? input.dataBase64.split(",").pop() ?? "" : input.dataBase64;
+    let buffer: Buffer;
+    try { buffer = Buffer.from(base64, "base64"); } catch { throw new BadRequestException("Invalid document data."); }
+    if (buffer.length === 0 || buffer.length > 5 * 1024 * 1024) throw new BadRequestException("Document must be between 1 byte and 5 MB.");
+    const safeName = input.fileName.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120);
+    const storageRoot = process.env.COURIER_DOCUMENT_STORAGE_DIR || join(process.cwd(), "var", "courier-documents");
+    const directory = join(storageRoot, userId);
+    await mkdir(directory, { recursive: true });
+    const storageKey = join(userId, `${randomUUID()}-${safeName}`);
+    await writeFile(join(storageRoot, storageKey), buffer);
+    const checksum = createHash("sha256").update(buffer).digest("hex");
+    const expiresAt = input.expiresAt ? new Date(input.expiresAt) : null;
+    if (expiresAt && Number.isNaN(expiresAt.getTime())) throw new BadRequestException("Invalid document expiry date.");
+    const result = await this.database.query<{ id: string }>(
+      `INSERT INTO courier_documents
+        (courier_user_id, document_type, storage_key, storage_provider, original_name, content_type, size_bytes, checksum_sha256, expires_at, status)
+       VALUES ($1,$2,$3,'local_private',$4,$5,$6,$7,$8,'pending')
+       RETURNING id`,
+      [userId, input.documentType, storageKey, safeName, input.contentType, buffer.length, checksum, expiresAt]
+    );
+    const documentId = result.rows[0]?.id;
+    if (!documentId) throw new NotFoundException("Document upload failed.");
+    if (input.replacesDocumentId) {
+      await this.database.query("UPDATE courier_documents SET status = 'rejected', review_notes = COALESCE(review_notes, 'Superseded by a newer upload.'), reviewed_at = COALESCE(reviewed_at, now()) WHERE id = $1 AND courier_user_id = $2 AND id <> $3", [input.replacesDocumentId, userId, documentId]);
+    }
+    await this.database.query("INSERT INTO courier_verification_events (courier_user_id, document_id, actor_user_id, to_status, reason, metadata) VALUES ($1,$2,$3,'pending','Document uploaded',$4)", [userId, documentId, userId, JSON.stringify({ documentType: input.documentType, sizeBytes: buffer.length, contentType: input.contentType })]);
+    return { id: documentId, documentType: input.documentType, status: "pending", originalName: safeName, contentType: input.contentType, sizeBytes: buffer.length, expiresAt: expiresAt?.toISOString() ?? null };
+  }
+
+  async documentFile(actorUserId: string, documentId: string, roles: readonly string[]) {
+    const result = await this.database.query<{ id: string; courier_user_id: string; storage_key: string; content_type: string | null; original_name: string | null; storage_provider: string }>(
+      "SELECT id, courier_user_id, storage_key, content_type, original_name, storage_provider FROM courier_documents WHERE id = $1",
+      [documentId]
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundException("Document not found.");
+    const isAdmin = roles.includes("admin") || roles.includes("operations") || roles.includes("support");
+    if (!isAdmin && row.courier_user_id !== actorUserId) throw new ForbiddenException("You cannot access this document.");
+    const storageRoot = process.env.COURIER_DOCUMENT_STORAGE_DIR || join(process.cwd(), "var", "courier-documents");
+    const file = await readFile(join(storageRoot, row.storage_key));
+    return { id: row.id, courierUserId: row.courier_user_id, fileName: row.original_name, contentType: row.content_type ?? "application/octet-stream", dataBase64: file.toString("base64") };
+  }
+
+  async submitVerification(userId: string) {
+    const profile = await this.database.query<{ status: string; city_id: string | null; service_category_slug: string | null; vehicle_type: string }>("SELECT status, city_id, service_category_slug, vehicle_type FROM courier_profiles WHERE user_id = $1", [userId]);
+    const row = profile.rows[0];
+    if (!row) throw new NotFoundException("Courier profile not found.");
+    const requirements = await this.requirements(userId, row.city_id ?? undefined, row.service_category_slug ?? undefined, row.vehicle_type);
+    const required = requirements.items.filter((item) => item.required).map((item) => item.documentType);
+    const documents = await this.database.query<{ document_type: string; status: string }>("SELECT document_type, status FROM courier_documents WHERE courier_user_id = $1", [userId]);
+    const approvedTypes = new Set(documents.rows.filter((doc) => doc.status === "approved").map((doc) => doc.document_type));
+    const missing = required.filter((type) => !approvedTypes.has(type));
+    if (missing.length > 0) throw new ConflictException(`Upload and receive approval for: ${missing.join(", ")}.`);
+    await this.database.query("UPDATE courier_profiles SET status = 'pending', verification_submitted_at = now(), last_decision_reason = NULL, updated_at = now() WHERE user_id = $1", [userId]);
+    await this.database.query("INSERT INTO courier_verification_events (courier_user_id, actor_user_id, from_status, to_status, reason) VALUES ($1,$1,$2,'pending','Verification submitted with all required documents')", [userId, row.status]);
+    return this.profile(userId);
   }
 
   async setAvailability(userId: string, input: Readonly<{ isOnline: boolean; acceptingOffers?: boolean | undefined; latitude?: number | undefined; longitude?: number | undefined }>) {
@@ -161,23 +268,23 @@ export class CourierService {
   }
 
   async recordLocation(userId: string, input: Readonly<{ latitude: number; longitude: number; accuracyMeters?: number | undefined; headingDegrees?: number | undefined; speedMps?: number | undefined }>, idempotencyKey: string | undefined) {
-    if (!idempotencyKey || !/^[A-Za-z0-9_-]{16,128}$/.test(idempotencyKey)) {
+    if (idempotencyKey && !/^[A-Za-z0-9_-]{16,128}$/.test(idempotencyKey)) {
       throw new BadRequestException("A valid Idempotency-Key header is required.");
     }
-    const requestPath = "/v1/courier/location";
     return this.database.withTransaction(async (client) => {
-      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`courier:${userId}:${idempotencyKey}`]);
-      const existing = await client.query<{ request_path: string; response_body: { recorded: boolean } }>(
-        "SELECT request_path, response_body FROM idempotency_records WHERE user_id = $1 AND idempotency_key = $2",
-        [userId, idempotencyKey]
-      );
-      if (existing.rows[0]) {
-        if (existing.rows[0].request_path !== requestPath) throw new ConflictException("This operation ID was already used for a different request.");
-        return existing.rows[0].response_body;
+      if (idempotencyKey) {
+        const existing = await client.query(
+          "SELECT 1 FROM courier_location_samples WHERE courier_user_id = $1 AND client_operation_id = $2",
+          [userId, idempotencyKey]
+        );
+        if ((existing.rowCount ?? 0) > 0) return { recorded: true };
       }
       const availability = await client.query<{ active_order_id: string | null; is_online: boolean }>("SELECT active_order_id, is_online FROM courier_availability WHERE courier_user_id = $1", [userId]);
       const state = availability.rows[0];
       if (!state) throw new NotFoundException("Courier availability not initialized.");
+      if (!state.is_online && !state.active_order_id) {
+        throw new ForbiddenException("Location updates are only accepted while online or on an active delivery.");
+      }
       await client.query(
         `UPDATE courier_availability SET last_location = ST_SetSRID(ST_MakePoint($2,$3),4326), last_seen_at = now(), updated_at = now() WHERE courier_user_id = $1`,
         [userId, input.longitude, input.latitude]
@@ -188,18 +295,13 @@ export class CourierService {
           [state.active_order_id, userId]
         );
         await client.query(
-          `INSERT INTO courier_location_samples (courier_user_id, order_id, assignment_id, location, accuracy_meters, heading_degrees, speed_mps)
-           VALUES ($1,$2,$3,ST_SetSRID(ST_MakePoint($5,$4),4326),$6,$7,$8)`,
-          [userId, state.active_order_id, assignment.rows[0]?.id ?? null, input.latitude, input.longitude, input.accuracyMeters ?? null, input.headingDegrees ?? null, input.speedMps ?? null]
+          `INSERT INTO courier_location_samples (courier_user_id, order_id, assignment_id, location, accuracy_meters, heading_degrees, speed_mps, client_operation_id)
+           VALUES ($1,$2,$3,ST_SetSRID(ST_MakePoint($5,$4),4326),$6,$7,$8,$9)
+           ON CONFLICT DO NOTHING`,
+          [userId, state.active_order_id, assignment.rows[0]?.id ?? null, input.latitude, input.longitude, input.accuracyMeters ?? null, input.headingDegrees ?? null, input.speedMps ?? null, idempotencyKey ?? null]
         );
       }
-      const response = { recorded: true };
-      await client.query(
-        `INSERT INTO idempotency_records (user_id, idempotency_key, request_path, response_status, response_body)
-         VALUES ($1,$2,$3,200,$4)`,
-        [userId, idempotencyKey, requestPath, JSON.stringify(response)]
-      );
-      return response;
+      return { recorded: true };
     });
   }
 
@@ -284,15 +386,11 @@ export class CourierService {
     requestIdValue: string | null,
     idempotencyKey: string | undefined
   ) {
-    if (!idempotencyKey || !/^[A-Za-z0-9_-]{16,128}$/.test(idempotencyKey)) {
+    if (idempotencyKey && !/^[A-Za-z0-9_-]{16,128}$/.test(idempotencyKey)) {
       throw new BadRequestException("A valid Idempotency-Key header is required.");
     }
-    const statuses = action === "returned" ? ["failed"] : ["accepted", "arrived_pickup", "picked_up"];
-    const assignment = await this.database.query(
-      `SELECT 1 FROM delivery_assignments WHERE order_id = $1 AND courier_user_id = $2 AND status = ANY($3::text[])`,
-      [orderId, userId, statuses]
-    );
-    if ((assignment.rowCount ?? 0) === 0) throw new ForbiddenException("No matching assignment for this order.");
+    const profile = await this.database.query<{ status: string }>("SELECT status FROM courier_profiles WHERE user_id = $1", [userId]);
+    if (!profile.rows[0] || profile.rows[0].status !== "approved") throw new ForbiddenException("Your courier account has not been approved yet.");
     return this.orders.courierTransition({
       orderId,
       courierUserId: userId,
@@ -371,7 +469,7 @@ export class CourierService {
   }
 
   async earnings(userId: string) {
-    const [summary, payouts, recent] = await Promise.all([
+    const [summary, payouts, recent, performance] = await Promise.all([
       this.database.query<{ delivered: number; gross: string; tips: string }>(
         `SELECT count(*)::int AS delivered,
                 COALESCE(sum(f.courier_earning_minor),0)::text AS gross,
@@ -384,16 +482,28 @@ export class CourierService {
         `SELECT o.order_number, o.delivered_at, f.courier_earning_minor, f.tip_minor, f.currency
          FROM delivery_assignments da JOIN orders o ON o.id = da.order_id JOIN order_financials f ON f.order_id = o.id
          WHERE da.courier_user_id = $1 AND da.status = 'delivered' ORDER BY o.delivered_at DESC LIMIT 20`, [userId]
-      )
+      ),
+      this.database.query<{ rating_average: string; acceptance_rate: number }>(
+        `SELECT cp.rating_average::text AS rating_average,
+                COALESCE((SELECT count(*) FILTER (WHERE o.status = 'accepted')::float8 / NULLIF(count(*) FILTER (WHERE o.status IN ('accepted','rejected')), 0)
+                          FROM dispatch_offers o WHERE o.courier_user_id = cp.user_id AND o.created_at > now() - interval '30 days'), 0.75)::float8 AS acceptance_rate
+         FROM courier_profiles cp WHERE cp.user_id = $1`, [userId]
+      ),
     ]);
     const paidOut = payouts.rows.filter((row) => row.status === "PAID").reduce((sum, row) => sum + Number(row.net_payable_minor), 0);
     const gross = Number(summary.rows[0]?.gross ?? 0);
     const tips = Number(summary.rows[0]?.tips ?? 0);
+    const deductions = payouts.rows.reduce((sum, row) => sum + Number(row.deductions_minor ?? 0), 0);
     return {
       completedDeliveries: summary.rows[0]?.delivered ?? 0,
       lifetimeEarningsMinor: gross + tips,
+      grossEarningsMinor: gross,
       tipsMinor: tips,
+      deductionsMinor: deductions,
+      settledEarningsMinor: paidOut,
       pendingPayoutMinor: Math.max(0, gross + tips - paidOut),
+      ratingAverage: Number(performance.rows[0]?.rating_average ?? 0),
+      acceptanceRate: performance.rows[0]?.acceptance_rate ?? 0.75,
       payouts: payouts.rows.map((row) => ({
         id: row.id as string, periodStart: (row.period_start as Date).toISOString(), periodEnd: (row.period_end as Date).toISOString(),
         grossEarningsMinor: Number(row.gross_earnings_minor), deductionsMinor: Number(row.deductions_minor), tipsMinor: Number(row.tips_minor),
@@ -405,5 +515,37 @@ export class CourierService {
         earningMinor: Number(row.courier_earning_minor), tipMinor: Number(row.tip_minor), currency: row.currency as string
       }))
     };
+  }
+
+  async earningsDisputes(userId: string) {
+    const result = await this.database.query(
+      `SELECT t.id, t.subject, t.status, t.priority, t.created_at, t.updated_at, o.order_number,
+              (SELECT count(*)::int FROM support_messages sm WHERE sm.ticket_id = t.id AND sm.is_internal = false) AS message_count
+       FROM support_tickets t LEFT JOIN orders o ON o.id = t.order_id
+       WHERE t.user_id = $1 AND t.category = 'earnings' ORDER BY t.created_at DESC LIMIT 20`,
+      [userId]
+    );
+    return {
+      items: result.rows.map((row) => ({
+        id: row.id as string, subject: row.subject as string, status: row.status as string, priority: row.priority as string,
+        orderNumber: row.order_number as string | null, messageCount: row.message_count as number,
+        createdAt: (row.created_at as Date).toISOString(), updatedAt: (row.updated_at as Date).toISOString()
+      }))
+    };
+  }
+
+  async createEarningsDispute(userId: string, input: Readonly<{ subject: string; message: string; orderId?: string | null; payoutId?: string | null }>) {
+    if (input.orderId) {
+      const assignment = await this.database.query(
+        `SELECT 1 FROM delivery_assignments da WHERE da.courier_user_id = $1 AND da.order_id = $2 LIMIT 1`,
+        [userId, input.orderId]
+      );
+      if ((assignment.rowCount ?? 0) === 0) throw new NotFoundException("Order not found.");
+    }
+    const reference = input.payoutId ? `Ref payout ${input.payoutId}. ` : "";
+    return this.support.create(userId, {
+      subject: input.subject, category: "earnings", orderId: input.orderId ?? null, priority: "NORMAL",
+      message: `${reference}${input.message}`
+    });
   }
 }
