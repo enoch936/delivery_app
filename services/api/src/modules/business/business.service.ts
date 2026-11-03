@@ -90,6 +90,37 @@ export class BusinessService {
     return { userId: target.id, role };
   }
 
+  async removeMember(userId: string, accountId: string, memberId: string) {
+    const membership = await this.requireMember(userId, accountId);
+    if (!["owner", "admin"].includes(membership.role)) {
+      throw new ForbiddenException("Only business owners and admins can manage members.");
+    }
+    const target = await this.database.query<{ member_role: string }>(
+      "SELECT member_role FROM business_members WHERE business_account_id = $1 AND user_id = $2",
+      [accountId, memberId]
+    );
+    if (!target.rows[0]) throw new NotFoundException("Business member not found.");
+    if (target.rows[0].member_role !== "driver") {
+      throw new ConflictException("Only fleet drivers can be removed from the driver roster.");
+    }
+    const activeAssignment = await this.database.query(
+      "SELECT 1 FROM business_fleet_assignments WHERE business_account_id = $1 AND driver_user_id = $2 AND status = 'assigned'",
+      [accountId, memberId]
+    );
+    if ((activeAssignment.rowCount ?? 0) > 0) {
+      throw new ConflictException("Complete or reassign this driver's active delivery before removing them.");
+    }
+    await this.database.query(
+      "UPDATE business_members SET member_role = 'member' WHERE business_account_id = $1 AND user_id = $2 AND member_role = 'driver'",
+      [accountId, memberId]
+    );
+    await this.audit.record({
+      actorUserId: userId, action: "business.fleet_driver_removed", entityType: "business_member",
+      entityId: memberId, requestId: null, metadata: { businessAccountId: accountId, previousRole: target.rows[0].member_role }
+    });
+    return { removedFromFleet: true };
+  }
+
   async addLocation(userId: string, accountId: string, input: Readonly<{ label: string; addressLine: string; contactName: string | null; contactPhone: string | null; latitude: number | null; longitude: number | null }>) {
     await this.requireMember(userId, accountId);
     const result = await this.database.query<{ id: string }>(
@@ -132,6 +163,9 @@ export class BusinessService {
 
   async fleet(userId: string, accountId: string) {
     const membership = await this.requireMember(userId, accountId);
+    if (!["owner", "admin", "driver"].includes(membership.role)) {
+      throw new ForbiddenException("You do not have fleet access for this business account.");
+    }
     const account = await this.database.query<{ id: string; display_name: string; status: string; currency: string }>(
       "SELECT id, display_name, status, currency FROM business_accounts WHERE id = $1",
       [accountId]

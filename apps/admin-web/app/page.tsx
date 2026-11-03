@@ -98,6 +98,36 @@ type ReconciliationSummary = {
     }>;
   };
 };
+type BusinessAccount = { id: string; name: string; status: string; currency: string; role: string };
+type FleetDriver = {
+  userId: string; name: string | null; phoneE164: string | null; accountStatus: string;
+  courierStatus: string | null; vehicleType: string | null; isOnline: boolean;
+  hasActiveDelivery: boolean; eligible: boolean; available: boolean;
+  deliveries: number; onTimeDeliveries: number; completedAssignments: number;
+};
+type FleetVehicle = {
+  id: string; label: string; vehicleType: string; makeModel: string | null; plateNumber: string;
+  registrationExpiresOn: string | null; insuranceExpiresOn: string | null;
+  isActive: boolean; assigned: boolean; eligible: boolean;
+};
+type FleetDelivery = {
+  assignmentId: string; orderId: string; orderNumber: string; status: string; merchantName: string;
+  driverUserId: string; driverName: string | null; vehicleId: string; vehicleLabel: string;
+  plateNumber: string; totalMinor: number; currency: string; createdAt: string;
+  deliveredAt: string | null; deliveryEstimateMinutes: number | null; assignmentStatus: string;
+};
+type FleetEligibleOrder = {
+  id: string; orderNumber: string; status: string; merchantName: string;
+  totalMinor: number; currency: string; createdAt: string;
+};
+type FleetSnapshot = {
+  account: BusinessAccount;
+  drivers: FleetDriver[];
+  vehicles: FleetVehicle[];
+  deliveries: FleetDelivery[];
+  eligibleOrders: FleetEligibleOrder[];
+  performance: { assigned: number; delivered: number; failed: number; onTime: number; onTimeRate: number };
+};
 
 type OperatorDashboard = {
   ordersToday: number; gmvTodayMinor: number; activeOrders: number;
@@ -241,6 +271,7 @@ function canViewTab(tab: string, roles: readonly string[]): boolean {
 export default function AdminHome() {
   const [session, setSession] = useState<Session | null>(null);
   const [ready, setReady] = useState(false);
+  const [businessMembership, setBusinessMembership] = useState<boolean | null>(null);
 
   useEffect(() => {
     setSession(loadSession());
@@ -253,9 +284,37 @@ export default function AdminHome() {
     return () => window.removeEventListener("delivery:session-expired", expire);
   }, []);
 
+  const staffAccess = session?.user.roles.some((role) => ["admin", "operations", "finance", "support"].includes(role)) ?? false;
+  useEffect(() => {
+    if (!session || staffAccess) {
+      setBusinessMembership(false);
+      return;
+    }
+    let active = true;
+    setBusinessMembership(null);
+    void api<{ items: BusinessAccount[] }>("/v1/business/accounts")
+      .then((result) => {
+        if (active) setBusinessMembership(result.items.some((account) => ["owner", "admin", "driver"].includes(account.role)));
+      })
+      .catch(() => { if (active) setBusinessMembership(false); });
+    return () => { active = false; };
+  }, [session, staffAccess]);
+
   if (!ready) return <div className="boot">Loading operations console…</div>;
   if (!session) return <Login onSignedIn={setSession} />;
+  if (!staffAccess && businessMembership === true) {
+    return <FleetWorkspace session={session} onSignedOut={() => { saveSession(null); setSession(null); }} />;
+  }
+  if (businessMembership === null && !staffAccess) return <div className="boot">Checking business access…</div>;
+  if (!staffAccess) return <NoWorkspace onSignedOut={() => { saveSession(null); setSession(null); }} />;
   return <Console session={session} onSignedOut={() => { saveSession(null); setSession(null); }} />;
+}
+
+function NoWorkspace({ onSignedOut }: { onSignedOut: () => void }) {
+  return <main className="fleet-denied">
+    <div className="brand"><span className="brand-mark">d</span><div><strong>delivery_app</strong><small>workspace access</small></div></div>
+    <section className="panel"><p className="eyebrow">NO ACTIVE WORKSPACE</p><h1>Access is not configured.</h1><p className="muted">This account is not a member of an active business workspace or an operations role.</p><button className="ghost" onClick={onSignedOut}>Sign out</button></section>
+  </main>;
 }
 
 function Login({ onSignedIn }: { onSignedIn: (session: Session) => void }) {
@@ -313,6 +372,323 @@ function Login({ onSignedIn }: { onSignedIn: (session: Session) => void }) {
       </form>}
     </section>
   </main>;
+}
+
+function FleetWorkspace({ session, onSignedOut }: { session: Session; onSignedOut: () => void }) {
+  const [accounts, setAccounts] = useState<BusinessAccount[]>([]);
+  const [selectedAccountId, setSelectedAccountId] = useState("");
+  const [fleet, setFleet] = useState<FleetSnapshot | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [toast, setToast] = useState("");
+  const [vehicleDraft, setVehicleDraft] = useState({
+    label: "", vehicleType: "van", makeModel: "", plateNumber: "",
+    registrationExpiresOn: "", insuranceExpiresOn: ""
+  });
+  const [assignmentDraft, setAssignmentDraft] = useState({ orderId: "", driverUserId: "", vehicleId: "" });
+  const [driverPhone, setDriverPhone] = useState("");
+  const [editingVehicle, setEditingVehicle] = useState<FleetVehicle | null>(null);
+  const [vehicleEditDraft, setVehicleEditDraft] = useState({
+    label: "", vehicleType: "", makeModel: "", plateNumber: "",
+    registrationExpiresOn: "", insuranceExpiresOn: ""
+  });
+
+  const notify = (message: string) => {
+    setToast(message);
+    window.setTimeout(() => setToast(""), 3500);
+  };
+
+  const loadAccounts = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const result = await api<{ items: BusinessAccount[] }>("/v1/business/accounts");
+      setAccounts(result.items);
+      setSelectedAccountId((current) => current && result.items.some((account) => account.id === current)
+        ? current
+        : result.items[0]?.id ?? "");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not load your business accounts.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadFleet = useCallback(async () => {
+    if (!selectedAccountId) {
+      setFleet(null);
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      setFleet(await api<FleetSnapshot>(`/v1/business/accounts/${selectedAccountId}/fleet`));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not load the fleet.");
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedAccountId]);
+
+  useEffect(() => { void loadAccounts(); }, [loadAccounts]);
+  useEffect(() => { if (selectedAccountId) void loadFleet(); }, [selectedAccountId, loadFleet]);
+
+  const canManage = fleet?.account.status === "active" && ["owner", "admin"].includes(fleet.account.role);
+  const selectedOrder = fleet?.eligibleOrders.find((order) => order.id === assignmentDraft.orderId);
+  const selectedDriver = fleet?.drivers.find((driver) => driver.userId === assignmentDraft.driverUserId);
+  const assignableVehicles = fleet?.vehicles.filter((vehicle) =>
+    vehicle.eligible && !vehicle.assigned && (!selectedDriver?.vehicleType || vehicle.vehicleType === selectedDriver.vehicleType)
+  ) ?? [];
+
+  useEffect(() => {
+    if (assignmentDraft.vehicleId && !assignableVehicles.some((vehicle) => vehicle.id === assignmentDraft.vehicleId)) {
+      setAssignmentDraft((current) => ({ ...current, vehicleId: "" }));
+    }
+  }, [assignmentDraft.vehicleId, assignableVehicles]);
+
+  async function addVehicle(event: FormEvent) {
+    event.preventDefault();
+    if (!fleet || !canManage) return;
+    setSaving(true);
+    setError("");
+    try {
+      await api(`/v1/business/accounts/${fleet.account.id}/fleet/vehicles`, {
+        method: "POST",
+        body: JSON.stringify({
+          ...vehicleDraft,
+          makeModel: vehicleDraft.makeModel || undefined,
+          registrationExpiresOn: vehicleDraft.registrationExpiresOn || null,
+          insuranceExpiresOn: vehicleDraft.insuranceExpiresOn || null
+        })
+      });
+      setVehicleDraft({ label: "", vehicleType: "van", makeModel: "", plateNumber: "", registrationExpiresOn: "", insuranceExpiresOn: "" });
+      notify("Vehicle added to fleet.");
+      await loadFleet();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not add vehicle.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleVehicle(vehicle: FleetVehicle) {
+    if (!fleet || !canManage) return;
+    setError("");
+    try {
+      await api(`/v1/business/accounts/${fleet.account.id}/fleet/vehicles/${vehicle.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ isActive: !vehicle.isActive })
+      });
+      notify(`${vehicle.label} ${vehicle.isActive ? "paused" : "reactivated"}.`);
+      await loadFleet();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not update vehicle.");
+    }
+  }
+
+  async function addDriver(event: FormEvent) {
+    event.preventDefault();
+    if (!fleet || !canManage) return;
+    setSaving(true);
+    setError("");
+    try {
+      await api(`/v1/business/accounts/${fleet.account.id}/members`, {
+        method: "POST",
+        body: JSON.stringify({ phoneE164: driverPhone.trim(), role: "driver" })
+      });
+      setDriverPhone("");
+      notify("Driver added to the business roster.");
+      await loadFleet();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not add driver.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeDriver(driver: FleetDriver) {
+    if (!fleet || !canManage || !window.confirm(`Remove ${driver.name ?? driver.phoneE164 ?? "this driver"} from this fleet?`)) return;
+    setError("");
+    try {
+      await api(`/v1/business/accounts/${fleet.account.id}/members/${driver.userId}`, { method: "DELETE" });
+      notify("Driver removed from fleet eligibility.");
+      await loadFleet();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not remove driver.");
+    }
+  }
+
+  async function saveVehicle(event: FormEvent) {
+    event.preventDefault();
+    if (!fleet || !canManage || !editingVehicle) return;
+    setSaving(true);
+    setError("");
+    try {
+      await api(`/v1/business/accounts/${fleet.account.id}/fleet/vehicles/${editingVehicle.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          ...vehicleEditDraft,
+          makeModel: vehicleEditDraft.makeModel,
+          registrationExpiresOn: vehicleEditDraft.registrationExpiresOn || null,
+          insuranceExpiresOn: vehicleEditDraft.insuranceExpiresOn || null
+        })
+      });
+      setEditingVehicle(null);
+      notify("Vehicle eligibility details updated.");
+      await loadFleet();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not update vehicle.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function assignDelivery(event: FormEvent) {
+    event.preventDefault();
+    if (!fleet || !canManage || !assignmentDraft.orderId || !assignmentDraft.driverUserId || !assignmentDraft.vehicleId) return;
+    setSaving(true);
+    setError("");
+    try {
+      await api(`/v1/business/accounts/${fleet.account.id}/fleet/assignments`, {
+        method: "POST",
+        body: JSON.stringify(assignmentDraft)
+      });
+      setAssignmentDraft({ orderId: "", driverUserId: "", vehicleId: "" });
+      notify(`${selectedOrder?.orderNumber ?? "Delivery"} assigned to ${selectedDriver?.name ?? "driver"}.`);
+      await loadFleet();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not assign delivery.");
+      await loadFleet();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function signOut() {
+    await logout();
+    onSignedOut();
+  }
+
+  const account = fleet?.account ?? accounts.find((item) => item.id === selectedAccountId);
+  const activeAssignments = fleet?.deliveries.filter((delivery) => !["DELIVERED", "FAILED", "CANCELLED", "REFUNDED"].includes(delivery.status)).length ?? 0;
+  const eligibleDrivers = fleet?.drivers.filter((driver) => driver.eligible).length ?? 0;
+  const eligibleVehicles = fleet?.vehicles.filter((vehicle) => vehicle.eligible).length ?? 0;
+
+  return <div className="app-shell fleet-shell">
+    <main className="workspace">
+      <header className="workspace-topbar">
+        <div className="brand"><span className="brand-mark">d</span><div><strong>delivery_app</strong><small>business fleet</small></div></div>
+        <div className="workspace-user">
+          <span className="avatar">{(session.user.displayName ?? session.user.phoneE164 ?? "FL").slice(0, 2).toUpperCase()}</span>
+          <div className="workspace-user-text"><strong>{session.user.displayName ?? session.user.phoneE164 ?? "Fleet manager"}</strong><small>Business access</small></div>
+          <button className="ghost" onClick={() => void signOut()}>Sign out</button>
+        </div>
+      </header>
+      <header className="workspace-head fleet-heading">
+        <div><p className="eyebrow">FLEET OPERATIONS</p><h1>{account?.name ?? "Fleet management"}</h1></div>
+        <label className="fleet-account-select">Business account
+          <select value={selectedAccountId} onChange={(event) => setSelectedAccountId(event.target.value)} aria-label="Business account">
+            {accounts.map((item) => <option value={item.id} key={item.id}>{item.name} · {item.status}</option>)}
+          </select>
+        </label>
+        <button className="ghost" onClick={() => void loadFleet()} disabled={loading || !selectedAccountId}>{loading ? "Refreshing…" : "Refresh"}</button>
+      </header>
+      {error && <p className="form-error">{error}</p>}
+      {loading && !fleet ? <div className="panel fleet-empty">Loading fleet records…</div> : !accounts.length ? <div className="panel fleet-empty"><h2>No business accounts</h2><p className="muted">This sign-in is not a member of an account with fleet access.</p></div> : fleet ? <>
+        {fleet.account.status !== "active" && <div className="fleet-notice"><strong>Fleet changes are paused.</strong><span>This account must be active before vehicles or deliveries can be assigned.</span></div>}
+        {fleet.account.role === "driver" && <div className="fleet-notice"><strong>Driver view</strong><span>You can review your assigned deliveries and performance. Fleet changes are reserved for business owners and admins.</span></div>}
+        <section className="metric-grid fleet-metrics">
+          <Metric label="Active deliveries" value={String(activeAssignments)} note="Assigned fleet work" accent />
+          <Metric label="Eligible drivers" value={String(eligibleDrivers)} note="Approved courier profiles" />
+          <Metric label="Eligible vehicles" value={String(eligibleVehicles)} note="Current documents" />
+          <Metric label="On-time delivery" value={`${Math.round((fleet.performance.onTimeRate || 0) * 100)}%`} note={`${fleet.performance.onTime} on time of ${fleet.performance.delivered} delivered`} />
+        </section>
+        <section className="fleet-columns">
+          <div className="stack">
+            <div className="panel table-wrap">
+              <div className="panel-head"><div><p className="eyebrow">PEOPLE</p><h2>Drivers</h2></div><span className="fine-print">Eligible drivers are approved courier accounts</span></div>
+              {canManage && <form className="fleet-inline-form" onSubmit={addDriver}>
+                <label>Add driver by account phone<input value={driverPhone} onChange={(event) => setDriverPhone(event.target.value)} placeholder="+2519XXXXXXXX" required pattern="\+[1-9][0-9]{7,14}" /></label>
+                <button className="ghost" disabled={saving}>{saving ? "Adding…" : "Add driver"}</button>
+              </form>}
+              <table><thead><tr><th>Driver</th><th>Vehicle</th><th>Availability</th><th>Performance</th><th /></tr></thead><tbody>
+                {fleet.drivers.map((driver) => <tr key={driver.userId}>
+                  <td><strong>{driver.name ?? "Unnamed driver"}</strong><small className="block">{driver.phoneE164 ?? "No phone"}</small></td>
+                  <td>{driver.vehicleType ?? "—"}</td>
+                  <td><span className={`status-pill ${driver.available ? "active" : driver.eligible ? "pending" : "suspended"}`}>{driver.available ? "Available" : driver.eligible ? driver.hasActiveDelivery ? "On delivery" : driver.isOnline ? "Unavailable" : "Offline" : "Not eligible"}</span></td>
+                  <td>{driver.deliveries} delivered<small className="block">{driver.deliveries ? Math.round(driver.onTimeDeliveries / driver.deliveries * 100) : 0}% on time</small></td>
+                  <td>{canManage && <button className="ghost danger" type="button" disabled={driver.hasActiveDelivery} onClick={() => void removeDriver(driver)}>Remove</button>}</td>
+                </tr>)}
+              </tbody></table>
+              {!fleet.drivers.length && <p className="empty">Add a business member with the driver role, then ensure their courier profile is approved.</p>}
+            </div>
+            <div className="panel table-wrap">
+              <div className="panel-head"><div><p className="eyebrow">VEHICLES</p><h2>Fleet vehicles</h2></div><span className="fine-print">Expired documents block assignment</span></div>
+              {editingVehicle && <form className="fleet-vehicle-edit" onSubmit={saveVehicle}>
+                <strong>Edit {editingVehicle.label}</strong>
+                <div className="fleet-form-grid">
+                  <label>Fleet label<input value={vehicleEditDraft.label} onChange={(event) => setVehicleEditDraft({ ...vehicleEditDraft, label: event.target.value })} required /></label>
+                  <label>Type<select value={vehicleEditDraft.vehicleType} onChange={(event) => setVehicleEditDraft({ ...vehicleEditDraft, vehicleType: event.target.value })}><option value="motorcycle">Motorcycle</option><option value="car">Car</option><option value="van">Van</option><option value="bicycle">Bicycle</option></select></label>
+                  <label>Make / model<input value={vehicleEditDraft.makeModel} onChange={(event) => setVehicleEditDraft({ ...vehicleEditDraft, makeModel: event.target.value })} /></label>
+                  <label>Plate number<input value={vehicleEditDraft.plateNumber} onChange={(event) => setVehicleEditDraft({ ...vehicleEditDraft, plateNumber: event.target.value })} required /></label>
+                  <label>Registration expiry<input type="date" value={vehicleEditDraft.registrationExpiresOn} onChange={(event) => setVehicleEditDraft({ ...vehicleEditDraft, registrationExpiresOn: event.target.value })} /></label>
+                  <label>Insurance expiry<input type="date" value={vehicleEditDraft.insuranceExpiresOn} onChange={(event) => setVehicleEditDraft({ ...vehicleEditDraft, insuranceExpiresOn: event.target.value })} /></label>
+                </div>
+                <div className="actions"><button className="ghost" type="button" onClick={() => setEditingVehicle(null)}>Cancel</button><button disabled={saving}>{saving ? "Saving…" : "Save vehicle"}</button></div>
+              </form>}
+              <table><thead><tr><th>Vehicle</th><th>Plate</th><th>Documents</th><th>Eligibility</th><th /></tr></thead><tbody>
+                {fleet.vehicles.map((vehicle) => <tr key={vehicle.id}>
+                  <td><strong>{vehicle.label}</strong><small className="block">{vehicle.makeModel ?? vehicle.vehicleType}</small></td>
+                  <td>{vehicle.plateNumber}</td>
+                  <td><small className="block">Registration: {vehicle.registrationExpiresOn ?? "No expiry"}</small><small className="block">Insurance: {vehicle.insuranceExpiresOn ?? "No expiry"}</small></td>
+                  <td><span className={`status-pill ${vehicle.eligible ? "active" : "suspended"}`}>{vehicle.assigned ? "Assigned" : vehicle.eligible ? "Eligible" : vehicle.isActive ? "Documents expired" : "Inactive"}</span></td>
+                  <td className="actions">{canManage && <><button className="ghost" type="button" onClick={() => { setEditingVehicle(vehicle); setVehicleEditDraft({ label: vehicle.label, vehicleType: vehicle.vehicleType, makeModel: vehicle.makeModel ?? "", plateNumber: vehicle.plateNumber, registrationExpiresOn: vehicle.registrationExpiresOn ?? "", insuranceExpiresOn: vehicle.insuranceExpiresOn ?? "" }); }}>Edit</button><button className="ghost" type="button" disabled={vehicle.assigned} onClick={() => void toggleVehicle(vehicle)}>{vehicle.isActive ? "Pause" : "Activate"}</button></>}</td>
+                </tr>)}
+              </tbody></table>
+              {!fleet.vehicles.length && <p className="empty">No vehicles registered.</p>}
+            </div>
+          </div>
+          <div className="stack">
+            {canManage && <>
+              <form className="panel fleet-form" onSubmit={addVehicle}>
+                <div className="panel-head"><div><p className="eyebrow">VEHICLE REGISTER</p><h2>Add a vehicle</h2></div></div>
+                <div className="fleet-form-grid">
+                  <label>Fleet label<input value={vehicleDraft.label} onChange={(event) => setVehicleDraft({ ...vehicleDraft, label: event.target.value })} required maxLength={100} placeholder="East route van" /></label>
+                  <label>Type<select value={vehicleDraft.vehicleType} onChange={(event) => setVehicleDraft({ ...vehicleDraft, vehicleType: event.target.value })}><option value="motorcycle">Motorcycle</option><option value="car">Car</option><option value="van">Van</option><option value="bicycle">Bicycle</option></select></label>
+                  <label>Make / model<input value={vehicleDraft.makeModel} onChange={(event) => setVehicleDraft({ ...vehicleDraft, makeModel: event.target.value })} maxLength={100} /></label>
+                  <label>Plate number<input value={vehicleDraft.plateNumber} onChange={(event) => setVehicleDraft({ ...vehicleDraft, plateNumber: event.target.value })} required maxLength={32} /></label>
+                  <label>Registration expiry<input type="date" value={vehicleDraft.registrationExpiresOn} onChange={(event) => setVehicleDraft({ ...vehicleDraft, registrationExpiresOn: event.target.value })} /></label>
+                  <label>Insurance expiry<input type="date" value={vehicleDraft.insuranceExpiresOn} onChange={(event) => setVehicleDraft({ ...vehicleDraft, insuranceExpiresOn: event.target.value })} /></label>
+                </div>
+                <button disabled={saving}>{saving ? "Saving…" : "Add vehicle"}</button>
+              </form>
+              <form className="panel fleet-form" onSubmit={assignDelivery}>
+                <div className="panel-head"><div><p className="eyebrow">DISPATCH</p><h2>Assign delivery</h2></div></div>
+                <label>Ready business delivery<select value={assignmentDraft.orderId} onChange={(event) => setAssignmentDraft({ orderId: event.target.value, driverUserId: "", vehicleId: "" })} required><option value="">Select eligible delivery</option>{fleet.eligibleOrders.map((order) => <option value={order.id} key={order.id}>{order.orderNumber} · {order.merchantName}</option>)}</select></label>
+                <label>Available driver<select value={assignmentDraft.driverUserId} onChange={(event) => setAssignmentDraft({ ...assignmentDraft, driverUserId: event.target.value, vehicleId: "" })} required><option value="">Select driver</option>{fleet.drivers.filter((driver) => driver.available).map((driver) => <option value={driver.userId} key={driver.userId}>{driver.name ?? driver.phoneE164} · {driver.vehicleType}</option>)}</select></label>
+                <label>Eligible vehicle<select value={assignmentDraft.vehicleId} onChange={(event) => setAssignmentDraft({ ...assignmentDraft, vehicleId: event.target.value })} required><option value="">Select vehicle</option>{assignableVehicles.map((vehicle) => <option value={vehicle.id} key={vehicle.id}>{vehicle.label} · {vehicle.plateNumber}</option>)}</select></label>
+                <button disabled={saving || !fleet.eligibleOrders.length || !fleet.drivers.some((driver) => driver.available) || !assignableVehicles.length}>{saving ? "Assigning…" : "Assign driver and vehicle"}</button>
+              </form>
+            </>}
+            <div className="panel table-wrap">
+              <div className="panel-head"><div><p className="eyebrow">DELIVERY RECORD</p><h2>Recent fleet work</h2></div><span className="fine-print">Last 100 assigned deliveries</span></div>
+              <table><thead><tr><th>Delivery</th><th>Driver / vehicle</th><th>Status</th><th>Assigned</th></tr></thead><tbody>
+                {fleet.deliveries.map((delivery) => <tr key={delivery.assignmentId}>
+                  <td><strong>{delivery.orderNumber}</strong><small className="block">{delivery.merchantName}</small></td>
+                  <td>{delivery.driverName ?? "Driver"}<small className="block">{delivery.vehicleLabel} · {delivery.plateNumber}</small></td>
+                  <td><span className={`status-pill ${delivery.status === "DELIVERED" ? "active" : ["FAILED", "CANCELLED"].includes(delivery.status) ? "failed" : "pending"}`}>{delivery.status.replaceAll("_", " ")}</span></td>
+                  <td>{shortDate(delivery.createdAt)}</td>
+                </tr>)}
+              </tbody></table>
+              {!fleet.deliveries.length && <p className="empty">No fleet deliveries yet.</p>}
+            </div>
+          </div>
+        </section>
+      </> : null}
+    </main>
+    {toast && <div className="toast" role="status">{toast}</div>}
+  </div>;
 }
 
 function Console({ session, onSignedOut }: { session: Session; onSignedOut: () => void }) {

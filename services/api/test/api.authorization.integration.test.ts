@@ -124,6 +124,23 @@ test("authorization isolation: business accounts are tenant-scoped", { skip: !da
   assert.equal(ownerDetail.statusCode, 200, ownerDetail.body);
   assert.equal(ownerDetail.json().id, firstAccountId);
 
+  const ownerFleet = await api(app, "GET", `/api/v1/business/accounts/${firstAccountId}/fleet`, {
+    token: firstOwner.accessToken
+  });
+  assert.equal(ownerFleet.statusCode, 200, ownerFleet.body);
+  assert.equal(ownerFleet.json().account.id, firstAccountId);
+
+  const intruderFleet = await api(app, "GET", `/api/v1/business/accounts/${firstAccountId}/fleet`, {
+    token: secondOwner.accessToken
+  });
+  assert.equal(intruderFleet.statusCode, 403, intruderFleet.body);
+
+  const intruderFleetVehicle = await api(app, "POST", `/api/v1/business/accounts/${firstAccountId}/fleet/vehicles`, {
+    token: secondOwner.accessToken,
+    payload: { label: "Unauthorized van", vehicleType: "van", plateNumber: "FLEET-403" }
+  });
+  assert.equal(intruderFleetVehicle.statusCode, 403, intruderFleetVehicle.body);
+
   const intruderDetail = await api(app, "GET", `/api/v1/business/accounts/${firstAccountId}`, {
     token: secondOwner.accessToken
   });

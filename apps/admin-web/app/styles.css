@@ -272,3 +272,44 @@ tr:last-child td { border-bottom: 0; }
   .context-strip { top: .35rem; margin-bottom: .9rem; }
   .workspace-topbar { margin-bottom: 1rem; }
 }
+
+/* Business fleet workspace */
+.fleet-shell .workspace { max-width: 1480px; padding-bottom: 3rem; }
+.fleet-denied { min-height: 100vh; display: grid; align-content: center; gap: 1.5rem; width: min(100% - 2rem, 640px); margin: 0 auto; }
+.fleet-denied .brand { padding: 0; }
+.fleet-denied .panel { padding: clamp(1.3rem, 4vw, 2.2rem); }
+.fleet-denied h1 { margin-bottom: .6rem; font-size: 2rem; }
+.fleet-heading { align-items: end; }
+.fleet-account-select { min-width: 260px; }
+.fleet-columns { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(340px, .85fr); gap: .9rem; align-items: start; }
+.fleet-form { display: grid; gap: .85rem; }
+.fleet-form .panel-head { margin-bottom: 0; }
+.fleet-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .7rem; }
+.fleet-form-grid label { min-width: 0; }
+.fleet-inline-form { display: flex; align-items: end; gap: .65rem; padding: 0 0 .9rem; border-bottom: 1px solid var(--line); }
+.fleet-inline-form label { flex: 1; min-width: 180px; }
+.fleet-vehicle-edit { display: grid; gap: .75rem; margin-bottom: .9rem; padding: .9rem; border: 1px solid var(--line); border-radius: 10px; background: #faf8f0; }
+.fleet-vehicle-edit > strong { font-size: .88rem; }
+.fleet-notice { display: flex; flex-wrap: wrap; gap: .35rem .7rem; align-items: baseline; margin-bottom: .85rem; padding: .8rem 1rem; border: 1px solid #e8d5a5; border-radius: 10px; background: #f7f0dc; color: #604b22; font-size: .82rem; }
+.fleet-notice span { color: #78653b; }
+.fleet-empty { margin-top: 1rem; padding: 2rem; text-align: center; }
+.fleet-empty h2 { margin-bottom: .4rem; }
+.fleet-metrics { margin-bottom: .9rem; }
+.fleet-metrics .metric { min-width: 0; }
+.fleet-shell table { min-width: 540px; }
+.fleet-shell .status-pill { white-space: nowrap; }
+.fleet-shell .fine-print { margin: 0; }
+
+@media (max-width: 1080px) {
+  .fleet-columns { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .fleet-shell .workspace { padding: .8rem; padding-bottom: 2rem; }
+  .fleet-heading { align-items: stretch; flex-direction: column; }
+  .fleet-account-select { min-width: 0; width: 100%; }
+  .fleet-form-grid { grid-template-columns: 1fr; }
+  .fleet-inline-form { align-items: stretch; flex-direction: column; }
+  .fleet-inline-form label { min-width: 0; }
+  .fleet-metrics { grid-template-columns: 1fr 1fr; }
+  .fleet-notice { align-items: flex-start; flex-direction: column; }
+}
