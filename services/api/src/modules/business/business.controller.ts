@@ -153,6 +153,22 @@ export class BusinessController {
   schedules(@Req() request: AuthenticatedRequest, @Param("accountId", ParseUUIDPipe) accountId: string) {
     return this.service.schedules(requireUser(request).id, accountId);
   }
+  @Post("business/accounts/:accountId/invoices/:orderId")
+  createInvoice(@Req() request: AuthenticatedRequest, @Param("accountId", ParseUUIDPipe) accountId: string, @Param("orderId", ParseUUIDPipe) orderId: string) {
+    return this.service.createInvoice(requireUser(request).id, accountId, orderId);
+  }
+
+  @Get("business/accounts/:accountId/invoices")
+  invoices(@Req() request: AuthenticatedRequest, @Param("accountId", ParseUUIDPipe) accountId: string, @Query() query: PageQuery) {
+    return this.service.invoices(requireUser(request).id, accountId, query.limit ?? 50, query.offset ?? 0);
+  }
+
+  @Get("business/accounts/:accountId/reports/summary")
+  report(@Req() request: AuthenticatedRequest, @Param("accountId", ParseUUIDPipe) accountId: string, @Query("days") days?: string) {
+    return this.service.report(requireUser(request).id, accountId, Number(days ?? 30));
+  }
+
+  @Get("admin/business-accounts")
   @Roles("admin", "operations", "finance")
   adminList(@Query() query: PageQuery) {
     return this.service.adminList(query.status, query.limit ?? 50, query.offset ?? 0);

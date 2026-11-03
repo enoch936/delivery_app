@@ -667,6 +667,58 @@ export class BusinessService {
     });
     return { orderId, stopCount: stops.length };
   }
+  async createInvoice(userId: string, accountId: string, orderId: string) {
+    await this.requireMember(userId, accountId);
+    const order = await this.database.query<{ total_minor: string; currency: string }>(
+      "SELECT o.total_minor, o.currency FROM business_orders bo JOIN orders o ON o.id = bo.order_id WHERE bo.business_account_id = $1 AND bo.order_id = $2",
+      [accountId, orderId]
+    );
+    const row = order.rows[0];
+    if (!row) throw new NotFoundException("Business order not found.");
+    const invoiceNumber = `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const result = await this.database.query<{ id: string }>(
+      `INSERT INTO business_invoices (business_account_id, order_id, invoice_number, amount_minor, currency)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (business_account_id, order_id) DO UPDATE SET amount_minor = EXCLUDED.amount_minor
+       RETURNING id`,
+      [accountId, orderId, invoiceNumber, row.total_minor, row.currency]
+    );
+    return { id: result.rows[0]?.id, invoiceNumber, orderId, amountMinor: Number(row.total_minor), currency: row.currency };
+  }
+
+  async invoices(userId: string, accountId: string, limit: number, offset: number) {
+    await this.requireMember(userId, accountId);
+    const result = await this.database.query(
+      `SELECT id, order_id, invoice_number, amount_minor, currency, status, issued_at FROM business_invoices
+       WHERE business_account_id = $1 ORDER BY issued_at DESC LIMIT $2 OFFSET $3`,
+      [accountId, limit, offset]
+    );
+    return {
+      items: result.rows.map((row) => ({
+        id: row.id as string, orderId: row.order_id as string, invoiceNumber: row.invoice_number as string,
+        amountMinor: Number(row.amount_minor), currency: row.currency as string, status: row.status as string,
+        issuedAt: (row.issued_at as Date).toISOString()
+      }))
+    };
+  }
+
+  async report(userId: string, accountId: string, days: number) {
+    await this.requireMember(userId, accountId);
+    const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const result = await this.database.query<{ orders: number; total_minor: string; delivered: number }>(
+      `SELECT count(*)::int AS orders, COALESCE(sum(o.total_minor),0)::text AS total_minor,
+              count(*) FILTER (WHERE o.status = 'DELIVERED')::int AS delivered
+       FROM business_orders bo JOIN orders o ON o.id = bo.order_id
+       WHERE bo.business_account_id = $1 AND o.created_at >= $2`,
+      [accountId, from]
+    );
+    const row = result.rows[0];
+    return {
+      days, from: from.toISOString(), to: new Date().toISOString(),
+      orders: row?.orders ?? 0, delivered: row?.delivered ?? 0,
+      totalMinor: Number(row?.total_minor ?? 0)
+    };
+  }
   private async requireMember(userId: string, accountId: string): Promise<{ role: string }> {
     const result = await this.database.query<{ member_role: string }>("SELECT member_role FROM business_members WHERE business_account_id = $1 AND user_id = $2", [accountId, userId]);
     const row = result.rows[0];
