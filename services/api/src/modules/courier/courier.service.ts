@@ -115,8 +115,8 @@ export class CourierService {
       await client.query("INSERT INTO courier_availability (courier_user_id) VALUES ($1) ON CONFLICT DO NOTHING", [userId]);
       await client.query("INSERT INTO user_role_assignments (user_id, role) VALUES ($1,'courier') ON CONFLICT DO NOTHING", [userId]);
       await client.query("INSERT INTO courier_verification_events (courier_user_id, actor_user_id, to_status, reason) VALUES ($1,$1,'pending','Courier registration created')", [userId]);
-      return this.profile(userId);
     });
+    return this.profile(userId);
   }
 
   async updateProfile(userId: string, input: Readonly<{ fullName?: string | undefined; email?: string | undefined; cityId?: string | undefined; serviceCategorySlug?: string | undefined; vehicleType?: string | undefined; vehicleModel?: string | undefined; vehiclePlate?: string | undefined; licenseNumber?: string | undefined; serviceZoneId?: string | undefined; capacityUnits?: number | undefined; availabilityPreferences?: Record<string, unknown> | undefined }>) {
