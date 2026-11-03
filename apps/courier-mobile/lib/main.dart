@@ -1380,7 +1380,12 @@ class _CourierHomeState extends State<CourierHome> with WidgetsBindingObserver {
     }
     final availability = asMap(profile?['availability']);
     final online = availability['isOnline'] == true;
-    final roles = (widget.client.session?.user['roles'] as List? ?? const [])
+    final rawRoles = widget.client.session?.user['roles'];
+    final roles = (rawRoles is List
+            ? rawRoles
+            : rawRoles is String
+                ? rawRoles.split(',')
+                : const <dynamic>[])
         .map((role) => label(role.toString()))
         .join(', ');
     return Scaffold(
@@ -2315,10 +2320,7 @@ class _CourierHomeState extends State<CourierHome> with WidgetsBindingObserver {
                             Expanded(
                               child: _darkStat(
                                 'Gross earnings',
-                                money(
-                                  (data['lifetimeEarningsMinor'] as num? ?? 0) -
-                                      (data['tipsMinor'] as num? ?? 0),
-                                ),
+                                money(_grossEarnings(data)),
                               ),
                             ),
                             const SizedBox(width: 10),
@@ -2336,7 +2338,7 @@ class _CourierHomeState extends State<CourierHome> with WidgetsBindingObserver {
                             Expanded(
                               child: _darkStat(
                                 'Deductions',
-                                money(_lifetimeDeductions(payouts)),
+                                money(_deductions(data, payouts)),
                               ),
                             ),
                             const SizedBox(width: 10),
@@ -2354,7 +2356,7 @@ class _CourierHomeState extends State<CourierHome> with WidgetsBindingObserver {
                             Expanded(
                               child: _darkStat(
                                 'Settled earnings',
-                                money(_settledEarnings(payouts)),
+                                money(_settled(data, payouts)),
                               ),
                             ),
                             const SizedBox(width: 10),
@@ -2382,12 +2384,86 @@ class _CourierHomeState extends State<CourierHome> with WidgetsBindingObserver {
                       const SizedBox(width: 10),
                       Expanded(
                         child: _statCard(
+                          'Acceptance',
+                          '${(((data['acceptanceRate'] as num?) ?? 0.75) * 100).toStringAsFixed(0)}%',
+                          Icons.percent,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: _statCard(
                           'Payouts',
                           '${payouts.length}',
                           Icons.account_balance_wallet_outlined,
                         ),
                       ),
                     ],
+                  ),
+                  const SizedBox(height: 14),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(18),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.support_agent_outlined, color: Color(0xFF2F6B4F)),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  'Earnings support',
+                                  style: theme.textTheme.titleMedium?.copyWith(
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                              OutlinedButton.icon(
+                                onPressed: busy ? null : _earningsDisputeModal,
+                                icon: const Icon(Icons.report_problem_outlined, size: 16),
+                                label: const Text('Report issue', style: TextStyle(fontSize: 12)),
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                  minimumSize: const Size(0, 32),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          const Text(
+                            'Flag missing earnings, incorrect deductions or payout problems. Operations review these against financial records.',
+                            style: TextStyle(color: Color(0xFF6B7468), fontSize: 13),
+                          ),
+                          if (disputes.isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            ...disputes.map(
+                              (dispute) => Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            dispute['subject']?.toString() ?? 'Dispute',
+                                            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+                                          ),
+                                          Text(
+                                            '${label(dispute['status']?.toString())} · ${shortDate(dispute['updatedAt']?.toString())} · ${dispute['messageCount'] ?? 0} messages',
+                                            style: const TextStyle(color: Color(0xFF6B7468), fontSize: 12),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
                   ),
                   const SizedBox(height: 22),
                 ],
@@ -2484,6 +2560,16 @@ class _CourierHomeState extends State<CourierHome> with WidgetsBindingObserver {
     }
     return total;
   }
+
+  num _grossEarnings(Map<String, dynamic> data) =>
+      (data['grossEarningsMinor'] as num?) ??
+      ((data['lifetimeEarningsMinor'] as num? ?? 0) - (data['tipsMinor'] as num? ?? 0));
+
+  num _deductions(Map<String, dynamic> data, List<Map<String, dynamic>> payouts) =>
+      (data['deductionsMinor'] as num?) ?? _lifetimeDeductions(payouts);
+
+  num _settled(Map<String, dynamic> data, List<Map<String, dynamic>> payouts) =>
+      (data['settledEarningsMinor'] as num?) ?? _settledEarnings(payouts);
 
   Widget _darkStat(String title, String value) {
     return Column(
@@ -2604,6 +2690,126 @@ class _CourierHomeState extends State<CourierHome> with WidgetsBindingObserver {
         const SnackBar(content: Text('Document submitted successfully for Operations review.')),
       );
       _load();
+    } catch (cause) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(cause.toString())),
+      );
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> _earningsDisputeModal() async {
+    String issue = 'Missing or incorrect earning';
+    String? selectedPayoutId;
+    final messageController = TextEditingController();
+    final payoutOptions = asList((earnings ?? <String, dynamic>{})['payouts']);
+    const issueOptions = [
+      'Missing or incorrect earning',
+      'Payout not received',
+      'Incorrect deduction',
+      'Incorrect tip amount',
+      'Other',
+    ];
+
+    final submitted = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) => Padding(
+          padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + MediaQuery.of(sheetContext).viewInsets.bottom),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.report_problem_outlined, color: Color(0xFF2F6B4F)),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Report an earnings issue',
+                    style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: issue,
+                decoration: const InputDecoration(labelText: 'Issue type'),
+                items: issueOptions
+                    .map((item) => DropdownMenuItem(value: item, child: Text(item)))
+                    .toList(),
+                onChanged: (value) {
+                  if (value != null) setSheetState(() => issue = value);
+                },
+              ),
+              if (payoutOptions.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String?>(
+                  initialValue: selectedPayoutId,
+                  decoration: const InputDecoration(labelText: 'Related payout (optional)'),
+                  items: [
+                    const DropdownMenuItem<String?>(value: null, child: Text('Not linked to a payout')),
+                    ...payoutOptions.map(
+                      (payout) => DropdownMenuItem<String?>(
+                        value: payout['id']?.toString(),
+                        child: Text(
+                          '${shortDate(payout['periodStart']?.toString())} – ${shortDate(payout['periodEnd']?.toString())}',
+                        ),
+                      ),
+                    ),
+                  ],
+                  onChanged: (value) => setSheetState(() => selectedPayoutId = value),
+                ),
+              ],
+              const SizedBox(height: 12),
+              TextField(
+                controller: messageController,
+                maxLines: 3,
+                decoration: const InputDecoration(labelText: 'Describe the issue'),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: () => Navigator.pop(sheetContext, true),
+                  icon: const Icon(Icons.send_outlined),
+                  label: const Text('Submit dispute'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    final message = messageController.text.trim();
+    messageController.dispose();
+    if (submitted != true || !mounted) return;
+    if (message.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please describe the issue.')),
+      );
+      return;
+    }
+    setState(() => busy = true);
+    try {
+      await widget.client.post('/v1/courier/earnings/disputes', {
+        'subject': issue,
+        'message': message,
+        'payoutId': ?selectedPayoutId,
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Earnings dispute submitted. Operations will reconcile it against financial records.'),
+        ),
+      );
+      await _refreshData();
     } catch (cause) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

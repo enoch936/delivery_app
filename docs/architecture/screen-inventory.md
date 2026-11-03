@@ -29,7 +29,7 @@ Session, locale and accessibility settings persist locally (`AppStorage`); acces
 
 Availability and delivery offers coverage in the courier mobile experience: online/offline switch with offer intake pause, eligibility-gated offer acceptance (approved account, online, accepting offers, no active delivery), offer acceptance countdown with expiry handling, pickup and delivery location details, pickup/delivery distance and estimated travel information, compensation with tips and applicable deductions, accept/reject/expire offer actions, workload and capacity display, vehicle/service-category eligibility context and assignment cancellation/reassignment handling via refresh. Shifts and breaks are not yet modeled by the platform backend.
 
-Earnings and payouts coverage on the courier side adds completed delivery counts, gross earnings, tips, applicable deductions, settled and pending earnings, payout history/status, delivery history, ratings and performance metrics plus backend financial reconciliation views.
+Earnings and payouts coverage on the courier side adds completed delivery counts, gross earnings, tips, applicable deductions, settled and pending earnings, payout history/status, delivery history, ratings and performance metrics plus backend financial reconciliation views (`GET /v1/courier/earnings`), and an earnings dispute workflow (`POST|GET /v1/courier/earnings/disputes`) that lets couriers report missing earnings or payout problems for operator reconciliation against financial records; disputes are recorded as `earnings` category support tickets with status tracking visible in the app.
 
 Location heartbeats currently send a demo coordinate; device GPS and background tracking are not integrated.
 
