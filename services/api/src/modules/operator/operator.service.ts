@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import { DatabaseService } from "../../database/database.service.js";
 import { AuditService } from "../../common/audit.service.js";
 
@@ -103,39 +103,92 @@ export class OperatorService {
   }
 
   /** Manual courier assignment — audit logged, requires operations/admin */
-  async manualAssign(actorUserId: string, orderId: string, courierUserId: string, reqId: string | null) {
-    const order = await this.database.query<{ id: string; status: string }>(
-      "SELECT id, status FROM orders WHERE id = $1", [orderId]
-    );
-    if (!order.rows[0]) throw new NotFoundException("Order not found.");
-    const { status } = order.rows[0];
-    if (!["CONFIRMED", "READY_FOR_PICKUP", "PENDING_CONFIRMATION", "PREPARING"].includes(status)) {
-      throw new ForbiddenException(`Order in status '${status}' cannot be manually assigned.`);
-    }
-    const courier = await this.database.query<{ user_id: string; status: string }>(
-      `SELECT cp.user_id, cp.status FROM courier_profiles cp WHERE cp.user_id = $1`, [courierUserId]
-    );
-    if (!courier.rows[0]) throw new NotFoundException("Courier not found.");
-    if (courier.rows[0].status !== "approved") throw new ForbiddenException("Courier is not approved.");
+  async manualAssign(actorUserId: string, orderId: string, courierUserId: string, reqId: string | null, allowReassign = false) {
+    return this.database.withTransaction(async (client) => {
+      const orderResult = await client.query<{ id: string; status: string; user_id: string }>(
+        "SELECT id, status, user_id FROM orders WHERE id = $1 FOR UPDATE",
+        [orderId]
+      );
+      const order = orderResult.rows[0];
+      if (!order) throw new NotFoundException("Order not found.");
+      const assignableStatuses = ["CONFIRMED", "READY_FOR_PICKUP", "PENDING_CONFIRMATION", "PREPARING"];
+      if (!assignableStatuses.includes(order.status) && !(allowReassign && order.status === "COURIER_ASSIGNED")) {
+        throw new ForbiddenException(`Order in status '${order.status}' cannot be manually assigned.`);
+      }
 
-    await this.database.query(
-      "UPDATE dispatch_offers SET status = 'cancelled' WHERE order_id = $1 AND status = 'pending'", [orderId]
-    );
-    await this.database.query(
-      "UPDATE delivery_assignments SET status = 'cancelled' WHERE order_id = $1 AND status NOT IN ('delivered','cancelled','failed')", [orderId]
-    );
-    await this.database.query(
-      `INSERT INTO delivery_assignments (order_id, courier_user_id, status, assigned_at, assigned_by)
-       VALUES ($1, $2, 'accepted', now(), $3)
-       ON CONFLICT (order_id, courier_user_id) DO UPDATE SET status = 'accepted', assigned_at = now(), assigned_by = $3`,
-      [orderId, courierUserId, actorUserId]
-    );
-    await this.database.query(
-      "UPDATE courier_availability SET active_order_id = $1, accepting_offers = false WHERE courier_user_id = $2",
-      [orderId, courierUserId]
-    );
-    await this.audit.record({ actorUserId, action: "operator.manual_assign", entityType: "order", entityId: orderId, requestId: reqId, metadata: { courierUserId } });
-    return { orderId, courierUserId, assigned: true };
+      const courierResult = await client.query<{
+        user_id: string; status: string; active_order_id: string | null;
+      }>(
+        `SELECT cp.user_id, cp.status, ca.active_order_id
+         FROM courier_profiles cp JOIN courier_availability ca ON ca.courier_user_id = cp.user_id
+         WHERE cp.user_id = $1 FOR UPDATE OF cp, ca`,
+        [courierUserId]
+      );
+      const courier = courierResult.rows[0];
+      if (!courier) throw new NotFoundException("Courier or courier availability not found.");
+      if (courier.status !== "approved") throw new ForbiddenException("Courier is not approved.");
+      if (courier.active_order_id && courier.active_order_id !== orderId) {
+        throw new ConflictException("Courier already has an active delivery.");
+      }
+      const otherAssignment = await client.query(
+        `SELECT 1 FROM delivery_assignments
+         WHERE courier_user_id = $1 AND order_id <> $2
+           AND status IN ('offered','accepted','arrived_pickup','picked_up')
+         LIMIT 1 FOR UPDATE`,
+        [courierUserId, orderId]
+      );
+      if ((otherAssignment.rowCount ?? 0) > 0) {
+        throw new ConflictException("Courier already has an active delivery assignment.");
+      }
+
+      const previousAssignments = await client.query<{ courier_user_id: string }>(
+        `SELECT courier_user_id FROM delivery_assignments
+         WHERE order_id = $1 AND status IN ('offered','accepted','arrived_pickup','picked_up') FOR UPDATE`,
+        [orderId]
+      );
+      await client.query(
+        "UPDATE dispatch_offers SET status = 'cancelled', responded_at = now() WHERE order_id = $1 AND status = 'pending'",
+        [orderId]
+      );
+      await client.query(
+        `UPDATE delivery_assignments SET status = 'cancelled', cancelled_at = now(),
+           cancellation_reason = 'Operator assigned a courier'
+         WHERE order_id = $1 AND status IN ('offered','accepted','arrived_pickup','picked_up')`,
+        [orderId]
+      );
+      for (const previous of previousAssignments.rows) {
+        await client.query(
+          `UPDATE courier_availability SET active_order_id = NULL, accepting_offers = true, updated_at = now()
+           WHERE courier_user_id = $1 AND active_order_id = $2 AND courier_user_id <> $3`,
+          [previous.courier_user_id, orderId, courierUserId]
+        );
+      }
+      const assignment = await client.query<{ id: string }>(
+        `INSERT INTO delivery_assignments (order_id, courier_user_id, status, assigned_at, accepted_at)
+         VALUES ($1,$2,'accepted',now(),now()) RETURNING id`,
+        [orderId, courierUserId]
+      );
+      await client.query(
+        `UPDATE orders SET status = 'COURIER_ASSIGNED', courier_user_id = $2, version = version + 1
+         WHERE id = $1`,
+        [orderId, courierUserId]
+      );
+      await client.query(
+        `UPDATE courier_availability SET active_order_id = $1, accepting_offers = false, updated_at = now()
+         WHERE courier_user_id = $2`,
+        [orderId, courierUserId]
+      );
+      await client.query(
+        `INSERT INTO order_status_events (order_id, from_status, to_status, actor_user_id, metadata)
+         VALUES ($1,$2,'COURIER_ASSIGNED',$3,$4)`,
+        [orderId, order.status, actorUserId, JSON.stringify({ note: "Courier assigned by operations", courierUserId, assignmentId: assignment.rows[0]?.id })]
+      );
+      await this.audit.record({
+        actorUserId, action: "operator.manual_assign", entityType: "order", entityId: orderId,
+        requestId: reqId, metadata: { courierUserId, assignmentId: assignment.rows[0]?.id, previousStatus: order.status }
+      }, client);
+      return { orderId, courierUserId, assignmentId: assignment.rows[0]?.id, assigned: true };
+    });
   }
 
   /** Reassign order to a different courier, freeing the previous one */
@@ -146,7 +199,7 @@ export class OperatorService {
     );
     const oldCourierUserId = prev.rows[0]?.courier_user_id ?? null;
 
-    const result = await this.manualAssign(actorUserId, orderId, newCourierUserId, reqId);
+    const result = await this.manualAssign(actorUserId, orderId, newCourierUserId, reqId, true);
 
     if (oldCourierUserId) {
       await this.database.query(

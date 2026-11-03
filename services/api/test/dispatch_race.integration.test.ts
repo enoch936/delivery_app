@@ -47,3 +47,61 @@ test("dispatch race: concurrent offers cannot create conflicting active assignme
   );
   assert.equal(assignments.rows[0]?.count, "1", "Only one active assignment should exist for the order");
 });
+
+test("operator manual assignment updates the delivery using the current schema", { skip: !databaseUrl }, async (t) => {
+  const { app } = await createTestApp();
+  t.after(async () => { await app.close(); });
+  const db = app.get(DatabaseService);
+
+  const adminUser = await createSession(app, randomPhone());
+  await db.query("INSERT INTO user_role_assignments (user_id, role) VALUES ($1, 'admin') ON CONFLICT DO NOTHING", [adminUser.user.id]);
+  const admin = await createSession(app, adminUser.user.phoneE164);
+
+  const courier = await createSession(app, randomPhone());
+  await db.query("INSERT INTO user_role_assignments (user_id, role) VALUES ($1, 'courier') ON CONFLICT DO NOTHING", [courier.user.id]);
+  await db.query(
+    `INSERT INTO courier_profiles (user_id, status, full_name, vehicle_type)
+     VALUES ($1, 'approved', 'Manual Assignment Courier', 'motorcycle')
+     ON CONFLICT (user_id) DO UPDATE SET status = 'approved'`,
+    [courier.user.id]
+  );
+  await db.query(
+    `INSERT INTO courier_availability (courier_user_id, is_online, accepting_offers)
+     VALUES ($1, true, true)
+     ON CONFLICT (courier_user_id) DO UPDATE
+     SET is_online = true, accepting_offers = true, active_order_id = NULL`,
+    [courier.user.id]
+  );
+
+  const customer = await createSession(app, randomPhone());
+  const placed = await placeOrder(app, customer, customer.user.phoneE164);
+  await db.query("UPDATE orders SET status = 'READY_FOR_PICKUP' WHERE id = $1", [placed.orderId]);
+
+  const response = await api(app, "POST", `/api/v1/operator/orders/${placed.orderId}/assign`, {
+    token: admin.accessToken,
+    payload: { courierUserId: courier.user.id }
+  });
+  assert.equal(response.statusCode, 201, response.body);
+  assert.equal(response.json().assigned, true);
+
+  const order = await db.query<{ status: string; courier_user_id: string }>(
+    "SELECT status, courier_user_id FROM orders WHERE id = $1",
+    [placed.orderId]
+  );
+  assert.equal(order.rows[0]?.status, "COURIER_ASSIGNED");
+  assert.equal(order.rows[0]?.courier_user_id, courier.user.id);
+
+  const assignment = await db.query<{ status: string; accepted_at: Date | null }>(
+    "SELECT status, accepted_at FROM delivery_assignments WHERE order_id = $1 AND courier_user_id = $2",
+    [placed.orderId, courier.user.id]
+  );
+  assert.equal(assignment.rows[0]?.status, "accepted");
+  assert.ok(assignment.rows[0]?.accepted_at);
+
+  const availability = await db.query<{ active_order_id: string; accepting_offers: boolean }>(
+    "SELECT active_order_id, accepting_offers FROM courier_availability WHERE courier_user_id = $1",
+    [courier.user.id]
+  );
+  assert.equal(availability.rows[0]?.active_order_id, placed.orderId);
+  assert.equal(availability.rows[0]?.accepting_offers, false);
+});
