@@ -104,4 +104,10 @@ test("operator manual assignment updates the delivery using the current schema",
   );
   assert.equal(availability.rows[0]?.active_order_id, placed.orderId);
   assert.equal(availability.rows[0]?.accepting_offers, false);
+
+  const timeline = await api(app, "GET", `/api/v1/operator/orders/${placed.orderId}/timeline`, {
+    token: admin.accessToken
+  });
+  assert.equal(timeline.statusCode, 200, timeline.body);
+  assert.equal(timeline.json().assignments[0]?.arrivedPickupAt, null);
 });

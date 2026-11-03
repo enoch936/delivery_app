@@ -254,7 +254,7 @@ export class OperatorService {
       ),
       this.database.query(
         `SELECT da.courier_user_id, cp.full_name AS courier_name, da.status, da.assigned_at,
-                da.arrived_pickup_at, da.picked_up_at, da.delivered_at
+                da.arrived_at, da.picked_up_at, da.delivered_at
          FROM delivery_assignments da LEFT JOIN courier_profiles cp ON cp.user_id = da.courier_user_id
          WHERE da.order_id = $1 ORDER BY da.assigned_at ASC`,
         [orderId]
@@ -276,7 +276,7 @@ export class OperatorService {
         courierUserId: r.courier_user_id as string, courierName: r.courier_name as string | null,
         status: r.status as string,
         assignedAt: (r.assigned_at as Date | null)?.toISOString() ?? null,
-        arrivedPickupAt: (r.arrived_pickup_at as Date | null)?.toISOString() ?? null,
+        arrivedPickupAt: (r.arrived_at as Date | null)?.toISOString() ?? null,
         pickedUpAt: (r.picked_up_at as Date | null)?.toISOString() ?? null,
         deliveredAt: (r.delivered_at as Date | null)?.toISOString() ?? null
       })),
