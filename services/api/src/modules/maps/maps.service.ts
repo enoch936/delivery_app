@@ -182,7 +182,8 @@ export class MapsService {
     kinds: readonly ("merchant" | "building" | "access_point")[];
   }>) {
     const kinds = new Set(input.kinds);
-    const point = `ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography`;
+    const pointGeom = `ST_SetSRID(ST_MakePoint($1, $2), 4326)`;
+    const point = `${pointGeom}::geography`;
     const queries: Promise<readonly Record<string, unknown>[]>[] = [];
     if (kinds.has("merchant")) {
       queries.push(
@@ -211,7 +212,8 @@ export class MapsService {
                     ST_X(ST_Centroid(b.geometry)::geometry) AS longitude,
                     ST_Distance(ST_Centroid(b.geometry)::geography, ${point}) AS distance_meters
              FROM building_footprints b
-             WHERE ST_DWithin(b.geometry::geography, ${point}, $3)
+             WHERE b.geometry && ST_Expand(${pointGeom}, $3 / 111320.0)
+               AND ST_DWithin(b.geometry::geography, ${point}, $3)
              ORDER BY distance_meters ASC
              LIMIT $4`,
             [input.longitude, input.latitude, input.radiusMeters, input.limit]
