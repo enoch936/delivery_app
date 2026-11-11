@@ -4,11 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/main.ts",
+    "dev": "node scripts/dev.mjs",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
     "test": "npm run test:unit && npm run test:integration",
-    "test:unit": "tsx --test test/auth.service.test.ts test/discovery.service.test.ts test/loyalty.service.test.ts test/runtime-config.test.ts test/payments.telebirr.test.ts test/roles.guard.test.ts",
+    "test:unit": "tsx --test test/auth.service.test.ts test/discovery.service.test.ts test/loyalty.service.test.ts test/runtime-config.test.ts test/payments.telebirr.test.ts test/roles.guard.test.ts test/maps.test.ts",
     "test:integration": "tsc -p tsconfig.test.json && node --test --test-concurrency=1 \"dist-test/test/*.integration.test.js\"",
     "typecheck": "tsc --noEmit"
   },
@@ -25,6 +25,7 @@
     "fastify": "5.12.7",
     "firebase-admin": "14.5.0",
     "pg": "8.23.1",
+    "redis": "6.3.1",
     "reflect-metadata": "0.2.2",
     "rxjs": "7.8.2",
     "stripe": "23.0.1",

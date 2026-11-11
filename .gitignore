@@ -15,6 +15,19 @@ coverage/
 postgres-data/
 redis-data/
 .local/
+infrastructure/geo/osm/*.pbf
+infrastructure/geo/osm/*.tar
+infrastructure/geo/osm/*.sqlite
+infrastructure/geo/osm/valhalla_tiles/
+infrastructure/geo/osm/*.log
+infrastructure/geo/osm/*.err
+infrastructure/geo/data/*.mbtiles
+infrastructure/geo/data/*.tif
+infrastructure/geo/data/*.geojson
+infrastructure/geo/data/*.geojsonseq
+infrastructure/geo/data/sources/
+infrastructure/geo/data/downloads/
+infrastructure/geo/data/tile_weights.tsv.gz
 
 # Mobile tooling
 .dart_tool/

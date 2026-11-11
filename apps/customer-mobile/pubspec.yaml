@@ -43,8 +43,7 @@ dependencies:
   firebase_core: ^5.1.0
   firebase_messaging: ^17.0.1
   url_launcher: ^6.3.3
-  flutter_map: ^8.3.2
-  latlong2: ^0.10.1
+  maplibre_gl: ^0.28.0
 
 dev_dependencies:
   flutter_test:

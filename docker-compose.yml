@@ -21,7 +21,7 @@ services:
   redis:
     image: redis:7.4-alpine
     ports:
-      - "6379:6379"
+      - "6380:6379"
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis-data:/data
@@ -31,6 +31,96 @@ services:
       timeout: 5s
       retries: 10
 
+  # Self-hosted geospatial stack. Enable with: docker compose --profile geo up -d
+  martin:
+    image: ghcr.io/maplibre/martin:1.15.0
+    profiles: ["geo"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${GEO_DATABASE_URL:-postgresql://delivery_app:delivery_app@host.docker.internal:5432/delivery_app}
+      RUST_LOG: info
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["--config", "/config/config.yaml"]
+    volumes:
+      - ./infrastructure/geo/martin:/config:ro
+      - ./infrastructure/geo/data:/data:ro
+    ports:
+      - "8080:3000"
+    restart: unless-stopped
+
+  valhalla:
+    image: ghcr.io/valhalla/valhalla-scripted:latest
+    profiles: ["geo"]
+    environment:
+      build_admins: "True"
+      build_time_zones: "True"
+      build_elevation: "False"
+      build_tar: "True"
+      use_tiles_ignore_pbf: "True"
+      force_rebuild: "False"
+      server_threads: "2"
+    volumes:
+      - ./infrastructure/geo/osm:/custom_files
+    ports:
+      - "8002:8002"
+    restart: unless-stopped
+
+  nominatim:
+    image: mediagis/nominatim:5.3.3
+    profiles: ["geo"]
+    environment:
+      PBF_PATH: /data/osm/ethiopia-latest.osm.pbf
+      IMPORT_STYLE: extratags
+      IMPORT_WIKIPEDIA: "false"
+      NOMINATIM_PASSWORD: change-me-in-production
+      THREADS: 4
+    volumes:
+      - ./infrastructure/geo/osm:/data/osm:ro
+      - nominatim-data:/var/lib/postgresql
+    ports:
+      - "8081:8080"
+    shm_size: 1gb
+    restart: unless-stopped
+
+  titiler:
+    image: ghcr.io/developmentseed/titiler:2.4.0
+    profiles: ["geo-imagery"]
+    environment:
+      TITILER_API_CORS_ORIGINS: "*"
+      TITILER_API_ROOT_PATH: /imagery
+    command: ["uvicorn", "titiler.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  geo-gateway:
+    image: nginx:1.27-alpine
+    profiles: ["geo"]
+    depends_on:
+      - martin
+      - valhalla
+      - nominatim
+    volumes:
+      - ./infrastructure/geo/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8090:80"
+    restart: unless-stopped
+
+  # One-shot OSM extract -> MBTiles conversion. Place the Geofabrik extract at
+  # infrastructure/geo/osm/ethiopia-latest.osm.pbf, then run:
+  # docker compose --profile geo-build run --rm planetiler
+  planetiler:
+    image: ghcr.io/onthegomap/planetiler:0.10.2
+    profiles: ["geo-build"]
+    volumes:
+      - ./infrastructure/geo/osm:/osm:ro
+      - ./infrastructure/geo/data:/data
+    command: ["--osm-path=/osm/ethiopia-latest.osm.pbf", "--output=/data/ethiopia.mbtiles", "--download", "--force"]
+
 volumes:
   postgres-data:
   redis-data:
+  nominatim-data:

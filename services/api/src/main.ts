@@ -2,6 +2,7 @@ import "dotenv/config";
 import { Logger } from "@nestjs/common";
 import { createApp } from "./bootstrap.js";
 import { readRuntimeConfig } from "./config/runtime-config.js";
+import { startParticipantsGateway } from "./modules/tracking/participants.gateway.js";
 import { startTrackingGateway } from "./modules/tracking/tracking.gateway.js";
 
 async function bootstrap(): Promise<void> {
@@ -9,6 +10,7 @@ async function bootstrap(): Promise<void> {
   const app = await createApp(config);
   await app.listen({ port: config.port, host: "0.0.0.0" });
   startTrackingGateway(app);
+  startParticipantsGateway(app);
   new Logger("Bootstrap").log(`API listening on port ${config.port} in ${config.nodeEnv} mode.`);
 }
 

@@ -4,6 +4,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 
 export type FloatingIcon =
   | "overview"
+  | "live"
   | "orders"
   | "menu"
   | "sales"
@@ -118,6 +119,8 @@ function FloatingGlyph({ name }: { name: FloatingIcon }) {
   switch (name) {
     case "overview":
       return <svg {...common}><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg>;
+    case "live":
+      return <svg {...common}><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="2" /><path d="M12 4v2M20 12h-2M12 20v-2M4 12h2" /></svg>;
     case "orders":
       return <svg {...common}><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6M9 12h6M9 16h4" /></svg>;
     case "menu":

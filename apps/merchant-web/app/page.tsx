@@ -13,11 +13,13 @@ import {
   type Session
 } from "../lib/api";
 import { FloatingCategoryBar, FloatingDock, FloatingNav, type FloatingItem } from "./floating-bar";
+import { LiveMap } from "./live-map";
 
-type Tab = "overview" | "orders" | "menu" | "sales" | "settlements" | "finance" | "business" | "control";
+type Tab = "overview" | "live" | "orders" | "menu" | "sales" | "settlements" | "finance" | "business" | "control";
 
 const NAV_ITEMS: FloatingItem[] = [
   { value: "overview", label: "Overview", icon: "overview" },
+  { value: "live", label: "Live", icon: "live" },
   { value: "orders", label: "Orders", icon: "orders" },
   { value: "menu", label: "Menu", icon: "menu" },
   { value: "sales", label: "Sales", icon: "sales" },
@@ -294,6 +296,10 @@ function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => 
       </div> : null}
 
       {me && tab === "overview" ? <Overview me={me} reload={refresh} notify={setToast} /> : null}
+      {me && tab === "live" ? <section className="panel live-map">
+        <div className="panel-head"><div><p className="eyebrow">DELIVERY TRACKING</p><h2>Live map</h2></div><span className="fine-print">Your active deliveries</span></div>
+        <LiveMap session={session} />
+      </section> : null}
       {me && tab === "orders" ? <Orders notify={setToast} status={orderStatus} /> : null}
       {me && tab === "menu" ? <Menu me={me} reload={refresh} notify={setToast} /> : null}
       {me && tab === "sales" ? <Sales notify={setToast} /> : null}
@@ -320,6 +326,7 @@ function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => 
 function tabTitle(tab: Tab, name: string): string {
   switch (tab) {
     case "overview": return name;
+    case "live": return "Live delivery map";
     case "orders": return "Order queue";
     case "menu": return "Menu & stock";
     case "sales": return "Sales & analytics";

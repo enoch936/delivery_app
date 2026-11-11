@@ -1,5 +1,6 @@
 import { ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import { DatabaseService } from "../../database/database.service.js";
+import { LatestLocationService } from "../../redis/latest-location.service.js";
 
 const TERMINAL_STATUSES = ["DELIVERED", "CANCELLED", "FAILED", "REFUNDED"];
 const PICKED_UP_STATUSES = ["PICKED_UP", "IN_TRANSIT", "DELIVERED"];
@@ -10,6 +11,7 @@ type CourierLocation = {
   lastSeenAt: string | null;
   headingDegrees: number | null;
   speedMps: number | null;
+  accuracyMeters: number | null;
 };
 
 type RoutePoint = Readonly<{
@@ -36,7 +38,10 @@ type EtaEstimate = Readonly<{
 
 @Injectable()
 export class TrackingService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly latestLocation: LatestLocationService
+  ) {}
 
   async track(orderId: string, viewer: Readonly<{ userId: string; roles: readonly string[] }>) {
     const orderResult = await this.database.query<{
@@ -78,6 +83,10 @@ export class TrackingService {
     const order = orderResult.rows[0];
     if (!order) throw new NotFoundException("Order not found.");
     await this.authorize(order, viewer);
+    const latest = order.courier_user_id ? await this.latestLocation.get(order.courier_user_id) : null;
+    const latestRecordedAt = latest ? new Date(latest.recordedAt).getTime() : 0;
+    const databaseRecordedAt = order.last_seen_at?.getTime() ?? 0;
+    const live = latest && latestRecordedAt >= databaseRecordedAt ? latest : null;
 
     const [events, assignmentResult, routeResult] = await Promise.all([
       this.database.query<{ to_status: string; created_at: Date; metadata: { note?: string } | null }>(
@@ -113,15 +122,25 @@ export class TrackingService {
           longitude: Number(order.pickup_lng)
         }
       : null;
-    const courierLocation: CourierLocation | null = order.latitude !== null && order.longitude !== null
+    const courierLocation: CourierLocation | null = live
       ? {
-          latitude: Number(order.latitude),
-          longitude: Number(order.longitude),
-          lastSeenAt: order.last_seen_at?.toISOString() ?? null,
-          headingDegrees: order.heading_degrees === null ? null : Number(order.heading_degrees),
-          speedMps: order.recent_speed_mps === null ? null : Number(order.recent_speed_mps)
+          latitude: live.latitude,
+          longitude: live.longitude,
+          lastSeenAt: live.recordedAt,
+          headingDegrees: live.headingDegrees,
+          speedMps: live.speedMps,
+          accuracyMeters: live.accuracyMeters
         }
-      : null;
+      : order.latitude !== null && order.longitude !== null
+        ? {
+            latitude: Number(order.latitude),
+            longitude: Number(order.longitude),
+            lastSeenAt: order.last_seen_at?.toISOString() ?? null,
+            headingDegrees: order.heading_degrees === null ? null : Number(order.heading_degrees),
+            speedMps: order.recent_speed_mps === null ? null : Number(order.recent_speed_mps),
+            accuracyMeters: null
+          }
+        : null;
     const route: RoutePoint[] = routeResult.rows.map((point) => ({
       latitude: Number(point.latitude),
       longitude: Number(point.longitude),
@@ -201,6 +220,153 @@ export class TrackingService {
           }
         : null,
       liveTrackingEnabled
+    };
+  }
+
+  async participants(viewer: Readonly<{ userId: string; roles: readonly string[] }>) {
+    const roles = Array.isArray(viewer.roles) ? viewer.roles : [];
+    const operator = roles.some((role) => ["admin", "support", "operations"].includes(role));
+    const merchant = roles.some((role) => ["merchant_staff", "business_admin"].includes(role));
+    const result = await this.database.query<{
+      id: string;
+      order_number: string;
+      status: string;
+      user_id: string;
+      merchant_id: string;
+      courier_user_id: string | null;
+      courier_name: string | null;
+      customer_name: string | null;
+      courier_lat: number | null;
+      courier_lng: number | null;
+      last_seen_at: Date | null;
+      accuracy_meters: string | null;
+      heading_degrees: string | null;
+      speed_mps: string | null;
+      location_recorded_at: Date | null;
+      pickup_id: string | null;
+      pickup_name: string | null;
+      pickup_lat: number | null;
+      pickup_lng: number | null;
+      delivery_lat: number | null;
+      delivery_lng: number | null;
+    }>(
+      `SELECT o.id, o.order_number, o.status, o.user_id, o.merchant_id, o.courier_user_id,
+              u.display_name AS courier_name, cu.display_name AS customer_name,
+              ST_Y(ca.last_location::geometry) AS courier_lat, ST_X(ca.last_location::geometry) AS courier_lng,
+              ca.last_seen_at, ca.accuracy_meters::text, ca.heading_degrees::text, ca.speed_mps::text,
+              ca.location_recorded_at,
+              ml.id AS pickup_id, COALESCE(ml.name, m.display_name) AS pickup_name,
+              ST_Y(ml.location::geometry) AS pickup_lat, ST_X(ml.location::geometry) AS pickup_lng,
+              o.delivery_lat, o.delivery_lng
+       FROM orders o
+       JOIN merchants m ON m.id = o.merchant_id
+       LEFT JOIN users u ON u.id = o.courier_user_id
+       LEFT JOIN users cu ON cu.id = o.user_id
+       LEFT JOIN courier_availability ca ON ca.courier_user_id = o.courier_user_id
+       LEFT JOIN LATERAL (
+         SELECT ml.id, ml.name, ml.location
+         FROM merchant_locations ml
+         WHERE ml.merchant_id = o.merchant_id AND ml.location IS NOT NULL
+         ORDER BY ml.is_active DESC, ml.created_at ASC
+         LIMIT 1
+       ) ml ON true
+       WHERE o.status <> ALL($4::text[])
+         AND (
+           $1::boolean
+           OR o.user_id = $2
+           OR o.courier_user_id = $2
+           OR ($3::boolean AND EXISTS (
+             SELECT 1 FROM merchant_members mm
+             WHERE mm.merchant_id = o.merchant_id AND mm.user_id = $2 AND mm.is_active = true
+           ) AND o.status <> ALL($5::text[]))
+         )
+       ORDER BY o.updated_at DESC
+       LIMIT 500`,
+      [operator, viewer.userId, merchant, TERMINAL_STATUSES, ["PENDING_CONFIRMATION", "AWAITING_PAYMENT", "CONFIRMED"]]
+    );
+
+    const courierIds = result.rows
+      .map((row) => row.courier_user_id)
+      .filter((id): id is string => id !== null);
+    const latest = await this.latestLocation.getMany(courierIds);
+    const now = Date.now();
+    const participants = new Map<string, Record<string, unknown>>();
+
+    const add = (id: string, point: Record<string, unknown>): void => {
+      if (participants.has(id)) return;
+      participants.set(id, point);
+    };
+
+    for (const row of result.rows) {
+      if (row.courier_user_id) {
+        const recent = latest.get(row.courier_user_id);
+        const latitude = recent?.latitude ?? (row.courier_lat === null ? null : Number(row.courier_lat));
+        const longitude = recent?.longitude ?? (row.courier_lng === null ? null : Number(row.courier_lng));
+        const recordedAt = recent?.recordedAt ?? row.location_recorded_at?.toISOString() ?? row.last_seen_at?.toISOString() ?? null;
+        if (latitude !== null && longitude !== null) {
+          add(`courier:${row.courier_user_id}`, {
+            id: `courier:${row.courier_user_id}`,
+            kind: "courier",
+            label: row.courier_name ?? "Courier",
+            latitude,
+            longitude,
+            headingDegrees: recent?.headingDegrees ?? numberOrNull(row.heading_degrees),
+            speedMps: recent?.speedMps ?? numberOrNull(row.speed_mps),
+            accuracyMeters: recent?.accuracyMeters ?? numberOrNull(row.accuracy_meters),
+            updatedAt: recordedAt,
+            stale: recordedAt === null || now - new Date(recordedAt).getTime() > 120_000,
+            orderId: row.id,
+            orderNumber: row.order_number,
+            status: row.status
+          });
+        }
+      }
+      if (row.pickup_id && row.pickup_lat !== null && row.pickup_lng !== null) {
+        add(`merchant:${row.pickup_id}`, {
+          id: `merchant:${row.pickup_id}`,
+          kind: "merchant",
+          label: row.pickup_name ?? "Merchant",
+          latitude: Number(row.pickup_lat),
+          longitude: Number(row.pickup_lng),
+          headingDegrees: null,
+          speedMps: null,
+          accuracyMeters: null,
+          updatedAt: null,
+          stale: false,
+          orderId: row.id,
+          orderNumber: row.order_number,
+          status: row.status
+        });
+      }
+      if (row.delivery_lat !== null && row.delivery_lng !== null) {
+        add(`customer:${row.id}`, {
+          id: `customer:${row.id}`,
+          kind: "customer",
+          label: row.customer_name ?? "Customer",
+          latitude: Number(row.delivery_lat),
+          longitude: Number(row.delivery_lng),
+          headingDegrees: null,
+          speedMps: null,
+          accuracyMeters: null,
+          updatedAt: null,
+          stale: false,
+          orderId: row.id,
+          orderNumber: row.order_number,
+          status: row.status
+        });
+      }
+    }
+
+    return {
+      generatedAt: new Date().toISOString(),
+      scope: operator ? "operations" : merchant ? "merchant" : roles.includes("courier") ? "courier" : "customer",
+      orders: result.rows.map((row) => ({
+        id: row.id,
+        orderNumber: row.order_number,
+        status: row.status,
+        courierUserId: row.courier_user_id
+      })),
+      participants: [...participants.values()]
     };
   }
 
@@ -352,4 +518,8 @@ function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number)
   const dLon = toRad(lon2 - lon1);
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   return 2 * radius * Math.asin(Math.sqrt(a));
+}
+
+function numberOrNull(value: string | null): number | null {
+  return value === null ? null : Number(value);
 }

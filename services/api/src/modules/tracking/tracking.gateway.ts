@@ -126,6 +126,8 @@ function orderIdFromSnapshot(snapshot: unknown): string {
 }
 
 function bearerToken(request: IncomingMessage): string | null {
+  const queryToken = new URL(request.url ?? "/", "http://localhost").searchParams.get("access_token");
+  if (queryToken && queryToken.length >= 32) return queryToken;
   const authorization = request.headers.authorization;
   if (typeof authorization !== "string" || !authorization.startsWith("Bearer ")) return null;
   const token = authorization.slice(7).trim();

@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { CommonModule } from "./common/common.module.js";
 import { DatabaseModule } from "./database/database.module.js";
+import { RedisModule } from "./redis/redis.module.js";
 import { HealthModule } from "./modules/health/health.module.js";
 import { PlatformModule } from "./modules/platform/platform.module.js";
 import { AuthModule } from "./modules/auth/auth.module.js";
@@ -28,6 +29,7 @@ import { PromotionsModule } from "./modules/promotions/promotions.module.js";
 import { ReviewsModule } from "./modules/reviews/reviews.module.js";
 import { ZonesModule } from "./modules/zones/zones.module.js";
 import { GeocodingModule } from "./modules/geocoding/geocoding.module.js";
+import { MapsModule } from "./modules/maps/maps.module.js";
 import { DevicesModule } from "./modules/devices/devices.module.js";
 import { SettlementsModule } from "./modules/settlements/settlements.module.js";
 import { PayoutsModule } from "./modules/payouts/payouts.module.js";
@@ -38,6 +40,7 @@ import { OperatorModule } from "./modules/operator/operator.module.js";
 @Module({
   imports: [
     DatabaseModule,
+    RedisModule,
     CommonModule,
     HealthModule,
     PlatformModule,
@@ -66,6 +69,7 @@ import { OperatorModule } from "./modules/operator/operator.module.js";
     ReviewsModule,
     ZonesModule,
     GeocodingModule,
+    MapsModule,
     DevicesModule,
     SettlementsModule,
     PayoutsModule,

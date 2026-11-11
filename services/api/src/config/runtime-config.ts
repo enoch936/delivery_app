@@ -49,6 +49,25 @@ export type RuntimeConfig = Readonly<{
   firebaseServiceAccountJson: string | undefined;
   publicApiBaseUrl: string;
   geocodingProvider: 'nominatim' | 'disabled';
+  mapDefaultStyle: "standard" | "satellite" | "hybrid";
+  mapTileServerUrl: string;
+  mapTileSet: string;
+  mapGlyphsUrl: string;
+  mapSpriteUrl: string | undefined;
+  mapAttribution: string;
+  mapSatelliteTileUrl: string | undefined;
+  mapBuildingsSourceLayer: string;
+  valhallaUrl: string;
+  nominatimUrl: string;
+  nominatimUserAgent: string;
+  titilerUrl: string;
+  redisUrl: string | undefined;
+  trackingActiveIntervalSeconds: number;
+  trackingIdleIntervalSeconds: number;
+  trackingLocationTtlSeconds: number;
+  trackingHistoryRetentionDays: number;
+  routeCacheTtlSeconds: number;
+  geocodeCacheTtlSeconds: number;
 }>;
 
 const allowedEnvironments = ["development", "test", "staging", "production"] as const;
@@ -156,6 +175,26 @@ export function readRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON or GOOGLE_APPLICATION_CREDENTIALS is required when PUSH_PROVIDER=fcm.");
   }
   const geocodingProvider = environment.GEOCODING_PROVIDER === "nominatim" ? 'nominatim' : 'disabled';
+  const mapDefaultStyleValue = environment.MAP_DEFAULT_STYLE ?? "hybrid";
+  if (mapDefaultStyleValue !== "standard" && mapDefaultStyleValue !== "satellite" && mapDefaultStyleValue !== "hybrid") {
+    throw new Error("MAP_DEFAULT_STYLE must be standard, satellite, or hybrid.");
+  }
+  const mapTileServerUrl = httpUrl(environment.MAP_TILE_SERVER_URL, "http://localhost:8080", "MAP_TILE_SERVER_URL");
+  const mapTileSet = environment.MAP_TILE_SET?.trim() || "ethiopia";
+  if (!/^[A-Za-z0-9_-]{1,80}$/.test(mapTileSet)) throw new Error("MAP_TILE_SET must be a simple tileset name.");
+  const mapGlyphsUrl = httpUrl(
+    environment.MAP_GLYPHS_URL,
+    `${mapTileServerUrl}/fonts/{fontstack}/{range}.pbf`,
+    "MAP_GLYPHS_URL"
+  );
+  const mapSpriteUrl = environment.MAP_SPRITE_URL?.trim() || undefined;
+  const mapSatelliteTileUrl = environment.MAP_SATELLITE_TILE_URL?.trim() || undefined;
+  const valhallaUrl = httpUrl(environment.VALHALLA_URL, "http://localhost:8002", "VALHALLA_URL");
+  const nominatimUrl = httpUrl(environment.NOMINATIM_URL, "http://localhost:8081", "NOMINATIM_URL");
+  const titilerUrl = httpUrl(environment.TITILER_URL, "http://localhost:8000", "TITILER_URL");
+  if (mapSatelliteTileUrl !== undefined && !/^https?:\/\//i.test(mapSatelliteTileUrl)) {
+    throw new Error("MAP_SATELLITE_TILE_URL must be an absolute http(s) URL template.");
+  }
   return Object.freeze({
     nodeEnv: nodeEnv as RuntimeConfig["nodeEnv"],
     port: positivePort(environment.API_PORT ?? environment.PORT),
@@ -203,8 +242,41 @@ export function readRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     pushProvider,
     firebaseServiceAccountJson,
     publicApiBaseUrl,
-    geocodingProvider
+    geocodingProvider,
+    mapDefaultStyle: mapDefaultStyleValue,
+    mapTileServerUrl,
+    mapTileSet,
+    mapGlyphsUrl,
+    mapSpriteUrl,
+    mapAttribution: environment.MAP_ATTRIBUTION?.trim() || "© OpenStreetMap contributors · © Microsoft / Google building footprints",
+    mapSatelliteTileUrl,
+    mapBuildingsSourceLayer: environment.MAP_BUILDINGS_SOURCE_LAYER?.trim() || "building",
+    valhallaUrl,
+    nominatimUrl,
+    nominatimUserAgent: environment.NOMINATIM_USER_AGENT?.trim() || "delivery-app/1.0 (geospatial)",
+    titilerUrl,
+    redisUrl: environment.REDIS_URL?.trim() || undefined,
+    trackingActiveIntervalSeconds: positiveInteger(environment.TRACKING_ACTIVE_INTERVAL_SECONDS, 5),
+    trackingIdleIntervalSeconds: positiveInteger(environment.TRACKING_IDLE_INTERVAL_SECONDS, 20),
+    trackingLocationTtlSeconds: positiveInteger(environment.TRACKING_LOCATION_TTL_SECONDS, 120),
+    trackingHistoryRetentionDays: positiveInteger(environment.TRACKING_HISTORY_RETENTION_DAYS, 30),
+    routeCacheTtlSeconds: positiveInteger(environment.ROUTE_CACHE_TTL_SECONDS, 30),
+    geocodeCacheTtlSeconds: positiveInteger(environment.GEOCODE_CACHE_TTL_SECONDS, 86_400)
   });
+}
+
+function httpUrl(value: string | undefined, fallback: string, name: string): string {
+  const raw = (value?.trim() || fallback).replace(/\/$/, "");
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(`${name} must be a valid absolute URL.`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`${name} must use http or https.`);
+  }
+  return raw;
 }
 
 function parseMinorUnits(value: string | undefined, fallback: string): bigint {

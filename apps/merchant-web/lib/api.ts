@@ -16,6 +16,10 @@ export type Session = {
 const API_BASE = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3000/api").replace(/\/$/, "");
 const STORAGE_KEY = "delivery.merchant.session";
 
+export function apiBaseUrl(): string {
+  return API_BASE;
+}
+
 export function loadSession(): Session | null {
   if (typeof window === "undefined") return null;
   try {

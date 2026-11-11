@@ -10,6 +10,7 @@ import {
   type FailureReasonCode
 } from "@delivery-app/domain";
 import { DatabaseService } from "../../database/database.service.js";
+import { LatestLocationService } from "../../redis/latest-location.service.js";
 import { OrdersService } from "../orders/orders.service.js";
 import { SupportService } from "../support/support.service.js";
 
@@ -67,7 +68,12 @@ const DELIVERY_SELECT = `
 
 @Injectable()
 export class CourierService {
-  constructor(private readonly database: DatabaseService, private readonly orders: OrdersService, private readonly support: SupportService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly orders: OrdersService,
+    private readonly support: SupportService,
+    private readonly latestLocation: LatestLocationService
+  ) {}
 
   async profile(userId: string) {
     const result = await this.database.query<CourierProfileRow>(
@@ -271,13 +277,13 @@ export class CourierService {
     if (idempotencyKey && !/^[A-Za-z0-9_-]{16,128}$/.test(idempotencyKey)) {
       throw new BadRequestException("A valid Idempotency-Key header is required.");
     }
-    return this.database.withTransaction(async (client) => {
+    const recorded = await this.database.withTransaction(async (client) => {
       if (idempotencyKey) {
         const existing = await client.query(
           "SELECT 1 FROM courier_location_samples WHERE courier_user_id = $1 AND client_operation_id = $2",
           [userId, idempotencyKey]
         );
-        if ((existing.rowCount ?? 0) > 0) return { recorded: true };
+        if ((existing.rowCount ?? 0) > 0) return { recorded: true, activeOrderId: null };
       }
       const availability = await client.query<{ active_order_id: string | null; is_online: boolean }>("SELECT active_order_id, is_online FROM courier_availability WHERE courier_user_id = $1", [userId]);
       const state = availability.rows[0];
@@ -286,8 +292,16 @@ export class CourierService {
         throw new ForbiddenException("Location updates are only accepted while online or on an active delivery.");
       }
       await client.query(
-        `UPDATE courier_availability SET last_location = ST_SetSRID(ST_MakePoint($2,$3),4326), last_seen_at = now(), updated_at = now() WHERE courier_user_id = $1`,
-        [userId, input.longitude, input.latitude]
+        `UPDATE courier_availability SET
+           last_location = ST_SetSRID(ST_MakePoint($2,$3),4326),
+           last_seen_at = now(),
+           location_recorded_at = now(),
+           accuracy_meters = $4,
+           heading_degrees = $5,
+           speed_mps = $6,
+           updated_at = now()
+         WHERE courier_user_id = $1`,
+        [userId, input.longitude, input.latitude, input.accuracyMeters ?? null, input.headingDegrees ?? null, input.speedMps ?? null]
       );
       if (state.active_order_id) {
         const assignment = await client.query<{ id: string }>(
@@ -301,8 +315,20 @@ export class CourierService {
           [userId, state.active_order_id, assignment.rows[0]?.id ?? null, input.latitude, input.longitude, input.accuracyMeters ?? null, input.headingDegrees ?? null, input.speedMps ?? null, idempotencyKey ?? null]
         );
       }
-      return { recorded: true };
+      return { recorded: true, activeOrderId: state.active_order_id };
     });
+
+    await this.latestLocation.record({
+      courierUserId: userId,
+      latitude: input.latitude,
+      longitude: input.longitude,
+      accuracyMeters: input.accuracyMeters ?? null,
+      headingDegrees: input.headingDegrees ?? null,
+      speedMps: input.speedMps ?? null,
+      recordedAt: new Date().toISOString(),
+      activeOrderId: recorded.activeOrderId
+    });
+    return { recorded: recorded.recorded };
   }
 
   async deliveries(userId: string, scope: "active" | "history", limit: number, offset: number) {

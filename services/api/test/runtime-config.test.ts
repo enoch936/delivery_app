@@ -60,3 +60,19 @@ test("rejects the Telebirr test gateway outside development and test", () => {
     TELEBIRR_PUBLIC_KEY: "public-key"
   }));
 });
+
+test("derives self-hosted map endpoints and validates map configuration", () => {
+  const config = readRuntimeConfig({
+    NODE_ENV: "test",
+    MAP_TILE_SERVER_URL: "https://maps.example.test/",
+    MAP_TILE_SET: "ethiopia",
+    MAP_DEFAULT_STYLE: "hybrid"
+  });
+  assert.equal(config.mapTileServerUrl, "https://maps.example.test");
+  assert.equal(config.mapGlyphsUrl, "https://maps.example.test/fonts/{fontstack}/{range}.pbf");
+  assert.equal(config.mapDefaultStyle, "hybrid");
+  assert.equal(config.valhallaUrl, "http://localhost:8002");
+  assert.throws(() => readRuntimeConfig({ NODE_ENV: "test", MAP_DEFAULT_STYLE: "terrain" }));
+  assert.throws(() => readRuntimeConfig({ NODE_ENV: "test", MAP_TILE_SERVER_URL: "ftp://maps.example.test" }));
+  assert.throws(() => readRuntimeConfig({ NODE_ENV: "test", MAP_TILE_SET: "bad tileset!" }));
+});

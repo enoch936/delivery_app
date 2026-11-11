@@ -1,7 +1,8 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
 import { calculateDeliveryPrice } from "@delivery-app/domain";
 import { readRuntimeConfig, type RuntimeConfig } from "../../config/runtime-config.js";
 import { DatabaseService } from "../../database/database.service.js";
+import { MapsService } from "../maps/maps.service.js";
 import type { CheckoutQuoteRecord, QuoteLine, QuoteOption } from "./checkout.types.js";
 
 type CartItemRow = {
@@ -54,7 +55,13 @@ type MerchantRow = {
   pickup_location_id: string | null;
   pickup_location_name: string | null;
   pickup_address_line: string | null;
+  pickup_latitude: number | null;
+  pickup_longitude: number | null;
+  dropoff_latitude: number | null;
+  dropoff_longitude: number | null;
 };
+
+const PREPARATION_MINUTES = 10;
 
 export type CreateQuoteInput = Readonly<{
   userId: string;
@@ -71,8 +78,12 @@ export type CreateQuoteInput = Readonly<{
 @Injectable()
 export class CheckoutService {
   private readonly config: RuntimeConfig;
+  private readonly logger = new Logger(CheckoutService.name);
 
-  constructor(private readonly database: DatabaseService) {
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly maps: MapsService
+  ) {
     this.config = readRuntimeConfig();
   }
 
@@ -198,6 +209,9 @@ export class CheckoutService {
     });
     const itemsSubtotalMinor = lines.reduce((sum, line) => sum + line.lineTotalMinor, 0);
 
+    const routeEta = fulfillmentType === "delivery" ? await this.resolveRouteEta(merchant) : null;
+    const effectiveDistanceMeters = routeEta?.distanceMeters ?? merchant.distance_meters;
+
     const pricingResult = await this.database.query<PricingRow>(
       `SELECT id, base_delivery_fee_minor, per_km_fee_minor, minimum_delivery_fee_minor, maximum_delivery_fee_minor,
               service_fee_minor, night_surcharge_minor, currency, commission_bps
@@ -211,7 +225,7 @@ export class CheckoutService {
     );
     const pricing = pricingResult.rows[0];
     const serviceFeeMinor = Number(pricing?.service_fee_minor ?? this.config.serviceFeeMinor);
-    const delivery = fulfillmentType === "delivery" && merchant.distance_meters !== null
+    const delivery = fulfillmentType === "delivery" && effectiveDistanceMeters !== null
       ? calculateDeliveryPrice({
           rule: {
             baseFeeMinor: BigInt(pricing?.base_delivery_fee_minor ?? merchant.delivery_fee_minor ?? this.config.deliveryFeeMinor.toString()),
@@ -222,8 +236,8 @@ export class CheckoutService {
             nightSurchargeMinor: BigInt(pricing?.night_surcharge_minor ?? "0"),
             currency
           },
-          distanceMeters: merchant.distance_meters,
-          distanceIsRoadNetwork: false,
+          distanceMeters: effectiveDistanceMeters,
+          distanceIsRoadNetwork: routeEta !== null,
           at: new Date()
         })
       : null;
@@ -242,8 +256,11 @@ export class CheckoutService {
     if (totalMinor < 0) throw new BadRequestException("The order total cannot be negative.");
 
     const expiresAt = new Date(Date.now() + this.config.quoteValiditySeconds * 1000);
-    const estimateMinutes = Math.max(10, Math.round((Number(merchant.eta_min_minutes) + Number(merchant.eta_max_minutes)) / 2));
-    const distanceMeters = Math.round(merchant.distance_meters ?? 0);
+    const estimateMinutes = routeEta
+      ? Math.max(10, Math.ceil(routeEta.durationSeconds / 60) + PREPARATION_MINUTES)
+      : Math.max(10, Math.round((Number(merchant.eta_min_minutes) + Number(merchant.eta_max_minutes)) / 2));
+    const distanceMeters = Math.round(effectiveDistanceMeters ?? 0);
+    const distanceSource = routeEta ? "road_network" as const : "straight_line" as const;
     const lineItemsJson = lines.map((line) => ({ ...line, options: [...line.options] }));
     const result = await this.database.query<{ id: string; created_at: Date }>(
       `INSERT INTO checkout_quotes (
@@ -251,12 +268,12 @@ export class CheckoutService {
          service_fee_minor, discount_minor, total_minor, line_items, expires_at, tip_minor, tax_minor,
          distance_meters, distance_source, delivery_estimate_minutes, promotion_id, pricing_rule_id, service_category_slug,
          fulfillment_type, scheduled_for, pickup_location_id, delivery_instructions
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'straight_line',$15,$16,$17,$18,$19,$20,$21,$22)
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
        RETURNING id, created_at`,
       [
         input.userId, merchant.id, fulfillmentType === "delivery" ? input.deliveryAddressId : null, currency, itemsSubtotalMinor,
         deliveryFeeMinor, serviceFeeMinor, discountMinor, totalMinor,
-        JSON.stringify(lineItemsJson), expiresAt, tipMinor, taxMinor, distanceMeters,
+        JSON.stringify(lineItemsJson), expiresAt, tipMinor, taxMinor, distanceMeters, distanceSource,
         estimateMinutes, promotion?.id ?? null, pricing?.id ?? null, merchant.category_slug,
         fulfillmentType, scheduledFor, fulfillmentType === "pickup" ? merchant.pickup_location_id : null, deliveryInstructions
       ]
@@ -293,7 +310,7 @@ export class CheckoutService {
         tipMinor,
         totalMinor,
         distanceMeters,
-        distanceSource: "straight_line" as const,
+        distanceSource,
         deliveryEstimateMinutes: estimateMinutes,
         paymentProvider: this.config.paymentsProvider,
         paymentRequired: this.config.paymentsProvider !== "disabled"
@@ -303,9 +320,36 @@ export class CheckoutService {
       expiresAt: expiresAt.toISOString(),
       createdAt: created.created_at.toISOString(),
       warnings: fulfillmentType === "delivery"
-        ? ["Delivery distance is a straight-line estimate until a routing provider is configured."]
+        ? routeEta
+          ? ["Delivery distance and ETA use the self-hosted road network. Live traffic is not included."]
+          : ["Delivery distance and ETA use a straight-line estimate because routing is unavailable."]
         : ["Collection orders are paid for online; bring your order number to the store."]
     });
+  }
+
+  private async resolveRouteEta(merchant: MerchantRow): Promise<{ distanceMeters: number; durationSeconds: number } | null> {
+    if (
+      merchant.pickup_latitude === null || merchant.pickup_longitude === null
+      || merchant.dropoff_latitude === null || merchant.dropoff_longitude === null
+    ) {
+      return null;
+    }
+    try {
+      const route = await this.maps.route({
+        locations: [
+          { latitude: Number(merchant.pickup_latitude), longitude: Number(merchant.pickup_longitude) },
+          { latitude: Number(merchant.dropoff_latitude), longitude: Number(merchant.dropoff_longitude) }
+        ],
+        profile: "auto",
+        alternates: 0,
+        language: "en"
+      });
+      if (route.distanceMeters <= 0 || route.durationSeconds <= 0) return null;
+      return { distanceMeters: route.distanceMeters, durationSeconds: route.durationSeconds };
+    } catch (error) {
+      this.logger.warn(`Route ETA unavailable, using straight-line fallback: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
   }
 
   private async loadDeliveryMerchant(cartId: string, addressId: string, at: Date): Promise<MerchantRow | null> {
@@ -330,7 +374,9 @@ export class CheckoutService {
                 WHERE mc.merchant_id = m.id AND $3 >= mc.starts_at AND $3 < mc.ends_at
                   AND (mc.location_id IS NULL OR mc.location_id = ml.id)
               ) AS is_closure,
-              NULL::uuid AS pickup_location_id, NULL::text AS pickup_location_name, NULL::text AS pickup_address_line
+              NULL::uuid AS pickup_location_id, NULL::text AS pickup_location_name, NULL::text AS pickup_address_line,
+              ST_Y(ml.location::geometry) AS pickup_latitude, ST_X(ml.location::geometry) AS pickup_longitude,
+              ST_Y(ca.location::geometry) AS dropoff_latitude, ST_X(ca.location::geometry) AS dropoff_longitude
        FROM carts c
        JOIN merchants m ON m.id = c.merchant_id
        JOIN merchant_locations ml ON ml.merchant_id = m.id AND ml.is_active = true
@@ -361,7 +407,9 @@ export class CheckoutService {
                 WHERE mc.merchant_id = m.id AND $3 >= mc.starts_at AND $3 < mc.ends_at
                   AND (mc.location_id IS NULL OR mc.location_id = ml.id)
               ) AS is_closure,
-              ml.id AS pickup_location_id, ml.name AS pickup_location_name, ml.address_line AS pickup_address_line
+              ml.id AS pickup_location_id, ml.name AS pickup_location_name, ml.address_line AS pickup_address_line,
+              ST_Y(ml.location::geometry) AS pickup_latitude, ST_X(ml.location::geometry) AS pickup_longitude,
+              NULL::double precision AS dropoff_latitude, NULL::double precision AS dropoff_longitude
        FROM carts c
        JOIN merchants m ON m.id = c.merchant_id
        JOIN merchant_locations ml ON ml.id = $2 AND ml.merchant_id = m.id AND ml.is_active = true

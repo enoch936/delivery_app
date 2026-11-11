@@ -6,8 +6,8 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 
 import 'design/floating_bars.dart';
-import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
+
+import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'account/accessibility_controller.dart';
@@ -151,24 +151,28 @@ class _DeliveryAppState extends State<DeliveryApp> {
           labelStyle: TextStyle(fontSize: 12),
         ),
       ),
-      builder: (context, child) => ValueListenableBuilder<AccessibilitySettings>(
-        valueListenable: accessibilityController,
-        builder: (context, settings, _) {
-          final base = MediaQuery.of(context);
-          final systemScale = base.textScaler.scale(16) / 16;
-          return MediaQuery(
-            data: base.copyWith(
-              textScaler: TextScaler.linear(systemScale * settings.textScale),
-              disableAnimations: base.disableAnimations || settings.reduceMotion,
-              highContrast: base.highContrast || settings.highContrast,
-            ),
-            child: ScaffoldMessenger(
-              key: scaffoldMessengerKey,
-              child: child ?? const SizedBox.shrink(),
-            ),
-          );
-        },
-      ),
+      builder: (context, child) =>
+          ValueListenableBuilder<AccessibilitySettings>(
+            valueListenable: accessibilityController,
+            builder: (context, settings, _) {
+              final base = MediaQuery.of(context);
+              final systemScale = base.textScaler.scale(16) / 16;
+              return MediaQuery(
+                data: base.copyWith(
+                  textScaler: TextScaler.linear(
+                    systemScale * settings.textScale,
+                  ),
+                  disableAnimations:
+                      base.disableAnimations || settings.reduceMotion,
+                  highContrast: base.highContrast || settings.highContrast,
+                ),
+                child: ScaffoldMessenger(
+                  key: scaffoldMessengerKey,
+                  child: child ?? const SizedBox.shrink(),
+                ),
+              );
+            },
+          ),
       home: AuthGate(
         client: widget.client,
         storage: widget.storage,
@@ -191,16 +195,16 @@ class Session {
   final Map<String, dynamic> user;
 
   factory Session.fromJson(Map<String, dynamic> json) => Session(
-        accessToken: json['accessToken'] as String,
-        refreshToken: json['refreshToken'] as String,
-        user: asMap(json['user']),
-      );
+    accessToken: json['accessToken'] as String,
+    refreshToken: json['refreshToken'] as String,
+    user: asMap(json['user']),
+  );
 
   Map<String, dynamic> toJson() => {
-        'accessToken': accessToken,
-        'refreshToken': refreshToken,
-        'user': user,
-      };
+    'accessToken': accessToken,
+    'refreshToken': refreshToken,
+    'user': user,
+  };
 }
 
 class ApiException implements Exception {
@@ -225,8 +229,11 @@ class ApiClient {
 
   Future<dynamic> get(String path) => _send('GET', path);
 
-  Future<dynamic> post(String path, [Object? body, Map<String, String>? headers]) =>
-      _send('POST', path, body: body, headers: headers);
+  Future<dynamic> post(
+    String path, [
+    Object? body,
+    Map<String, String>? headers,
+  ]) => _send('POST', path, body: body, headers: headers);
 
   Future<dynamic> patch(String path, [Object? body]) =>
       _send('PATCH', path, body: body);
@@ -263,7 +270,13 @@ class ApiClient {
   }
 
   Future<Map<String, dynamic>> reconcileCart() async {
-    return asMap(await _send('POST', '/v1/cart/reconcile', body: const <String, dynamic>{}));
+    return asMap(
+      await _send(
+        'POST',
+        '/v1/cart/reconcile',
+        body: const <String, dynamic>{},
+      ),
+    );
   }
 
   Future<void> startSync() async {
@@ -276,12 +289,21 @@ class ApiClient {
     await flushQueue();
   }
 
-  Future<dynamic> postQueued(String path, [Object? body, Map<String, String>? headers]) async {
+  Future<dynamic> postQueued(
+    String path, [
+    Object? body,
+    Map<String, String>? headers,
+  ]) async {
     try {
       return await post(path, body, headers);
     } on ApiException catch (error) {
       if (error.statusCode != 0) rethrow;
-      await storage.enqueue(method: 'POST', path: path, body: body, headers: headers);
+      await storage.enqueue(
+        method: 'POST',
+        path: path,
+        body: body,
+        headers: headers,
+      );
       pendingSync.value = storage.queue().length;
       return {'queued': true};
     }
@@ -304,10 +326,19 @@ class ApiClient {
     try {
       for (final item in storage.queue()) {
         try {
-          await _send(item.method, item.path, body: item.body, headers: item.headers);
+          await _send(
+            item.method,
+            item.path,
+            body: item.body,
+            headers: item.headers,
+          );
           await storage.removeQueued(item.id);
         } on ApiException catch (error) {
-          final permanent = error.statusCode >= 400 && error.statusCode < 500 && error.statusCode != 408 && error.statusCode != 429;
+          final permanent =
+              error.statusCode >= 400 &&
+              error.statusCode < 500 &&
+              error.statusCode != 408 &&
+              error.statusCode != 429;
           if (permanent) {
             await storage.removeQueued(item.id);
             continue;
@@ -350,7 +381,10 @@ class ApiClient {
     bool retry = true,
   }) async {
     try {
-      final request = await _http.openUrl(method, Uri.parse('$apiBaseUrl$path'));
+      final request = await _http.openUrl(
+        method,
+        Uri.parse('$apiBaseUrl$path'),
+      );
       request.headers.contentType = ContentType.json;
       request.headers.set('x-device-id', storage.ensureDeviceId());
       if (headers != null) {
@@ -372,19 +406,30 @@ class ApiClient {
       }
       if (response.statusCode >= 200 && response.statusCode < 300) {
         offline = false;
-        if (method == 'GET' && path.startsWith('/v1/') && !path.contains('/auth/')) {
+        if (method == 'GET' &&
+            path.startsWith('/v1/') &&
+            !path.contains('/auth/')) {
           await storage.cacheResponse(path, decoded);
         }
         return decoded;
       }
       if (response.statusCode == 401 && auth && retry) {
         if (await _refresh()) {
-          return await _send(method, path, body: body, headers: headers, retry: false);
+          return await _send(
+            method,
+            path,
+            body: body,
+            headers: headers,
+            retry: false,
+          );
         }
         session = null;
         await storage.clearSession();
       }
-      throw ApiException(_message(decoded, response.statusCode), response.statusCode);
+      throw ApiException(
+        _message(decoded, response.statusCode),
+        response.statusCode,
+      );
     } on SocketException catch (error) {
       return _networkFailure(method, path, error.message);
     } on HttpException catch (error) {
@@ -447,7 +492,11 @@ class ApiClient {
     return asMap(result);
   }
 
-  Future<Session> verifyOtp(String phone, String code, String challengeId) async {
+  Future<Session> verifyOtp(
+    String phone,
+    String code,
+    String challengeId,
+  ) async {
     final result = await _send(
       'POST',
       '/v1/auth/otp/verify',
@@ -513,7 +562,10 @@ String label(String? value) {
   return value
       .toLowerCase()
       .split('_')
-      .map((word) => word.isEmpty ? word : word[0].toUpperCase() + word.substring(1))
+      .map(
+        (word) =>
+            word.isEmpty ? word : word[0].toUpperCase() + word.substring(1),
+      )
       .join(' ');
 }
 
@@ -607,10 +659,7 @@ class _AuthGateState extends State<AuthGate> {
           onComplete: () => setState(() {}),
         );
       }
-      return LoginScreen(
-        client: widget.client,
-        onSignedIn: _signedIn,
-      );
+      return LoginScreen(client: widget.client, onSignedIn: _signedIn);
     }
     return CustomerHome(
       client: widget.client,
@@ -621,7 +670,11 @@ class _AuthGateState extends State<AuthGate> {
 }
 
 class WelcomeScreen extends StatefulWidget {
-  const WelcomeScreen({super.key, required this.storage, required this.onComplete});
+  const WelcomeScreen({
+    super.key,
+    required this.storage,
+    required this.onComplete,
+  });
 
   final AppStorage storage;
   final VoidCallback onComplete;
@@ -649,9 +702,24 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
     final slides = [
-      (l10n.welcomeTitle, l10n.welcomeBody, Icons.delivery_dining_outlined, const Color(0xFFE8613D)),
-      (l10n.welcomeDiscoveryTitle, l10n.welcomeDiscoveryBody, Icons.storefront_outlined, const Color(0xFF2F6B4F)),
-      (l10n.welcomeTrustTitle, l10n.welcomeTrustBody, Icons.track_changes_outlined, const Color(0xFF1E2A24)),
+      (
+        l10n.welcomeTitle,
+        l10n.welcomeBody,
+        Icons.delivery_dining_outlined,
+        const Color(0xFFE8613D),
+      ),
+      (
+        l10n.welcomeDiscoveryTitle,
+        l10n.welcomeDiscoveryBody,
+        Icons.storefront_outlined,
+        const Color(0xFF2F6B4F),
+      ),
+      (
+        l10n.welcomeTrustTitle,
+        l10n.welcomeTrustBody,
+        Icons.track_changes_outlined,
+        const Color(0xFF1E2A24),
+      ),
     ];
     return Scaffold(
       body: SafeArea(
@@ -672,13 +740,30 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
                         Container(
                           height: 230,
                           width: double.infinity,
-                          decoration: BoxDecoration(color: slide.$4, borderRadius: BorderRadius.circular(28)),
+                          decoration: BoxDecoration(
+                            color: slide.$4,
+                            borderRadius: BorderRadius.circular(28),
+                          ),
                           child: Icon(slide.$3, size: 96, color: Colors.white),
                         ),
                         const SizedBox(height: 34),
-                        Text(slide.$1, style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -1.5)),
+                        Text(
+                          slide.$1,
+                          style: Theme.of(context).textTheme.displaySmall
+                              ?.copyWith(
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: -1.5,
+                              ),
+                        ),
                         const SizedBox(height: 14),
-                        Text(slide.$2, style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: const Color(0xFF6B7468), height: 1.5)),
+                        Text(
+                          slide.$2,
+                          style: Theme.of(context).textTheme.bodyLarge
+                              ?.copyWith(
+                                color: const Color(0xFF6B7468),
+                                height: 1.5,
+                              ),
+                        ),
                       ],
                     ),
                   );
@@ -689,13 +774,35 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
               padding: const EdgeInsets.fromLTRB(28, 8, 28, 28),
               child: Row(
                 children: [
-                  Row(children: List.generate(slides.length, (index) => Container(width: 8, height: 8, margin: const EdgeInsets.only(right: 6), decoration: BoxDecoration(color: index == page ? const Color(0xFFE8613D) : const Color(0xFFD9D5C7), shape: BoxShape.circle)))),
+                  Row(
+                    children: List.generate(
+                      slides.length,
+                      (index) => Container(
+                        width: 8,
+                        height: 8,
+                        margin: const EdgeInsets.only(right: 6),
+                        decoration: BoxDecoration(
+                          color: index == page
+                              ? const Color(0xFFE8613D)
+                              : const Color(0xFFD9D5C7),
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ),
+                  ),
                   const Spacer(),
                   FilledButton(
-                    onPressed: page == slides.length - 1 ? _complete : () => controller.nextPage(duration: const Duration(milliseconds: 260), curve: Curves.easeOut),
+                    onPressed: page == slides.length - 1
+                        ? _complete
+                        : () => controller.nextPage(
+                            duration: const Duration(milliseconds: 260),
+                            curve: Curves.easeOut,
+                          ),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Text(page == slides.length - 1 ? l10n.getStarted : l10n.next),
+                      child: Text(
+                        page == slides.length - 1 ? l10n.getStarted : l10n.next,
+                      ),
                     ),
                   ),
                 ],
@@ -709,7 +816,11 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
 }
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key, required this.client, required this.onSignedIn});
+  const LoginScreen({
+    super.key,
+    required this.client,
+    required this.onSignedIn,
+  });
 
   final ApiClient client;
   final VoidCallback onSignedIn;
@@ -758,7 +869,9 @@ class _LoginScreenState extends State<LoginScreen> {
       error = null;
     });
     try {
-      final challenge = await widget.client.requestOtp(phoneController.text.trim());
+      final challenge = await widget.client.requestOtp(
+        phoneController.text.trim(),
+      );
       setState(() => challengeId = challenge['challengeId'] as String?);
       _startResendCooldown();
     } catch (cause) {
@@ -886,10 +999,10 @@ class _LoginScreenState extends State<LoginScreen> {
                 onPressed: busy
                     ? null
                     : () => setState(() {
-                          challengeId = null;
-                          codeController.clear();
-                          error = null;
-                        }),
+                        challengeId = null;
+                        codeController.clear();
+                        error = null;
+                      }),
                 child: Text(l10n.differentNumber),
               ),
               TextButton(
@@ -1007,7 +1120,10 @@ class _CustomerHomeState extends State<CustomerHome> {
                   padding: const EdgeInsets.symmetric(horizontal: 4),
                   child: Tooltip(
                     message: '${l10n.pendingSync}: $pending',
-                    child: Badge(label: Text('$pending'), child: const Icon(Icons.cloud_upload_outlined)),
+                    child: Badge(
+                      label: Text('$pending'),
+                      child: const Icon(Icons.cloud_upload_outlined),
+                    ),
                   ),
                 ),
               );
@@ -1159,10 +1275,14 @@ class _ExploreScreenState extends State<ExploreScreen> {
       var fetched = asList(asMap(results[1])['items']);
 
       if (favoritesOnly) {
-        fetched = fetched.where((m) => favorites.contains(m['id']?.toString())).toList();
+        fetched = fetched
+            .where((m) => favorites.contains(m['id']?.toString()))
+            .toList();
       }
       if (openNowOnly) {
-        fetched = fetched.where((m) => m['status'] == 'active' || m['isOpen'] == true).toList();
+        fetched = fetched
+            .where((m) => m['status'] == 'active' || m['isOpen'] == true)
+            .toList();
       }
 
       setState(() {
@@ -1177,7 +1297,9 @@ class _ExploreScreenState extends State<ExploreScreen> {
   }
 
   void _toggleFavorite(String merchantId) async {
-    final added = await widget.client.storage.toggleFavoriteMerchant(merchantId);
+    final added = await widget.client.storage.toggleFavoriteMerchant(
+      merchantId,
+    );
     setState(() {
       if (added) {
         favorites.add(merchantId);
@@ -1209,14 +1331,34 @@ class _ExploreScreenState extends State<ExploreScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Select Delivery Location', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+              Text(
+                'Select Delivery Location',
+                style: Theme.of(context).textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w800),
+              ),
               const SizedBox(height: 12),
-              ...locations.map((loc) => ListTile(
-                    leading: Icon(Icons.location_on_outlined, color: loc == currentLocation ? const Color(0xFFE8613D) : null),
-                    title: Text(loc, style: TextStyle(fontWeight: loc == currentLocation ? FontWeight.w800 : FontWeight.w500)),
-                    trailing: loc == currentLocation ? const Icon(Icons.check, color: Color(0xFFE8613D)) : null,
-                    onTap: () => Navigator.pop(context, loc),
-                  )),
+              ...locations.map(
+                (loc) => ListTile(
+                  leading: Icon(
+                    Icons.location_on_outlined,
+                    color: loc == currentLocation
+                        ? const Color(0xFFE8613D)
+                        : null,
+                  ),
+                  title: Text(
+                    loc,
+                    style: TextStyle(
+                      fontWeight: loc == currentLocation
+                          ? FontWeight.w800
+                          : FontWeight.w500,
+                    ),
+                  ),
+                  trailing: loc == currentLocation
+                      ? const Icon(Icons.check, color: Color(0xFFE8613D))
+                      : null,
+                  onTap: () => Navigator.pop(context, loc),
+                ),
+              ),
             ],
           ),
         );
@@ -1262,18 +1404,37 @@ class _ExploreScreenState extends State<ExploreScreen> {
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.location_on, color: Color(0xFFE8613D), size: 20),
+                  const Icon(
+                    Icons.location_on,
+                    color: Color(0xFFE8613D),
+                    size: 20,
+                  ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('DELIVER TO', style: theme.textTheme.labelSmall?.copyWith(fontSize: 10, color: const Color(0xFF6B7468), fontWeight: FontWeight.w800)),
-                        Text(currentLocation, style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w800)),
+                        Text(
+                          'DELIVER TO',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            fontSize: 10,
+                            color: const Color(0xFF6B7468),
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        Text(
+                          currentLocation,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
                       ],
                     ),
                   ),
-                  const Icon(Icons.keyboard_arrow_down, color: Color(0xFF6B7468)),
+                  const Icon(
+                    Icons.keyboard_arrow_down,
+                    color: Color(0xFF6B7468),
+                  ),
                 ],
               ),
             ),
@@ -1302,14 +1463,21 @@ class _ExploreScreenState extends State<ExploreScreen> {
                       ),
                     ),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
                       decoration: BoxDecoration(
                         color: const Color(0xFFE8613D),
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
                         promo['code']!,
-                        style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w800),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
                     ),
                   ],
@@ -1325,7 +1493,9 @@ class _ExploreScreenState extends State<ExploreScreen> {
                 ),
                 Text(
                   promo['subtitle']!,
-                  style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFFB0B7AC)),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFFB0B7AC),
+                  ),
                 ),
                 const SizedBox(height: 16),
                 TextField(
@@ -1365,7 +1535,13 @@ class _ExploreScreenState extends State<ExploreScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Recent Searches', style: theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w800, color: const Color(0xFF6B7468))),
+                Text(
+                  'Recent Searches',
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: const Color(0xFF6B7468),
+                  ),
+                ),
                 TextButton(
                   onPressed: () async {
                     await widget.client.storage.clearRecentSearches();
@@ -1379,17 +1555,24 @@ class _ExploreScreenState extends State<ExploreScreen> {
               height: 32,
               child: ListView(
                 scrollDirection: Axis.horizontal,
-                children: recentSearches.map((term) => Padding(
-                  padding: const EdgeInsets.only(right: 6),
-                  child: ActionChip(
-                    label: Text(term, style: const TextStyle(fontSize: 11)),
-                    avatar: const Icon(Icons.history, size: 14),
-                    onPressed: () {
-                      searchController.text = term;
-                      _load();
-                    },
-                  ),
-                )).toList(),
+                children: recentSearches
+                    .map(
+                      (term) => Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: ActionChip(
+                          label: Text(
+                            term,
+                            style: const TextStyle(fontSize: 11),
+                          ),
+                          avatar: const Icon(Icons.history, size: 14),
+                          onPressed: () {
+                            searchController.text = term;
+                            _load();
+                          },
+                        ),
+                      ),
+                    )
+                    .toList(),
               ),
             ),
             const SizedBox(height: 16),
@@ -1401,27 +1584,56 @@ class _ExploreScreenState extends State<ExploreScreen> {
             child: ListView(
               scrollDirection: Axis.horizontal,
               children: [
-                _buildServiceTile(Icons.restaurant, 'Food', const Color(0xFFE8613D), () {
-                  setState(() => selectedCategory = 'restaurants');
-                  _load();
-                }),
-                _buildServiceTile(Icons.shopping_basket, 'Grocery', const Color(0xFF2F6B4F), () {
-                  setState(() => selectedCategory = 'groceries');
-                  _load();
-                }),
-                _buildServiceTile(Icons.medical_services, 'Pharmacy', const Color(0xFF1E88E5), () {
-                  setState(() => selectedCategory = 'pharmacy');
-                  _load();
-                }),
-                _buildServiceTile(Icons.storefront, 'Retail', const Color(0xFF8E24AA), () {
-                  setState(() => selectedCategory = 'retail');
-                  _load();
-                }),
-                _buildServiceTile(Icons.local_shipping, 'Parcel', const Color(0xFFD81B60), () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Express Parcel Courier Booking active in Addis Ababa')),
-                  );
-                }),
+                _buildServiceTile(
+                  Icons.restaurant,
+                  'Food',
+                  const Color(0xFFE8613D),
+                  () {
+                    setState(() => selectedCategory = 'restaurants');
+                    _load();
+                  },
+                ),
+                _buildServiceTile(
+                  Icons.shopping_basket,
+                  'Grocery',
+                  const Color(0xFF2F6B4F),
+                  () {
+                    setState(() => selectedCategory = 'groceries');
+                    _load();
+                  },
+                ),
+                _buildServiceTile(
+                  Icons.medical_services,
+                  'Pharmacy',
+                  const Color(0xFF1E88E5),
+                  () {
+                    setState(() => selectedCategory = 'pharmacy');
+                    _load();
+                  },
+                ),
+                _buildServiceTile(
+                  Icons.storefront,
+                  'Retail',
+                  const Color(0xFF8E24AA),
+                  () {
+                    setState(() => selectedCategory = 'retail');
+                    _load();
+                  },
+                ),
+                _buildServiceTile(
+                  Icons.local_shipping,
+                  'Parcel',
+                  const Color(0xFFD81B60),
+                  () {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          'Express Parcel Courier Booking active in Addis Ababa',
+                        ),
+                      ),
+                    );
+                  },
+                ),
               ],
             ),
           ),
@@ -1437,14 +1649,21 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   padding: const EdgeInsets.only(right: 8),
                   child: ChoiceChip(
                     label: const Text('All'),
-                    selected: selectedCategory == null && !openNowOnly && !favoritesOnly,
+                    selected:
+                        selectedCategory == null &&
+                        !openNowOnly &&
+                        !favoritesOnly,
                     onSelected: (_) => _resetFilters(),
                   ),
                 ),
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: FilterChip(
-                    avatar: const Icon(Icons.star, size: 16, color: Color(0xFFE8613D)),
+                    avatar: const Icon(
+                      Icons.star,
+                      size: 16,
+                      color: Color(0xFFE8613D),
+                    ),
                     label: const Text('Favorites'),
                     selected: favoritesOnly,
                     onSelected: (val) {
@@ -1472,7 +1691,9 @@ class _ExploreScreenState extends State<ExploreScreen> {
                       label: Text(category['displayName']?.toString() ?? ''),
                       selected: selectedCategory == category['slug'],
                       onSelected: (_) {
-                        setState(() => selectedCategory = category['slug'] as String?);
+                        setState(
+                          () => selectedCategory = category['slug'] as String?,
+                        );
                         _load();
                       },
                     ),
@@ -1488,14 +1709,19 @@ class _ExploreScreenState extends State<ExploreScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                error == null ? 'Nearby Merchants (${merchants.length})' : 'Something went wrong',
-                style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                error == null
+                    ? 'Nearby Merchants (${merchants.length})'
+                    : 'Something went wrong',
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
               ),
-              if (loading) const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
+              if (loading)
+                const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
             ],
           ),
           const SizedBox(height: 12),
@@ -1526,14 +1752,25 @@ class _ExploreScreenState extends State<ExploreScreen> {
                 padding: const EdgeInsets.all(24),
                 child: Column(
                   children: [
-                    const Icon(Icons.storefront_outlined, size: 48, color: Color(0xFF6B7468)),
+                    const Icon(
+                      Icons.storefront_outlined,
+                      size: 48,
+                      color: Color(0xFF6B7468),
+                    ),
                     const SizedBox(height: 12),
-                    Text('No merchants found', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+                    Text(
+                      'No merchants found',
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
                     const SizedBox(height: 6),
                     Text(
                       'No matching stores or products found for current filters.',
                       textAlign: TextAlign.center,
-                      style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: const Color(0xFF6B7468),
+                      ),
                     ),
                     const SizedBox(height: 16),
                     FilledButton(
@@ -1547,33 +1784,34 @@ class _ExploreScreenState extends State<ExploreScreen> {
 
           // Merchant Cards
           if (!loading || merchants.isNotEmpty)
-            ...merchants.map(
-              (merchant) {
-                final id = merchant['id']?.toString() ?? '';
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: MerchantCard(
-                    merchant: merchant,
-                    isFavorite: favorites.contains(id),
-                    onFavoriteToggle: () => _toggleFavorite(id),
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => MerchantScreen(
-                          client: widget.client,
-                          merchantId: id,
-                        ),
-                      ),
+            ...merchants.map((merchant) {
+              final id = merchant['id']?.toString() ?? '';
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: MerchantCard(
+                  merchant: merchant,
+                  isFavorite: favorites.contains(id),
+                  onFavoriteToggle: () => _toggleFavorite(id),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) =>
+                          MerchantScreen(client: widget.client, merchantId: id),
                     ),
                   ),
-                );
-              },
-            ),
+                ),
+              );
+            }),
         ],
       ),
     );
   }
 
-  Widget _buildServiceTile(IconData icon, String title, Color color, VoidCallback onTap) {
+  Widget _buildServiceTile(
+    IconData icon,
+    String title,
+    Color color,
+    VoidCallback onTap,
+  ) {
     return Container(
       width: 76,
       margin: const EdgeInsets.only(right: 10),
@@ -1592,7 +1830,11 @@ class _ExploreScreenState extends State<ExploreScreen> {
               child: Icon(icon, color: color, size: 26),
             ),
             const SizedBox(height: 6),
-            Text(title, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700), maxLines: 1),
+            Text(
+              title,
+              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+              maxLines: 1,
+            ),
           ],
         ),
       ),
@@ -1634,7 +1876,10 @@ class MerchantCard extends StatelessWidget {
         ? money(deliveryFeeMinor, merchant['currency']?.toString() ?? 'ETB')
         : merchant['deliveryFee']?.toString() ?? 'ETB 50';
     final distance = merchant['distanceKm'];
-    final tags = (merchant['tags'] as List? ?? const []).whereType<String>().take(2).toList();
+    final tags = (merchant['tags'] as List? ?? const [])
+        .whereType<String>()
+        .take(2)
+        .toList();
 
     return Card(
       child: InkWell(
@@ -1655,15 +1900,21 @@ class MerchantCard extends StatelessWidget {
                       borderRadius: BorderRadius.circular(15),
                     ),
                     clipBehavior: Clip.antiAlias,
-                    child: merchant['logoUrl'] != null || merchant['coverImageUrl'] != null
+                    child:
+                        merchant['logoUrl'] != null ||
+                            merchant['coverImageUrl'] != null
                         ? Image.network(
-                            (merchant['logoUrl'] ?? merchant['coverImageUrl']) as String,
+                            (merchant['logoUrl'] ?? merchant['coverImageUrl'])
+                                as String,
                             fit: BoxFit.cover,
-                            errorBuilder: (context, error, stack) => const Icon(Icons.storefront),
+                            errorBuilder: (context, error, stack) =>
+                                const Icon(Icons.storefront),
                           )
                         : Center(
                             child: Text(
-                              (merchant['displayName']?.toString() ?? 'S').characters.first,
+                              (merchant['displayName']?.toString() ?? 'S')
+                                  .characters
+                                  .first,
                               style: const TextStyle(
                                 fontSize: 26,
                                 fontWeight: FontWeight.w800,
@@ -1681,8 +1932,11 @@ class MerchantCard extends StatelessWidget {
                           children: [
                             Expanded(
                               child: Text(
-                                merchant['displayName']?.toString() ?? 'Merchant',
-                                style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                                merchant['displayName']?.toString() ??
+                                    'Merchant',
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                ),
                               ),
                             ),
                             IconButton(
@@ -1690,7 +1944,9 @@ class MerchantCard extends StatelessWidget {
                               padding: EdgeInsets.zero,
                               icon: Icon(
                                 isFavorite ? Icons.star : Icons.star_border,
-                                color: isFavorite ? const Color(0xFFE8613D) : const Color(0xFF9E9E9E),
+                                color: isFavorite
+                                    ? const Color(0xFFE8613D)
+                                    : const Color(0xFF9E9E9E),
                                 size: 22,
                               ),
                               onPressed: onFavoriteToggle,
@@ -1703,28 +1959,39 @@ class MerchantCard extends StatelessWidget {
                             merchant['description'].toString(),
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: const Color(0xFF6B7468),
+                            ),
                           ),
                         ],
                         const SizedBox(height: 8),
                         Row(
                           children: [
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 2,
+                              ),
                               decoration: BoxDecoration(
-                                color: isOpen ? const Color(0xFFE8F5E9) : const Color(0xFFFFEBEE),
+                                color: isOpen
+                                    ? const Color(0xFFE8F5E9)
+                                    : const Color(0xFFFFEBEE),
                                 borderRadius: BorderRadius.circular(6),
                               ),
                               child: Text(
-                                !deliverable ? 'UNAVAILABLE' : isOpen ? 'OPEN' : 'CLOSED',
+                                !deliverable
+                                    ? 'UNAVAILABLE'
+                                    : isOpen
+                                    ? 'OPEN'
+                                    : 'CLOSED',
                                 style: TextStyle(
                                   fontSize: 10,
                                   fontWeight: FontWeight.w800,
                                   color: !deliverable
                                       ? const Color(0xFF6B7468)
                                       : isOpen
-                                          ? const Color(0xFF2E7D32)
-                                          : const Color(0xFFC62828),
+                                      ? const Color(0xFF2E7D32)
+                                      : const Color(0xFFC62828),
                                 ),
                               ),
                             ),
@@ -1733,10 +2000,13 @@ class MerchantCard extends StatelessWidget {
                               child: Text(
                                 [
                                   if (categoryList.isNotEmpty) categoryList,
-                                  if (merchant['primaryLocationName'] != null) merchant['primaryLocationName'].toString(),
+                                  if (merchant['primaryLocationName'] != null)
+                                    merchant['primaryLocationName'].toString(),
                                   merchantHoursLabel(merchant),
                                 ].join(' · '),
-                                style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFF6B7468)),
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: const Color(0xFF6B7468),
+                                ),
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
@@ -1754,18 +2024,51 @@ class MerchantCard extends StatelessWidget {
                   Expanded(
                     child: Row(
                       children: [
-                        const Icon(Icons.star, size: 16, color: Color(0xFFE8613D)),
+                        const Icon(
+                          Icons.star,
+                          size: 16,
+                          color: Color(0xFFE8613D),
+                        ),
                         const SizedBox(width: 4),
-                        Text(rating, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+                        Text(
+                          rating,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 12,
+                          ),
+                        ),
                         const SizedBox(width: 8),
-                        const Icon(Icons.access_time, size: 16, color: Color(0xFF6B7468)),
+                        const Icon(
+                          Icons.access_time,
+                          size: 16,
+                          color: Color(0xFF6B7468),
+                        ),
                         const SizedBox(width: 4),
-                        Flexible(child: Text(estTime, style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468)), overflow: TextOverflow.ellipsis)),
+                        Flexible(
+                          child: Text(
+                            estTime,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF6B7468),
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
                         if (distance is num) ...[
                           const SizedBox(width: 8),
-                          const Icon(Icons.near_me_outlined, size: 16, color: Color(0xFF6B7468)),
+                          const Icon(
+                            Icons.near_me_outlined,
+                            size: 16,
+                            color: Color(0xFF6B7468),
+                          ),
                           const SizedBox(width: 4),
-                          Text('${distance.toStringAsFixed(1)} km', style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468))),
+                          Text(
+                            '${distance.toStringAsFixed(1)} km',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF6B7468),
+                            ),
+                          ),
                         ],
                       ],
                     ),
@@ -1776,10 +2079,20 @@ class MerchantCard extends StatelessWidget {
                     children: [
                       Text(
                         fee,
-                        style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12, color: Color(0xFF20261F)),
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 12,
+                          color: Color(0xFF20261F),
+                        ),
                       ),
                       if (tags.isNotEmpty)
-                        Text(tags.join(' · '), style: const TextStyle(fontSize: 10, color: Color(0xFF6B7468))),
+                        Text(
+                          tags.join(' · '),
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: Color(0xFF6B7468),
+                          ),
+                        ),
                     ],
                   ),
                 ],
@@ -1793,7 +2106,13 @@ class MerchantCard extends StatelessWidget {
 }
 
 class MerchantScreen extends StatefulWidget {
-  const MerchantScreen({super.key, required this.client, required this.merchantId, this.latitude, this.longitude});
+  const MerchantScreen({
+    super.key,
+    required this.client,
+    required this.merchantId,
+    this.latitude,
+    this.longitude,
+  });
 
   final ApiClient client;
   final String merchantId;
@@ -1826,10 +2145,13 @@ class _MerchantScreenState extends State<MerchantScreen> {
     });
     try {
       final locationQuery = widget.latitude != null && widget.longitude != null
-          ? 'lat=${widget.latitude}&lng=${widget.longitude}' : '';
+          ? 'lat=${widget.latitude}&lng=${widget.longitude}'
+          : '';
       final results = await Future.wait([
         widget.client.get('/v1/merchants/${widget.merchantId}?$locationQuery'),
-        widget.client.get('/v1/merchants/${widget.merchantId}/products?limit=50&$locationQuery'),
+        widget.client.get(
+          '/v1/merchants/${widget.merchantId}/products?limit=50&$locationQuery',
+        ),
       ]);
       if (!mounted) return;
       setState(() {
@@ -1894,14 +2216,19 @@ class _MerchantScreenState extends State<MerchantScreen> {
     final groups = asList(product['optionGroups']);
     final currency = product['currency']?.toString();
     final basePrice = (product['basePriceMinor'] as num?) ?? 0;
-    final available = product['quantityAvailable'] is num ? (product['quantityAvailable'] as num).toInt() : null;
+    final available = product['quantityAvailable'] is num
+        ? (product['quantityAvailable'] as num).toInt()
+        : null;
     final maxQuantity = available == null ? 20 : available.clamp(1, 20);
     final selected = <String, Set<String>>{};
     var quantity = 1;
     for (final group in groups) {
       final groupId = group['id'].toString();
       selected[groupId] = asList(group['options'])
-          .where((option) => option['isDefault'] == true && option['isAvailable'] != false)
+          .where(
+            (option) =>
+                option['isDefault'] == true && option['isAvailable'] != false,
+          )
           .map((option) => option['id'].toString())
           .toSet();
     }
@@ -1916,28 +2243,47 @@ class _MerchantScreenState extends State<MerchantScreen> {
             final chosen = selected[group['id'].toString()] ?? <String>{};
             for (final option in asList(group['options'])) {
               if (chosen.contains(option['id'].toString())) {
-                unitPrice += (option['priceDeltaMinor'] as num?)?.toDouble() ?? 0;
+                unitPrice +=
+                    (option['priceDeltaMinor'] as num?)?.toDouble() ?? 0;
               }
             }
           }
           final missing = groups.where((group) {
             if (group['isRequired'] != true) return false;
             final chosen = selected[group['id'].toString()]?.length ?? 0;
-            final minimum = ((group['minSelections'] as num?)?.toInt() ?? 0).clamp(1, 20);
+            final minimum = ((group['minSelections'] as num?)?.toInt() ?? 0)
+                .clamp(1, 20);
             return chosen < minimum;
           }).toList();
-          final multipleUnits = currency != null ? money((unitPrice * quantity).round(), currency) : '—';
+          final multipleUnits = currency != null
+              ? money((unitPrice * quantity).round(), currency)
+              : '—';
           return Padding(
-            padding: EdgeInsets.fromLTRB(20, 4, 20, 20 + MediaQuery.of(sheetContext).viewInsets.bottom),
+            padding: EdgeInsets.fromLTRB(
+              20,
+              4,
+              20,
+              20 + MediaQuery.of(sheetContext).viewInsets.bottom,
+            ),
             child: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(product['displayName']?.toString() ?? 'Item', style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+                  Text(
+                    product['displayName']?.toString() ?? 'Item',
+                    style: Theme.of(sheetContext).textTheme.titleLarge
+                        ?.copyWith(fontWeight: FontWeight.w800),
+                  ),
                   if (product['description'] != null) ...[
                     const SizedBox(height: 4),
-                    Text(product['description'].toString(), style: const TextStyle(color: Color(0xFF6B7468), fontSize: 13)),
+                    Text(
+                      product['description'].toString(),
+                      style: const TextStyle(
+                        color: Color(0xFF6B7468),
+                        fontSize: 13,
+                      ),
+                    ),
                   ],
                   if (product['imageUrl'] != null) ...[
                     ClipRRect(
@@ -1950,7 +2296,11 @@ class _MerchantScreenState extends State<MerchantScreen> {
                         errorBuilder: (context, error, stack) => Container(
                           height: 170,
                           color: const Color(0xFFF0EAD9),
-                          child: const Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D), size: 44),
+                          child: const Icon(
+                            Icons.local_mall_rounded,
+                            color: Color(0xFFE8613D),
+                            size: 44,
+                          ),
                         ),
                       ),
                     ),
@@ -1960,7 +2310,10 @@ class _MerchantScreenState extends State<MerchantScreen> {
                   for (final group in groups) ...[
                     Text(
                       '${group['displayName']}${group['isRequired'] == true ? ' · required' : ''}',
-                      style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                      ),
                     ),
                     const SizedBox(height: 6),
                     Wrap(
@@ -1969,34 +2322,56 @@ class _MerchantScreenState extends State<MerchantScreen> {
                       children: asList(group['options']).map((option) {
                         final groupId = group['id'].toString();
                         final optionId = option['id'].toString();
-                        final chosen = selected[groupId]?.contains(optionId) ?? false;
+                        final chosen =
+                            selected[groupId]?.contains(optionId) ?? false;
                         final disabled = option['isAvailable'] == false;
-                        final delta = (option['priceDeltaMinor'] as num?)?.toInt() ?? 0;
+                        final delta =
+                            (option['priceDeltaMinor'] as num?)?.toInt() ?? 0;
                         final label = delta > 0
                             ? '${option['displayName']} +${money(delta, currency)}'
                             : option['displayName'].toString();
                         if (group['selectionType'] == 'multi') {
                           return FilterChip(
-                            label: Text(label, style: const TextStyle(fontSize: 12)),
+                            label: Text(
+                              label,
+                              style: const TextStyle(fontSize: 12),
+                            ),
                             selected: chosen,
-                            onSelected: disabled ? null : (value) {
-                              setSheetState(() {
-                                final set = selected.putIfAbsent(groupId, () => <String>{});
-                                final max = (group['maxSelections'] as num?)?.toInt() ?? 1;
-                                if (value) {
-                                  if (set.length >= max) set.remove(set.first);
-                                  set.add(optionId);
-                                } else {
-                                  set.remove(optionId);
-                                }
-                              });
-                            },
+                            onSelected: disabled
+                                ? null
+                                : (value) {
+                                    setSheetState(() {
+                                      final set = selected.putIfAbsent(
+                                        groupId,
+                                        () => <String>{},
+                                      );
+                                      final max =
+                                          (group['maxSelections'] as num?)
+                                              ?.toInt() ??
+                                          1;
+                                      if (value) {
+                                        if (set.length >= max) {
+                                          set.remove(set.first);
+                                        }
+                                        set.add(optionId);
+                                      } else {
+                                        set.remove(optionId);
+                                      }
+                                    });
+                                  },
                           );
                         }
                         return ChoiceChip(
-                          label: Text(label, style: const TextStyle(fontSize: 12)),
+                          label: Text(
+                            label,
+                            style: const TextStyle(fontSize: 12),
+                          ),
                           selected: chosen,
-                          onSelected: disabled ? null : (_) => setSheetState(() => selected[groupId] = {optionId}),
+                          onSelected: disabled
+                              ? null
+                              : (_) => setSheetState(
+                                  () => selected[groupId] = {optionId},
+                                ),
                         );
                       }).toList(),
                     ),
@@ -2004,18 +2379,28 @@ class _MerchantScreenState extends State<MerchantScreen> {
                   ],
                   Row(
                     children: [
-                      const Text('Quantity', style: TextStyle(fontWeight: FontWeight.w700)),
+                      const Text(
+                        'Quantity',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
                       const Spacer(),
                       IconButton.filledTonal(
-                        onPressed: quantity <= 1 ? null : () => setSheetState(() => quantity--),
+                        onPressed: quantity <= 1
+                            ? null
+                            : () => setSheetState(() => quantity--),
                         icon: const Icon(Icons.remove, size: 18),
                       ),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 12),
-                        child: Text('$quantity', style: const TextStyle(fontWeight: FontWeight.w800)),
+                        child: Text(
+                          '$quantity',
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
                       ),
                       IconButton.filledTonal(
-                        onPressed: quantity >= maxQuantity ? null : () => setSheetState(() => quantity++),
+                        onPressed: quantity >= maxQuantity
+                            ? null
+                            : () => setSheetState(() => quantity++),
                         icon: const Icon(Icons.add, size: 18),
                       ),
                     ],
@@ -2024,8 +2409,16 @@ class _MerchantScreenState extends State<MerchantScreen> {
                     Padding(
                       padding: const EdgeInsets.only(top: 4),
                       child: Text(
-                        available <= 0 ? 'Out of stock' : 'Only $available left',
-                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: available <= 0 ? const Color(0xFFC62828) : const Color(0xFFB26A00)),
+                        available <= 0
+                            ? 'Out of stock'
+                            : 'Only $available left',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: available <= 0
+                              ? const Color(0xFFC62828)
+                              : const Color(0xFFB26A00),
+                        ),
                       ),
                     ),
                   if (missing.isNotEmpty)
@@ -2033,7 +2426,10 @@ class _MerchantScreenState extends State<MerchantScreen> {
                       padding: const EdgeInsets.only(top: 8),
                       child: Text(
                         'Choose ${missing.map((group) => group['displayName']).join(', ')} to continue.',
-                        style: const TextStyle(fontSize: 12, color: Color(0xFFC62828)),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFFC62828),
+                        ),
                       ),
                     ),
                   const SizedBox(height: 16),
@@ -2043,23 +2439,34 @@ class _MerchantScreenState extends State<MerchantScreen> {
                       onPressed: missing.isNotEmpty || available == 0
                           ? null
                           : () async {
-                              setState(() => addingId = product['id'] as String?);
+                              setState(
+                                () => addingId = product['id'] as String?,
+                              );
                               Navigator.of(sheetContext).pop(false);
                               try {
                                 await widget.client.post('/v1/cart/items', {
                                   'productId': product['id'],
                                   'quantity': quantity,
-                                  'optionIds': selected.values.expand((value) => value).toList(),
+                                  'optionIds': selected.values
+                                      .expand((value) => value)
+                                      .toList(),
                                 });
                                 if (!mounted) return;
                                 ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('${product['displayName']} added to cart')),
+                                  SnackBar(
+                                    content: Text(
+                                      '${product['displayName']} added to cart',
+                                    ),
+                                  ),
                                 );
                                 Navigator.of(context).pop(true);
                               } catch (cause) {
                                 if (!mounted) return;
                                 final message = cause.toString();
-                                if (message.toLowerCase().contains('another merchant') || message.contains('409')) {
+                                if (message.toLowerCase().contains(
+                                      'another merchant',
+                                    ) ||
+                                    message.contains('409')) {
                                   final clearAndAdd = await showDialog<bool>(
                                     context: context,
                                     builder: (dialogContext) => AlertDialog(
@@ -2069,11 +2476,17 @@ class _MerchantScreenState extends State<MerchantScreen> {
                                       ),
                                       actions: [
                                         TextButton(
-                                          onPressed: () => Navigator.pop(dialogContext, false),
+                                          onPressed: () => Navigator.pop(
+                                            dialogContext,
+                                            false,
+                                          ),
                                           child: const Text('Cancel'),
                                         ),
                                         FilledButton(
-                                          onPressed: () => Navigator.pop(dialogContext, true),
+                                          onPressed: () => Navigator.pop(
+                                            dialogContext,
+                                            true,
+                                          ),
                                           child: const Text('Clear cart & add'),
                                         ),
                                       ],
@@ -2082,22 +2495,36 @@ class _MerchantScreenState extends State<MerchantScreen> {
                                   if (clearAndAdd == true && mounted) {
                                     try {
                                       await widget.client.delete('/v1/cart');
-                                      await widget.client.post('/v1/cart/items', {
-                                        'productId': product['id'],
-                                        'quantity': quantity,
-                                        'optionIds': selected.values.expand((value) => value).toList(),
-                                      });
+                                      await widget.client.post(
+                                        '/v1/cart/items',
+                                        {
+                                          'productId': product['id'],
+                                          'quantity': quantity,
+                                          'optionIds': selected.values
+                                              .expand((value) => value)
+                                              .toList(),
+                                        },
+                                      );
                                       if (mounted) {
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          SnackBar(content: Text('${product['displayName']} added to cart')),
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          SnackBar(
+                                            content: Text(
+                                              '${product['displayName']} added to cart',
+                                            ),
+                                          ),
                                         );
                                         Navigator.of(context).pop(true);
                                       }
                                     } catch (err) {
                                       if (mounted) {
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          SnackBar(content: Text(err.toString())),
-                                        );
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
+                                              SnackBar(
+                                                content: Text(err.toString()),
+                                              ),
+                                            );
                                       }
                                     }
                                   }
@@ -2123,7 +2550,9 @@ class _MerchantScreenState extends State<MerchantScreen> {
     );
     if (confirmed == true && mounted) {
       await Navigator.of(context).push(
-        MaterialPageRoute<void>(builder: (_) => CartScreen(client: widget.client)),
+        MaterialPageRoute<void>(
+          builder: (_) => CartScreen(client: widget.client),
+        ),
       );
       if (mounted) _load();
     }
@@ -2135,8 +2564,12 @@ class _MerchantScreenState extends State<MerchantScreen> {
     final deliverable = data['isDeliverable'] != false;
     final weekly = asList(data['weeklyHours']);
     final distance = data['distanceKm'];
-    final fee = data['deliveryFeeMinor'] is num ? money(data['deliveryFeeMinor'] as num, 'ETB') : '—';
-    final minOrder = data['minOrderMinor'] is num ? money(data['minOrderMinor'] as num, 'ETB') : '—';
+    final fee = data['deliveryFeeMinor'] is num
+        ? money(data['deliveryFeeMinor'] as num, 'ETB')
+        : '—';
+    final minOrder = data['minOrderMinor'] is num
+        ? money(data['minOrderMinor'] as num, 'ETB')
+        : '—';
     final nextOpen = DateTime.tryParse(data['nextOpenAt']?.toString() ?? '');
     return Card(
       child: Padding(
@@ -2147,78 +2580,114 @@ class _MerchantScreenState extends State<MerchantScreen> {
             Row(
               children: [
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
                   decoration: BoxDecoration(
                     color: !deliverable
                         ? const Color(0xFFEFEAE0)
                         : isOpen
-                            ? const Color(0xFFE8F5E9)
-                            : const Color(0xFFFFEBEE),
+                        ? const Color(0xFFE8F5E9)
+                        : const Color(0xFFFFEBEE),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    !deliverable ? 'NOT DELIVERABLE' : isOpen ? 'OPEN NOW' : 'CLOSED',
+                    !deliverable
+                        ? 'NOT DELIVERABLE'
+                        : isOpen
+                        ? 'OPEN NOW'
+                        : 'CLOSED',
                     style: TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.w800,
                       color: !deliverable
                           ? const Color(0xFF6B7468)
                           : isOpen
-                              ? const Color(0xFF2E7D32)
-                              : const Color(0xFFC62828),
+                          ? const Color(0xFF2E7D32)
+                          : const Color(0xFFC62828),
                     ),
                   ),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(merchantHoursLabel(data), style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600)),
+                  child: Text(
+                    merchantHoursLabel(data),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ],
             ),
             if (!deliverable) ...[
               const SizedBox(height: 8),
               Text(
-                data['deliveryUnavailableReason']?.toString() ??
-                    'Your delivery location is outside this merchant\'s service area.',
-                style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFFC62828)),
+                data['deliveryUnavailableReason']?.toString() ?? 'Your delivery location is outside this merchant\'s service area.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFFC62828),
+                ),
               ),
             ],
             if (!isOpen && nextOpen != null) ...[
               const SizedBox(height: 6),
-              Text('Opens ${formatClockTime(nextOpen)}', style: theme.textTheme.bodySmall),
+              Text(
+                'Opens ${formatClockTime(nextOpen)}',
+                style: theme.textTheme.bodySmall,
+              ),
             ],
             const SizedBox(height: 10),
             Wrap(
               spacing: 16,
               runSpacing: 6,
               children: [
-                _availabilityStat(Icons.delivery_dining_rounded, 'Delivery',
-                    '${data['etaMinMinutes'] ?? '—'}–${data['etaMaxMinutes'] ?? '—'} min'),
-                _availabilityStat(Icons.near_me_outlined, 'Distance',
-                    distance is num ? '${distance.toStringAsFixed(1)} km' : '—'),
+                _availabilityStat(
+                  Icons.delivery_dining_rounded,
+                  'Delivery',
+                  '${data['etaMinMinutes'] ?? '—'}–${data['etaMaxMinutes'] ?? '—'} min',
+                ),
+                _availabilityStat(
+                  Icons.near_me_outlined,
+                  'Distance',
+                  distance is num ? '${distance.toStringAsFixed(1)} km' : '—',
+                ),
                 _availabilityStat(Icons.payments_outlined, 'Fee', fee),
-                _availabilityStat(Icons.shopping_basket_outlined, 'Min order', minOrder),
+                _availabilityStat(
+                  Icons.shopping_basket_outlined,
+                  'Min order',
+                  minOrder,
+                ),
               ],
             ),
             if (weekly.isNotEmpty)
               ExpansionTile(
                 tilePadding: EdgeInsets.zero,
                 childrenPadding: const EdgeInsets.only(bottom: 8),
-                title: const Text('Opening hours', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                title: const Text(
+                  'Opening hours',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                ),
                 children: [
                   for (final day in weekly)
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 4),
                       child: Row(
                         children: [
-                          Expanded(child: Text(day['label']?.toString() ?? '', style: theme.textTheme.bodySmall)),
+                          Expanded(
+                            child: Text(
+                              day['label']?.toString() ?? '',
+                              style: theme.textTheme.bodySmall,
+                            ),
+                          ),
                           Text(
                             day['closed'] == true
                                 ? 'Closed'
                                 : day['open'] == null || day['close'] == null
-                                    ? 'Open all day'
-                                    : '${day['open']} – ${day['close']}',
-                            style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
+                                ? 'Open all day'
+                                : '${day['open']} – ${day['close']}',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ],
                       ),
@@ -2237,8 +2706,14 @@ class _MerchantScreenState extends State<MerchantScreen> {
       children: [
         Icon(icon, size: 15, color: const Color(0xFF6B7468)),
         const SizedBox(width: 4),
-        Text('$label: ', style: const TextStyle(fontSize: 11, color: Color(0xFF6B7468))),
-        Text(value, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+        Text(
+          '$label: ',
+          style: const TextStyle(fontSize: 11, color: Color(0xFF6B7468)),
+        ),
+        Text(
+          value,
+          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+        ),
       ],
     );
   }
@@ -2259,24 +2734,35 @@ class _MerchantScreenState extends State<MerchantScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('How this store works', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
+            const Text(
+              'How this store works',
+              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+            ),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
               runSpacing: 8,
               children: [
-                _serviceChip(Icons.storefront_outlined, supportsPickup ? 'Collection available' : 'Delivery only'),
+                _serviceChip(
+                  Icons.storefront_outlined,
+                  supportsPickup ? 'Collection available' : 'Delivery only',
+                ),
                 _serviceChip(
                   Icons.schedule,
-                  allowsScheduling && days > 0 ? 'Schedule up to $days day${days == 1 ? '' : 's'} · $lead min lead' : 'No scheduled orders',
+                  allowsScheduling && days > 0
+                      ? 'Schedule up to $days day${days == 1 ? '' : 's'} · $lead min lead'
+                      : 'No scheduled orders',
                 ),
               ],
             ),
-            if (supportsPickup && fulfillment['pickupInstructions'] != null) ...[
+            if (supportsPickup &&
+                fulfillment['pickupInstructions'] != null) ...[
               const SizedBox(height: 10),
               Text(
                 fulfillment['pickupInstructions'].toString(),
-                style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFF6B7468),
+                ),
               ),
             ],
             if (pickupLocations.isNotEmpty && supportsPickup) ...[
@@ -2287,7 +2773,11 @@ class _MerchantScreenState extends State<MerchantScreen> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Icon(Icons.place_outlined, size: 14, color: Color(0xFF6B7468)),
+                      const Icon(
+                        Icons.place_outlined,
+                        size: 14,
+                        color: Color(0xFF6B7468),
+                      ),
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
@@ -2303,11 +2793,18 @@ class _MerchantScreenState extends State<MerchantScreen> {
             ExpansionTile(
               tilePadding: EdgeInsets.zero,
               childrenPadding: const EdgeInsets.only(bottom: 6),
-              title: const Text('Policies', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+              title: const Text(
+                'Policies',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+              ),
               children: [
                 if (policy['cancellationPolicy'] != null)
-                  _policyRow('Cancellation', policy['cancellationPolicy'].toString()),
-                if (policy['refundPolicy'] != null) _policyRow('Refunds', policy['refundPolicy'].toString()),
+                  _policyRow(
+                    'Cancellation',
+                    policy['cancellationPolicy'].toString(),
+                  ),
+                if (policy['refundPolicy'] != null)
+                  _policyRow('Refunds', policy['refundPolicy'].toString()),
               ],
             ),
           ],
@@ -2319,13 +2816,19 @@ class _MerchantScreenState extends State<MerchantScreen> {
   Widget _serviceChip(IconData icon, String label) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(color: const Color(0xFFF4F0E8), borderRadius: BorderRadius.circular(10)),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F0E8),
+        borderRadius: BorderRadius.circular(10),
+      ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(icon, size: 13, color: const Color(0xFF6B7468)),
           const SizedBox(width: 5),
-          Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+          ),
         ],
       ),
     );
@@ -2337,8 +2840,14 @@ class _MerchantScreenState extends State<MerchantScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
-          Text(value, style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468))),
+          Text(
+            label,
+            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+          ),
+          Text(
+            value,
+            style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468)),
+          ),
         ],
       ),
     );
@@ -2348,14 +2857,20 @@ class _MerchantScreenState extends State<MerchantScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: Text(merchant?['displayName']?.toString() ?? 'Merchant')),
+      appBar: AppBar(
+        title: Text(merchant?['displayName']?.toString() ?? 'Merchant'),
+      ),
       body: loading
           ? ListView(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 30),
               children: [
                 const SkeletonBox(width: 220, height: 16),
                 const SizedBox(height: 8),
-                const SkeletonBox(width: double.infinity, height: 132, borderRadius: 18),
+                const SkeletonBox(
+                  width: double.infinity,
+                  height: 132,
+                  borderRadius: 18,
+                ),
                 const SizedBox(height: 20),
                 const SkeletonBox(width: 160, height: 20),
                 const SizedBox(height: 12),
@@ -2363,166 +2878,253 @@ class _MerchantScreenState extends State<MerchantScreen> {
                   4,
                   (_) => const Padding(
                     padding: EdgeInsets.only(bottom: 10),
-                    child: SkeletonBox(width: double.infinity, height: 76, borderRadius: 16),
+                    child: SkeletonBox(
+                      width: double.infinity,
+                      height: 76,
+                      borderRadius: 16,
+                    ),
                   ),
                 ),
               ],
             )
           : error != null
-              ? Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(mainAxisSize: MainAxisSize.min, children: [
-                    ErrorBanner(message: error!),
-                    OutlinedButton(onPressed: _load, child: const Text('Retry')),
-                  ]),
-                )
-              : RefreshIndicator(
-                  onRefresh: _load,
-                  child: ListView(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 30),
-                    children: [
-                      if (merchant?['addressLine'] != null)
-                        Text(
-                          merchant!['addressLine'].toString(),
-                          style: theme.textTheme.bodyMedium?.copyWith(color: const Color(0xFF6B7468)),
-                        ),
-                      const SizedBox(height: 18),
-                      _availabilityCard(theme),
-                      const SizedBox(height: 10),
-                      _storefrontInfoCard(theme),
-                      Text(
-                        'Products & services',
-                        style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
+          ? Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ErrorBanner(message: error!),
+                  OutlinedButton(onPressed: _load, child: const Text('Retry')),
+                ],
+              ),
+            )
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 30),
+                children: [
+                  if (merchant?['addressLine'] != null)
+                    Text(
+                      merchant!['addressLine'].toString(),
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: const Color(0xFF6B7468),
                       ),
-                      const SizedBox(height: 10),
-                      if (products.isEmpty)
-                        const EmptyState(
-                          icon: Icons.restaurant_menu,
-                          title: 'No products yet',
-                          message: 'This merchant has not published products.',
-                        ),
-                      ...products.map(
-                        (product) => Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: Card(
-                            child: Padding(
-                              padding: const EdgeInsets.all(14),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                    ),
+                  const SizedBox(height: 18),
+                  _availabilityCard(theme),
+                  const SizedBox(height: 10),
+                  _storefrontInfoCard(theme),
+                  Text(
+                    'Products & services',
+                    style: theme.textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  if (products.isEmpty)
+                    const EmptyState(
+                      icon: Icons.restaurant_menu,
+                      title: 'No products yet',
+                      message: 'This merchant has not published products.',
+                    ),
+                  ...products.map(
+                    (product) => Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(14),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      product['displayName']?.toString() ??
+                                          'Item',
+                                      style: theme.textTheme.titleMedium
+                                          ?.copyWith(
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                    ),
+                                    if (product['description'] != null) ...[
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        product['description'].toString(),
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: theme.textTheme.bodySmall
+                                            ?.copyWith(
+                                              color: const Color(0xFF6B7468),
+                                            ),
+                                      ),
+                                    ],
+                                    const SizedBox(height: 8),
+                                    Row(
                                       children: [
                                         Text(
-                                          product['displayName']?.toString() ?? 'Item',
-                                          style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+                                          money(
+                                            product['basePriceMinor'] as num?,
+                                            product['currency']?.toString(),
+                                          ),
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.w800,
+                                          ),
                                         ),
-                                        if (product['description'] != null) ...[
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            product['description'].toString(),
-                                            maxLines: 2,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
+                                        if (asList(product['optionGroups'])
+                                            .isNotEmpty) ...[
+                                          const SizedBox(width: 6),
+                                          Flexible(
+                                            child: Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 6,
+                                                    vertical: 2,
+                                                  ),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFFF0EBE1),
+                                                borderRadius:
+                                                    BorderRadius.circular(6),
+                                              ),
+                                              child: const Text(
+                                                'Customisable',
+                                                style: TextStyle(
+                                                  fontSize: 9,
+                                                  fontWeight: FontWeight.w800,
+                                                  color: Color(0xFF6B7468),
+                                                ),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
                                           ),
                                         ],
-                                        const SizedBox(height: 8),
-                                        Row(
-                                          children: [
-                                            Text(
-                                              money(product['basePriceMinor'] as num?, product['currency']?.toString()),
-                                              style: const TextStyle(fontWeight: FontWeight.w800),
-                                            ),
-                                            if (asList(product['optionGroups']).isNotEmpty) ...[
-                                              const SizedBox(width: 6),
-                                              Flexible(
-                                                child: Container(
-                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                  decoration: BoxDecoration(color: const Color(0xFFF0EBE1), borderRadius: BorderRadius.circular(6)),
-                                                  child: const Text('Customisable', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Color(0xFF6B7468)), overflow: TextOverflow.ellipsis),
-                                                ),
-                                              ),
-                                            ],
-                                          ],
-                                        ),
-                                        if (product['stockState'] == 'low_stock')
-                                          const Padding(
-                                            padding: EdgeInsets.only(top: 4),
-                                            child: Text('Low stock', style: TextStyle(fontSize: 11, color: Color(0xFFB26A00), fontWeight: FontWeight.w700)),
-                                          ),
-                                        if (product['stockState'] == 'out_of_stock' || product['isAvailable'] == false)
-                                          const Padding(
-                                            padding: EdgeInsets.only(top: 4),
-                                            child: Text('Out of stock', style: TextStyle(fontSize: 11, color: Color(0xFFC62828), fontWeight: FontWeight.w700)),
-                                          ),
                                       ],
                                     ),
-                                  ),
-                                  SizedBox(
-                                    width: 72,
-                                    child: ClipRRect(
-                                      borderRadius: BorderRadius.circular(14),
-                                      child: product['imageUrl'] != null
-                                          ? Image.network(
-                                              product['imageUrl'].toString(),
-                                              fit: BoxFit.cover,
-                                              errorBuilder: (context, error, stack) => Container(
-                                                width: 72,
-                                                color: const Color(0xFFF0EAD9),
-                                                child: const Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D), size: 26),
-                                              ),
-                                            )
-                                          : Container(
-                                              width: 72,
-                                              color: const Color(0xFFF0EAD9),
-                                              child: const Icon(Icons.local_mall_rounded, color: Color(0xFFE8613D), size: 26),
-                                            ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  IconButton(
-                                    icon: Icon(
-                                      favoriteProducts.contains(product['id']?.toString() ?? '') ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-                                      color: favoriteProducts.contains(product['id']?.toString() ?? '') ? const Color(0xFFE8613D) : const Color(0xFF9E9E9E),
-                                      size: 22,
-                                    ),
-                                    onPressed: () => _toggleFavoriteProduct(product['id']?.toString() ?? ''),
-                                  ),
-                                  FilledButton.tonal(
-                                    onPressed: product['isAvailable'] == true &&
-                                            product['stockState'] != 'out_of_stock' &&
-                                            addingId == null &&
-                                            merchant?['isDeliverable'] != false &&
-                                            merchant?['isOpen'] != false
-                                        ? () => _add(product)
-                                        : null,
-                                    style: FilledButton.styleFrom(
-                                      minimumSize: const Size(44, 44),
-                                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                                    ),
-                                    child: addingId == product['id']
-                                        ? const SizedBox(
-                                            width: 16,
-                                            height: 16,
-                                            child: CircularProgressIndicator(strokeWidth: 2),
-                                          )
-                                        : const Icon(Icons.add, size: 20),
-                                  ),
-                                ],
+                                    if (product['stockState'] == 'low_stock')
+                                      const Padding(
+                                        padding: EdgeInsets.only(top: 4),
+                                        child: Text(
+                                          'Low stock',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            color: Color(0xFFB26A00),
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    if (product['stockState'] ==
+                                            'out_of_stock' ||
+                                        product['isAvailable'] == false)
+                                      const Padding(
+                                        padding: EdgeInsets.only(top: 4),
+                                        child: Text(
+                                          'Out of stock',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            color: Color(0xFFC62828),
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
                               ),
-                            ),
+                              SizedBox(
+                                width: 72,
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(14),
+                                  child: product['imageUrl'] != null
+                                      ? Image.network(
+                                          product['imageUrl'].toString(),
+                                          fit: BoxFit.cover,
+                                          errorBuilder:
+                                              (context, error, stack) =>
+                                                  Container(
+                                                    width: 72,
+                                                    color: const Color(
+                                                      0xFFF0EAD9,
+                                                    ),
+                                                    child: const Icon(
+                                                      Icons.local_mall_rounded,
+                                                      color: Color(0xFFE8613D),
+                                                      size: 26,
+                                                    ),
+                                                  ),
+                                        )
+                                      : Container(
+                                          width: 72,
+                                          color: const Color(0xFFF0EAD9),
+                                          child: const Icon(
+                                            Icons.local_mall_rounded,
+                                            color: Color(0xFFE8613D),
+                                            size: 26,
+                                          ),
+                                        ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              IconButton(
+                                icon: Icon(
+                                  favoriteProducts.contains(
+                                        product['id']?.toString() ?? '',
+                                      )
+                                      ? Icons.favorite_rounded
+                                      : Icons.favorite_border_rounded,
+                                  color:
+                                      favoriteProducts.contains(
+                                        product['id']?.toString() ?? '',
+                                      )
+                                      ? const Color(0xFFE8613D)
+                                      : const Color(0xFF9E9E9E),
+                                  size: 22,
+                                ),
+                                onPressed: () => _toggleFavoriteProduct(
+                                  product['id']?.toString() ?? '',
+                                ),
+                              ),
+                              FilledButton.tonal(
+                                onPressed:
+                                    product['isAvailable'] == true &&
+                                        product['stockState'] !=
+                                            'out_of_stock' &&
+                                        addingId == null &&
+                                        merchant?['isDeliverable'] != false &&
+                                        merchant?['isOpen'] != false
+                                    ? () => _add(product)
+                                    : null,
+                                style: FilledButton.styleFrom(
+                                  minimumSize: const Size(44, 44),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                  ),
+                                ),
+                                child: addingId == product['id']
+                                    ? const SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(Icons.add, size: 20),
+                              ),
+                            ],
                           ),
                         ),
                       ),
-                    ],
+                    ),
                   ),
-                ),
+                ],
+              ),
+            ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () async {
           await Navigator.of(context).push(
-            MaterialPageRoute<void>(builder: (_) => CartScreen(client: widget.client)),
+            MaterialPageRoute<void>(
+              builder: (_) => CartScreen(client: widget.client),
+            ),
           );
         },
         icon: const Icon(Icons.shopping_bag_outlined),
@@ -2562,9 +3164,14 @@ class _CartScreenState extends State<CartScreen> {
         error = null;
       });
       if (issues.isNotEmpty && mounted) {
-        final messages = issues.map((issue) => issue['message']?.toString() ?? '').where((message) => message.isNotEmpty);
+        final messages = issues
+            .map((issue) => issue['message']?.toString() ?? '')
+            .where((message) => message.isNotEmpty);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(messages.join('\n')), duration: const Duration(seconds: 5)),
+          SnackBar(
+            content: Text(messages.join('\n')),
+            duration: const Duration(seconds: 5),
+          ),
         );
       }
     } on ApiException catch (cause) {
@@ -2590,10 +3197,9 @@ class _CartScreenState extends State<CartScreen> {
   Future<void> _update(Map<String, dynamic> item, int quantity) async {
     setState(() => updating = true);
     try {
-      final result = await widget.client.patch(
-        '/v1/cart/items/${item['id']}',
-        {'quantity': quantity},
-      );
+      final result = await widget.client.patch('/v1/cart/items/${item['id']}', {
+        'quantity': quantity,
+      });
       if (!mounted) return;
       setState(() => cart = asMap(result));
       if (asList(cart?['items']).isEmpty) {
@@ -2601,9 +3207,8 @@ class _CartScreenState extends State<CartScreen> {
       }
     } catch (cause) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(cause.toString())),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(cause.toString())));
     } finally {
       if (mounted) setState(() => updating = false);
     }
@@ -2644,137 +3249,195 @@ class _CartScreenState extends State<CartScreen> {
       body: loading
           ? const Center(child: CircularProgressIndicator())
           : error != null
-              ? Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      ErrorBanner(message: error!),
-                      const SizedBox(height: 12),
-                      OutlinedButton.icon(
-                        onPressed: _load,
-                        icon: const Icon(Icons.refresh_rounded),
-                        label: const Text('Retry'),
-                      ),
-                    ],
+          ? Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ErrorBanner(message: error!),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: _load,
+                    icon: const Icon(Icons.refresh_rounded),
+                    label: const Text('Retry'),
                   ),
-              )
-              : empty
-                  ? const EmptyState(
-                      icon: Icons.shopping_bag_outlined,
-                      title: 'Your cart is empty',
-                      message: 'Add something delicious from a nearby merchant.',
-                    )
-                  : ListView(
-                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 140),
-                      children: [
-                        Text(
-                          cart!['merchantName']?.toString() ?? '',
-                          style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
-                        ),
-                        const SizedBox(height: 12),
-                        ...items.map(
-                          (item) => Padding(
-                            padding: const EdgeInsets.only(bottom: 10),
-                            child: Card(
-                              child: Padding(
-                                padding: const EdgeInsets.all(14),
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            item['displayName']?.toString() ?? 'Item',
-                                            style: const TextStyle(fontWeight: FontWeight.w700),
-                                          ),
-                                          if ((item['optionsLabel']?.toString() ?? '').isNotEmpty) ...[
-                                            const SizedBox(height: 2),
-                                            Text(
-                                              item['optionsLabel'].toString(),
-                                              style: const TextStyle(fontSize: 11, color: Color(0xFF6B7468)),
-                                            ),
-                                          ],
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            '${money(item['unitPriceMinor'] as num?, item['currency']?.toString())} · ${money(item['lineTotalMinor'] as num?, item['currency']?.toString())}',
-                                            style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
-                                          ),
-                                          if (item['stockIssue'] != null)
-                                            Text(
-                                              item['stockIssue'].toString(),
-                                              style: const TextStyle(color: Color(0xFFA63A32), fontSize: 12),
-                                            ),
-                                          if (item['stockState'] == 'low_stock')
-                                            const Text(
-                                              'Low stock',
-                                              style: TextStyle(color: Color(0xFFB26A00), fontSize: 11, fontWeight: FontWeight.w700),
-                                            ),
-                                        ],
+                ],
+              ),
+            )
+          : empty
+          ? const EmptyState(
+              icon: Icons.shopping_bag_outlined,
+              title: 'Your cart is empty',
+              message: 'Add something delicious from a nearby merchant.',
+            )
+          : ListView(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 140),
+              children: [
+                Text(
+                  cart!['merchantName']?.toString() ?? '',
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                ...items.map(
+                  (item) => Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    item['displayName']?.toString() ?? 'Item',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  if ((item['optionsLabel']?.toString() ?? '')
+                                      .isNotEmpty) ...[
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      item['optionsLabel'].toString(),
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        color: Color(0xFF6B7468),
                                       ),
                                     ),
-                                    if (item['isAvailable'] == false)
-                                      IconButton(
-                                        tooltip: 'Remove',
-                                        onPressed: updating ? null : () => _update(item, 0),
-                                        icon: const Icon(Icons.delete_outline),
-                                      )
-                                    else ...[
-                                      IconButton(
-                                        onPressed: updating ? null : () => _update(item, (item['quantity'] as num).toInt() - 1),
-                                        icon: Icon((item['quantity'] as num).toInt() <= 1 ? Icons.delete_outline : Icons.remove_circle_outline),
-                                      ),
-                                      Text(
-                                        '${item['quantity']}',
-                                        style: const TextStyle(fontWeight: FontWeight.w800),
-                                      ),
-                                      IconButton(
-                                        onPressed: updating || (item['quantity'] as num).toInt() >= ((item['maxQuantity'] as num?)?.toInt() ?? 99)
-                                            ? null
-                                            : () => _update(item, (item['quantity'] as num).toInt() + 1),
-                                        icon: const Icon(Icons.add_circle_outline),
-                                      ),
-                                    ],
                                   ],
-                                ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '${money(item['unitPriceMinor'] as num?, item['currency']?.toString())} · ${money(item['lineTotalMinor'] as num?, item['currency']?.toString())}',
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      color: const Color(0xFF6B7468),
+                                    ),
+                                  ),
+                                  if (item['stockIssue'] != null)
+                                    Text(
+                                      item['stockIssue'].toString(),
+                                      style: const TextStyle(
+                                        color: Color(0xFFA63A32),
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  if (item['stockState'] == 'low_stock')
+                                    const Text(
+                                      'Low stock',
+                                      style: TextStyle(
+                                        color: Color(0xFFB26A00),
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                ],
                               ),
                             ),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text('Subtotal', style: TextStyle(color: Color(0xFF6B7468))),
-                            Text(
-                              money(cart!['itemsSubtotalMinor'] as num?, cart!['currency']?.toString()),
-                              style: const TextStyle(fontWeight: FontWeight.w800),
-                            ),
+                            if (item['isAvailable'] == false)
+                              IconButton(
+                                tooltip: 'Remove',
+                                onPressed: updating
+                                    ? null
+                                    : () => _update(item, 0),
+                                icon: const Icon(Icons.delete_outline),
+                              )
+                            else ...[
+                              IconButton(
+                                onPressed: updating
+                                    ? null
+                                    : () => _update(
+                                        item,
+                                        (item['quantity'] as num).toInt() - 1,
+                                      ),
+                                icon: Icon(
+                                  (item['quantity'] as num).toInt() <= 1
+                                      ? Icons.delete_outline
+                                      : Icons.remove_circle_outline,
+                                ),
+                              ),
+                              Text(
+                                '${item['quantity']}',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              IconButton(
+                                onPressed:
+                                    updating ||
+                                        (item['quantity'] as num).toInt() >=
+                                            ((item['maxQuantity'] as num?)
+                                                    ?.toInt() ??
+                                                99)
+                                    ? null
+                                    : () => _update(
+                                        item,
+                                        (item['quantity'] as num).toInt() + 1,
+                                      ),
+                                icon: const Icon(Icons.add_circle_outline),
+                              ),
+                            ],
                           ],
                         ),
-                        if (fulfillment['supportsPickup'] == true || fulfillment['allowsScheduling'] == true) ...[
-                          const SizedBox(height: 14),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 6,
-                            children: [
-                              if (fulfillment['supportsPickup'] == true)
-                                const _CartHint(icon: Icons.storefront_outlined, label: 'Collect in store available'),
-                              if (fulfillment['allowsScheduling'] == true && ((fulfillment['maxScheduleDays'] as num?)?.toInt() ?? 0) > 0)
-                                const _CartHint(icon: Icons.schedule, label: 'Schedule for later'),
-                            ],
-                          ),
-                        ],
-                        if (cart?['policy'] is Map && asMap(cart!['policy'])['cancellationPolicy'] != null) ...[
-                          const SizedBox(height: 12),
-                          Text(
-                            asMap(cart!['policy'])['cancellationPolicy'].toString(),
-                            style: const TextStyle(fontSize: 11, color: Color(0xFF6B7468)),
-                          ),
-                        ],
-                      ],
+                      ),
                     ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Subtotal',
+                      style: TextStyle(color: Color(0xFF6B7468)),
+                    ),
+                    Text(
+                      money(
+                        cart!['itemsSubtotalMinor'] as num?,
+                        cart!['currency']?.toString(),
+                      ),
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                  ],
+                ),
+                if (fulfillment['supportsPickup'] == true ||
+                    fulfillment['allowsScheduling'] == true) ...[
+                  const SizedBox(height: 14),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: [
+                      if (fulfillment['supportsPickup'] == true)
+                        const _CartHint(
+                          icon: Icons.storefront_outlined,
+                          label: 'Collect in store available',
+                        ),
+                      if (fulfillment['allowsScheduling'] == true &&
+                          ((fulfillment['maxScheduleDays'] as num?)?.toInt() ??
+                                  0) >
+                              0)
+                        const _CartHint(
+                          icon: Icons.schedule,
+                          label: 'Schedule for later',
+                        ),
+                    ],
+                  ),
+                ],
+                if (cart?['policy'] is Map &&
+                    asMap(cart!['policy'])['cancellationPolicy'] != null) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    asMap(cart!['policy'])['cancellationPolicy'].toString(),
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Color(0xFF6B7468),
+                    ),
+                  ),
+                ],
+              ],
+            ),
       bottomNavigationBar: empty
           ? null
           : SafeArea(
@@ -2795,7 +3458,9 @@ class _CartScreenState extends State<CartScreen> {
                           );
                           if (placed == true && mounted) navigator.pop();
                         },
-                  child: Text('Checkout · ${money(cart!['itemsSubtotalMinor'] as num?, cart!['currency']?.toString())}'),
+                  child: Text(
+                    'Checkout · ${money(cart!['itemsSubtotalMinor'] as num?, cart!['currency']?.toString())}',
+                  ),
                 ),
               ),
             ),
@@ -2804,7 +3469,11 @@ class _CartScreenState extends State<CartScreen> {
 }
 
 class CheckoutScreen extends StatefulWidget {
-  const CheckoutScreen({super.key, required this.client, required this.merchantId});
+  const CheckoutScreen({
+    super.key,
+    required this.client,
+    required this.merchantId,
+  });
 
   final ApiClient client;
   final String merchantId;
@@ -2844,19 +3513,24 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   @override
   void initState() {
     super.initState();
-    _orderKey = 'mobile-${DateTime.now().microsecondsSinceEpoch}-${identityHashCode(this)}';
+    _orderKey =
+        'mobile-${DateTime.now().microsecondsSinceEpoch}-${identityHashCode(this)}';
     _loadAddresses();
     _loadMerchant();
   }
 
   Future<void> _loadMerchant() async {
     try {
-      final result = asMap(await widget.client.get('/v1/merchants/${widget.merchantId}'));
+      final result = asMap(
+        await widget.client.get('/v1/merchants/${widget.merchantId}'),
+      );
       if (!mounted) return;
       final locations = asList(result['pickupLocations']);
       setState(() {
         merchantInfo = result;
-        pickupLocationId = pickupLocationId ?? (locations.isEmpty ? null : locations.first['id']?.toString());
+        pickupLocationId =
+            pickupLocationId ??
+            (locations.isEmpty ? null : locations.first['id']?.toString());
       });
     } catch (_) {
       // Delivery checkout still works when storefront details cannot be loaded.
@@ -2877,10 +3551,19 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       helpText: 'Choose an order date',
     );
     if (date == null || !mounted) return;
-    final time = await showTimePicker(context: context, initialTime: TimeOfDay.fromDateTime(now.add(const Duration(hours: 1))));
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(now.add(const Duration(hours: 1))),
+    );
     if (time == null || !mounted) return;
     setState(() {
-      scheduledFor = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+      scheduledFor = DateTime(
+        date.year,
+        date.month,
+        date.day,
+        time.hour,
+        time.minute,
+      );
       quote = null;
     });
   }
@@ -2907,9 +3590,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         selectedAddress = items.isEmpty
             ? null
             : items.firstWhere(
-                (address) => address['isDefault'] == true,
-                orElse: () => items.first,
-              )['id'] as String?;
+                    (address) => address['isDefault'] == true,
+                    orElse: () => items.first,
+                  )['id']
+                  as String?;
         showAddressForm = items.isEmpty;
         error = null;
       });
@@ -2966,17 +3650,23 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         'fulfillmentType': fulfillmentType,
         if (fulfillmentType == 'delivery') 'deliveryAddressId': selectedAddress,
         if (fulfillmentType == 'pickup') 'pickupLocationId': pickupLocationId,
-        if (scheduledFor != null) 'scheduledFor': scheduledFor!.toUtc().toIso8601String(),
+        if (scheduledFor != null)
+          'scheduledFor': scheduledFor!.toUtc().toIso8601String(),
         'tipMinor': tipMinor,
         if (orderInstructionsController.text.trim().isNotEmpty)
           'deliveryInstructions': orderInstructionsController.text.trim(),
-        if (appliedPromoCode != null && appliedPromoCode!.isNotEmpty) 'promotionCode': appliedPromoCode,
+        if (appliedPromoCode != null && appliedPromoCode!.isNotEmpty)
+          'promotionCode': appliedPromoCode,
       });
       if (mounted) {
         setState(() {
           quote = asMap(result);
-          final provider = asMap(asMap(result)['breakdown'])['paymentProvider']?.toString();
-          paymentMethod ??= provider == null || provider == 'disabled' ? 'cash' : provider;
+          final provider = asMap(
+            asMap(result)['breakdown'],
+          )['paymentProvider']?.toString();
+          paymentMethod ??= provider == null || provider == 'disabled'
+              ? 'cash'
+              : provider;
         });
       }
     } catch (cause) {
@@ -2994,11 +3684,13 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       error = null;
     });
     try {
-      final result = asMap(await widget.client.postQueued(
-        '/v1/orders',
-        {'quoteId': currentQuote['quoteId']},
-        {'Idempotency-Key': _orderKey},
-      ));
+      final result = asMap(
+        await widget.client.postQueued(
+          '/v1/orders',
+          {'quoteId': currentQuote['quoteId']},
+          {'Idempotency-Key': _orderKey},
+        ),
+      );
       if (!mounted) return;
       if (result['queued'] == true) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3025,11 +3717,13 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       error = null;
     });
     try {
-      final payment = asMap(await widget.client.post(
-        '/v1/payments/orders/${currentOrder['id']}/initiate',
-        {'method': method},
-        {'Idempotency-Key': 'mobile-${currentOrder['id']}-$method'},
-      ));
+      final payment = asMap(
+        await widget.client.post(
+          '/v1/payments/orders/${currentOrder['id']}/initiate',
+          {'method': method},
+          {'Idempotency-Key': 'mobile-${currentOrder['id']}-$method'},
+        ),
+      );
       if (method == 'sandbox') {
         await widget.client.post(
           '/v1/payments/sandbox/${payment['paymentId']}/complete',
@@ -3039,24 +3733,41 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       if (method == 'stripe' || method == 'telebirr' || method == 'chapa') {
         final checkoutUrl = payment['checkoutUrl']?.toString();
         if (checkoutUrl == null || checkoutUrl.isEmpty) {
-          throw StateError('The payment provider did not return a checkout URL.');
+          throw StateError(
+            'The payment provider did not return a checkout URL.',
+          );
         }
-        final launched = await launchUrl(Uri.parse(checkoutUrl), mode: LaunchMode.externalApplication);
+        final launched = await launchUrl(
+          Uri.parse(checkoutUrl),
+          mode: LaunchMode.externalApplication,
+        );
         if (!launched) throw StateError('Could not open the payment page.');
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(method == 'telebirr'
-              ? 'Complete the Telebirr payment, then return and refresh the status.'
-              : 'Complete the card payment in your browser, then return and refresh the status.')),
+          SnackBar(
+            content: Text(
+              method == 'telebirr'
+                  ? 'Complete the Telebirr payment, then return and refresh the status.'
+                  : 'Complete the card payment in your browser, then return and refresh the status.',
+            ),
+          ),
         );
         return;
       }
-      final refreshed = await widget.client.get('/v1/orders/${currentOrder['id']}');
+      final refreshed = await widget.client.get(
+        '/v1/orders/${currentOrder['id']}',
+      );
       if (mounted) setState(() => order = asMap(refreshed));
       await _loadPayments(currentOrder['id'].toString());
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(method == 'cash' ? 'Cash payment selected. Pay the courier on delivery.' : 'Sandbox payment completed.')),
+        SnackBar(
+          content: Text(
+            method == 'cash'
+                ? 'Cash payment selected. Pay the courier on delivery.'
+                : 'Sandbox payment completed.',
+          ),
+        ),
       );
     } catch (cause) {
       if (mounted) setState(() => error = cause.toString());
@@ -3083,7 +3794,9 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       error = null;
     });
     try {
-      final refreshed = await widget.client.get('/v1/orders/${currentOrder['id']}');
+      final refreshed = await widget.client.get(
+        '/v1/orders/${currentOrder['id']}',
+      );
       if (mounted) setState(() => order = asMap(refreshed));
       await _loadPayments(currentOrder['id'].toString());
     } catch (cause) {
@@ -3097,7 +3810,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     if (loading) {
-      return Scaffold(appBar: AppBar(title: const Text('Checkout')), body: const Center(child: CircularProgressIndicator()));
+      return Scaffold(
+        appBar: AppBar(title: const Text('Checkout')),
+        body: const Center(child: CircularProgressIndicator()),
+      );
     }
     if (order != null) {
       return _orderView(theme);
@@ -3107,14 +3823,30 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 120),
         children: [
-          if (error != null) ...[ErrorBanner(message: error!), const SizedBox(height: 14)],
+          if (error != null) ...[
+            ErrorBanner(message: error!),
+            const SizedBox(height: 14),
+          ],
           if (_fulfillment['supportsPickup'] == true) ...[
-            Text('How do you want it?', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+            Text(
+              'How do you want it?',
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w800,
+              ),
+            ),
             const SizedBox(height: 10),
             SegmentedButton<String>(
               segments: const [
-                ButtonSegment(value: 'delivery', icon: Icon(Icons.delivery_dining_outlined), label: Text('Delivery')),
-                ButtonSegment(value: 'pickup', icon: Icon(Icons.storefront_outlined), label: Text('Collect')),
+                ButtonSegment(
+                  value: 'delivery',
+                  icon: Icon(Icons.delivery_dining_outlined),
+                  label: Text('Delivery'),
+                ),
+                ButtonSegment(
+                  value: 'pickup',
+                  icon: Icon(Icons.storefront_outlined),
+                  label: Text('Collect'),
+                ),
               ],
               selected: {fulfillmentType},
               onSelectionChanged: (selection) {
@@ -3127,7 +3859,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             const SizedBox(height: 18),
           ],
           if (fulfillmentType == 'delivery') ...[
-            Text('Deliver to', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+            Text(
+              'Deliver to',
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w800,
+              ),
+            ),
             const SizedBox(height: 10),
             RadioGroup<String>(
               groupValue: selectedAddress,
@@ -3136,39 +3873,68 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 quote = null;
               }),
               child: Column(
-                children: addresses.map(
-                  (address) => Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: RadioListTile<String>(
-                      value: address['id'] as String,
-                      title: Text('${address['label']} · ${address['recipientName']}'),
-                      subtitle: Text(address['addressLine']?.toString() ?? ''),
-                      tileColor: const Color(0xFFFFFDF7),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                        side: const BorderSide(color: Color(0xFFD9D5C7)),
+                children: addresses
+                    .map(
+                      (address) => Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: RadioListTile<String>(
+                          value: address['id'] as String,
+                          title: Text(
+                            '${address['label']} · ${address['recipientName']}',
+                          ),
+                          subtitle: Text(
+                            address['addressLine']?.toString() ?? '',
+                          ),
+                          tileColor: const Color(0xFFFFFDF7),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                            side: const BorderSide(color: Color(0xFFD9D5C7)),
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                ).toList(),
+                    )
+                    .toList(),
               ),
             ),
             TextButton.icon(
-              onPressed: () => setState(() => showAddressForm = !showAddressForm),
-              icon: Icon(showAddressForm ? Icons.close : Icons.add_location_alt_outlined),
-              label: Text(showAddressForm ? 'Cancel new address' : 'Add a new address'),
+              onPressed: () =>
+                  setState(() => showAddressForm = !showAddressForm),
+              icon: Icon(
+                showAddressForm ? Icons.close : Icons.add_location_alt_outlined,
+              ),
+              label: Text(
+                showAddressForm ? 'Cancel new address' : 'Add a new address',
+              ),
             ),
             if (showAddressForm) ...[
               const SizedBox(height: 6),
-              TextField(controller: labelController, decoration: const InputDecoration(labelText: 'Label')),
+              TextField(
+                controller: labelController,
+                decoration: const InputDecoration(labelText: 'Label'),
+              ),
               const SizedBox(height: 10),
-              TextField(controller: recipientController, decoration: const InputDecoration(labelText: 'Recipient name')),
+              TextField(
+                controller: recipientController,
+                decoration: const InputDecoration(labelText: 'Recipient name'),
+              ),
               const SizedBox(height: 10),
-              TextField(controller: phoneController, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Phone (+251…)')),
+              TextField(
+                controller: phoneController,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(labelText: 'Phone (+251…)'),
+              ),
               const SizedBox(height: 10),
-              TextField(controller: addressController, decoration: const InputDecoration(labelText: 'Address line')),
+              TextField(
+                controller: addressController,
+                decoration: const InputDecoration(labelText: 'Address line'),
+              ),
               const SizedBox(height: 10),
-              TextField(controller: instructionsController, decoration: const InputDecoration(labelText: 'Delivery instructions (optional)')),
+              TextField(
+                controller: instructionsController,
+                decoration: const InputDecoration(
+                  labelText: 'Delivery instructions (optional)',
+                ),
+              ),
               const SizedBox(height: 10),
               OutlinedButton(
                 onPressed: busy ? null : _createAddress,
@@ -3176,7 +3942,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               ),
             ],
           ] else ...[
-            Text('Collect from', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+            Text(
+              'Collect from',
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w800,
+              ),
+            ),
             const SizedBox(height: 10),
             RadioGroup<String>(
               groupValue: pickupLocationId,
@@ -3185,32 +3956,43 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 quote = null;
               }),
               child: Column(
-                children: asList(merchantInfo?['pickupLocations']).map(
-                  (location) => Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: RadioListTile<String>(
-                      value: location['id'] as String,
-                      title: Text(location['name']?.toString() ?? 'Store'),
-                      subtitle: Text(location['addressLine']?.toString() ?? ''),
-                      tileColor: const Color(0xFFFFFDF7),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                        side: const BorderSide(color: Color(0xFFD9D5C7)),
+                children: asList(merchantInfo?['pickupLocations'])
+                    .map(
+                      (location) => Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: RadioListTile<String>(
+                          value: location['id'] as String,
+                          title: Text(location['name']?.toString() ?? 'Store'),
+                          subtitle: Text(
+                            location['addressLine']?.toString() ?? '',
+                          ),
+                          tileColor: const Color(0xFFFFFDF7),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                            side: const BorderSide(color: Color(0xFFD9D5C7)),
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                ).toList(),
+                    )
+                    .toList(),
               ),
             ),
             if (_fulfillment['pickupInstructions'] != null)
               Text(
                 _fulfillment['pickupInstructions'].toString(),
-                style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFF6B7468),
+                ),
               ),
           ],
           if ((_fulfillment['maxScheduleDays'] as num? ?? 0) > 0) ...[
             const SizedBox(height: 16),
-            Text('When?', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+            Text(
+              'When?',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w800,
+              ),
+            ),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
@@ -3226,7 +4008,11 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 ),
                 ChoiceChip(
                   avatar: const Icon(Icons.schedule, size: 16),
-                  label: Text(scheduledFor == null ? 'Schedule for later' : formatSchedule(scheduledFor!)),
+                  label: Text(
+                    scheduledFor == null
+                        ? 'Schedule for later'
+                        : formatSchedule(scheduledFor!),
+                  ),
                   selected: scheduledFor != null,
                   onSelected: (_) => _pickSchedule(),
                 ),
@@ -3234,7 +4020,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             ),
           ],
           const SizedBox(height: 18),
-          Text('Promotion, tip and notes', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+          Text(
+            'Promotion, tip and notes',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w800,
+            ),
+          ),
           const SizedBox(height: 8),
           Row(
             children: [
@@ -3252,10 +4043,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                             onPressed: busy
                                 ? null
                                 : () => setState(() {
-                                      promoController.clear();
-                                      appliedPromoCode = null;
-                                      quote = null;
-                                    }),
+                                    promoController.clear();
+                                    appliedPromoCode = null;
+                                    quote = null;
+                                  }),
                             icon: const Icon(Icons.close),
                           ),
                   ),
@@ -3266,10 +4057,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 onPressed: busy
                     ? null
                     : () => setState(() {
-                          final code = promoController.text.trim().toUpperCase();
-                          appliedPromoCode = code.isEmpty ? null : code;
-                          quote = null;
-                        }),
+                        final code = promoController.text.trim().toUpperCase();
+                        appliedPromoCode = code.isEmpty ? null : code;
+                        quote = null;
+                      }),
                 child: const Text('Apply'),
               ),
             ],
@@ -3277,23 +4068,34 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           if (appliedPromoCode != null)
             Padding(
               padding: const EdgeInsets.only(top: 6),
-              child: Text('Promo $appliedPromoCode will be validated in the total.',
-                  style: const TextStyle(fontSize: 11, color: Color(0xFF2F6B4F))),
+              child: Text(
+                'Promo $appliedPromoCode will be validated in the total.',
+                style: const TextStyle(fontSize: 11, color: Color(0xFF2F6B4F)),
+              ),
             ),
           const SizedBox(height: 12),
-          Text('Courier tip', style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700)),
+          Text(
+            'Courier tip',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
           const SizedBox(height: 6),
           Wrap(
             spacing: 8,
             children: [0, 1000, 2000, 3000, 5000]
-                .map((amount) => ChoiceChip(
-                      label: Text(amount == 0 ? 'No tip' : 'ETB ${amount ~/ 100}'),
-                      selected: tipMinor == amount,
-                      onSelected: (_) => setState(() {
-                        tipMinor = amount;
-                        quote = null;
-                      }),
-                    ))
+                .map(
+                  (amount) => ChoiceChip(
+                    label: Text(
+                      amount == 0 ? 'No tip' : 'ETB ${amount ~/ 100}',
+                    ),
+                    selected: tipMinor == amount,
+                    onSelected: (_) => setState(() {
+                      tipMinor = amount;
+                      quote = null;
+                    }),
+                  ),
+                )
                 .toList(),
           ),
           if (fulfillmentType == 'delivery') ...[
@@ -3301,19 +4103,26 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             TextField(
               controller: orderInstructionsController,
               maxLength: 500,
-              decoration: const InputDecoration(labelText: 'Delivery instructions (optional)'),
+              decoration: const InputDecoration(
+                labelText: 'Delivery instructions (optional)',
+              ),
               onChanged: (_) => setState(() => quote = null),
             ),
           ],
           const SizedBox(height: 16),
           if (quote == null)
             FilledButton(
-              onPressed: busy || (fulfillmentType == 'delivery' ? selectedAddress == null : pickupLocationId == null)
+              onPressed:
+                  busy ||
+                      (fulfillmentType == 'delivery'
+                          ? selectedAddress == null
+                          : pickupLocationId == null)
                   ? null
                   : _quoteOrder,
               child: Text(busy ? 'Calculating…' : 'Review totals'),
             )
-          else _quoteView(theme),
+          else
+            _quoteView(theme),
         ],
       ),
     );
@@ -3325,11 +4134,18 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     final fulfillment = asMap(quote!['fulfillment']);
     final isPickup = fulfillment['type'] == 'pickup';
     final pickup = asMap(fulfillment['pickup']);
-    final scheduledAt = DateTime.tryParse(fulfillment['scheduledFor']?.toString() ?? '');
+    final scheduledAt = DateTime.tryParse(
+      fulfillment['scheduledFor']?.toString() ?? '',
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Order summary', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+        Text(
+          'Order summary',
+          style: theme.textTheme.titleLarge?.copyWith(
+            fontWeight: FontWeight.w800,
+          ),
+        ),
         const SizedBox(height: 10),
         Card(
           child: Padding(
@@ -3346,31 +4162,71 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text('${line['quantity']} × ${line['displayName']}'),
-                              if ((line['optionsLabel']?.toString() ?? '').isNotEmpty)
+                              Text(
+                                '${line['quantity']} × ${line['displayName']}',
+                              ),
+                              if ((line['optionsLabel']?.toString() ?? '')
+                                  .isNotEmpty)
                                 Text(
                                   line['optionsLabel'].toString(),
-                                  style: const TextStyle(fontSize: 11, color: Color(0xFF6B7468)),
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Color(0xFF6B7468),
+                                  ),
                                 ),
                             ],
                           ),
                         ),
-                        Text(money(line['lineTotalMinor'] as num?, line['currency']?.toString())),
+                        Text(
+                          money(
+                            line['lineTotalMinor'] as num?,
+                            line['currency']?.toString(),
+                          ),
+                        ),
                       ],
                     ),
                   ),
                 ),
                 const Divider(height: 24),
-                _amountRow('Items', breakdown['itemsSubtotalMinor'] as num?, breakdown['currency']?.toString()),
-                _amountRow(isPickup ? 'Collection' : 'Delivery', breakdown['deliveryFeeMinor'] as num?, breakdown['currency']?.toString()),
-                _amountRow('Service fee', breakdown['serviceFeeMinor'] as num?, breakdown['currency']?.toString()),
+                _amountRow(
+                  'Items',
+                  breakdown['itemsSubtotalMinor'] as num?,
+                  breakdown['currency']?.toString(),
+                ),
+                _amountRow(
+                  isPickup ? 'Collection' : 'Delivery',
+                  breakdown['deliveryFeeMinor'] as num?,
+                  breakdown['currency']?.toString(),
+                ),
+                _amountRow(
+                  'Service fee',
+                  breakdown['serviceFeeMinor'] as num?,
+                  breakdown['currency']?.toString(),
+                ),
                 if ((breakdown['tipMinor'] as num? ?? 0) > 0)
-                  _amountRow('Courier tip', breakdown['tipMinor'] as num?, breakdown['currency']?.toString()),
+                  _amountRow(
+                    'Courier tip',
+                    breakdown['tipMinor'] as num?,
+                    breakdown['currency']?.toString(),
+                  ),
                 if ((breakdown['discountMinor'] as num? ?? 0) > 0)
-                  _amountRow('Promo discount', -(breakdown['discountMinor'] as num), breakdown['currency']?.toString()),
-                _amountRow('Tax', breakdown['taxMinor'] as num?, breakdown['currency']?.toString()),
+                  _amountRow(
+                    'Promo discount',
+                    -(breakdown['discountMinor'] as num),
+                    breakdown['currency']?.toString(),
+                  ),
+                _amountRow(
+                  'Tax',
+                  breakdown['taxMinor'] as num?,
+                  breakdown['currency']?.toString(),
+                ),
                 const Divider(height: 24),
-                _amountRow('Total', breakdown['totalMinor'] as num?, breakdown['currency']?.toString(), bold: true),
+                _amountRow(
+                  'Total',
+                  breakdown['totalMinor'] as num?,
+                  breakdown['currency']?.toString(),
+                  bold: true,
+                ),
                 const SizedBox(height: 8),
                 Align(
                   alignment: Alignment.centerLeft,
@@ -3378,7 +4234,9 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     isPickup
                         ? 'Collect from ${pickup['name'] ?? 'the store'} · ready in about ${breakdown['deliveryEstimateMinutes'] ?? '—'} min'
                         : 'Estimated ${breakdown['deliveryEstimateMinutes'] ?? '—'} min · ${((breakdown['distanceMeters'] as num? ?? 0) / 1000).toStringAsFixed(1)} km',
-                    style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: const Color(0xFF6B7468),
+                    ),
                   ),
                 ),
                 if (scheduledAt != null)
@@ -3388,7 +4246,11 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                       padding: const EdgeInsets.only(top: 4),
                       child: Text(
                         'Scheduled for ${formatSchedule(scheduledAt)}',
-                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF2E7D32)),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF2E7D32),
+                        ),
                       ),
                     ),
                   ),
@@ -3397,17 +4259,24 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           ),
         ),
         const SizedBox(height: 14),
-        Text('Payment method', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+        Text(
+          'Payment method',
+          style: theme.textTheme.titleMedium?.copyWith(
+            fontWeight: FontWeight.w800,
+          ),
+        ),
         const SizedBox(height: 8),
         Wrap(
           spacing: 8,
           runSpacing: 8,
           children: _paymentOptions(breakdown).entries
-              .map((entry) => ChoiceChip(
-                    label: Text(entry.value),
-                    selected: paymentMethod == entry.key,
-                    onSelected: (_) => setState(() => paymentMethod = entry.key),
-                  ))
+              .map(
+                (entry) => ChoiceChip(
+                  label: Text(entry.value),
+                  selected: paymentMethod == entry.key,
+                  onSelected: (_) => setState(() => paymentMethod = entry.key),
+                ),
+              )
               .toList(),
         ),
         const SizedBox(height: 14),
@@ -3458,8 +4327,14 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           ),
           child: Icon(icon, color: color, size: 22),
         ),
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
-        subtitle: Text(subtitle, style: const TextStyle(fontSize: 11, color: Color(0xFF6B7468))),
+        title: Text(
+          title,
+          style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
+        ),
+        subtitle: Text(
+          subtitle,
+          style: const TextStyle(fontSize: 11, color: Color(0xFF6B7468)),
+        ),
         trailing: const Icon(Icons.chevron_right, size: 18),
       ),
     );
@@ -3486,7 +4361,11 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(Icons.check_circle_outline, color: Color(0xFF88C9A3), size: 36),
+                const Icon(
+                  Icons.check_circle_outline,
+                  color: Color(0xFF88C9A3),
+                  size: 36,
+                ),
                 const SizedBox(height: 14),
                 Text(
                   current['orderNumber']?.toString() ?? 'Order',
@@ -3504,9 +4383,17 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             ),
           ),
           const SizedBox(height: 18),
-          if (error != null) ...[ErrorBanner(message: error!), const SizedBox(height: 12)],
+          if (error != null) ...[
+            ErrorBanner(message: error!),
+            const SizedBox(height: 12),
+          ],
           if (awaitingPayment) ...[
-            Text('Select Payment Method', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+            Text(
+              'Select Payment Method',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w800,
+              ),
+            ),
             const SizedBox(height: 10),
             ..._paymentOptions(asMap(quote?['breakdown'])).entries.map(
               (entry) => _paymentTile(
@@ -3540,7 +4427,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 child: Text(
                   'Latest payment: ${label(payments.first['status']?.toString())}'
                   '${payments.first['failureReason'] == null ? '' : ' · ${payments.first['failureReason']}'}',
-                  style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468)),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF6B7468),
+                  ),
                 ),
               ),
             const SizedBox(height: 12),
@@ -3559,27 +4449,71 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Receipt', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+                  Text(
+                    'Receipt',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
                   const SizedBox(height: 10),
-                  _amountRow('Items', totals['itemsSubtotalMinor'] as num?, current['currency']?.toString()),
-                  _amountRow('Delivery', totals['deliveryFeeMinor'] as num?, current['currency']?.toString()),
-                  _amountRow('Service fee', totals['serviceFeeMinor'] as num?, current['currency']?.toString()),
+                  _amountRow(
+                    'Items',
+                    totals['itemsSubtotalMinor'] as num?,
+                    current['currency']?.toString(),
+                  ),
+                  _amountRow(
+                    'Delivery',
+                    totals['deliveryFeeMinor'] as num?,
+                    current['currency']?.toString(),
+                  ),
+                  _amountRow(
+                    'Service fee',
+                    totals['serviceFeeMinor'] as num?,
+                    current['currency']?.toString(),
+                  ),
                   if ((totals['discountMinor'] as num? ?? 0) > 0)
-                    _amountRow('Discount', -(totals['discountMinor'] as num), current['currency']?.toString()),
-                  _amountRow('Tax', totals['taxMinor'] as num?, current['currency']?.toString()),
+                    _amountRow(
+                      'Discount',
+                      -(totals['discountMinor'] as num),
+                      current['currency']?.toString(),
+                    ),
+                  _amountRow(
+                    'Tax',
+                    totals['taxMinor'] as num?,
+                    current['currency']?.toString(),
+                  ),
                   if ((totals['tipMinor'] as num? ?? 0) > 0)
-                    _amountRow('Courier tip', totals['tipMinor'] as num?, current['currency']?.toString()),
+                    _amountRow(
+                      'Courier tip',
+                      totals['tipMinor'] as num?,
+                      current['currency']?.toString(),
+                    ),
                   const Divider(height: 22),
-                  _amountRow('Total', totals['totalMinor'] as num?, current['currency']?.toString(), bold: true),
+                  _amountRow(
+                    'Total',
+                    totals['totalMinor'] as num?,
+                    current['currency']?.toString(),
+                    bold: true,
+                  ),
                   if (current['deliveryInstructions'] != null) ...[
                     const SizedBox(height: 10),
-                    Text('Instructions: ${current['deliveryInstructions']}',
-                        style: const TextStyle(fontSize: 12, color: Color(0xFF6B7468))),
+                    Text(
+                      'Instructions: ${current['deliveryInstructions']}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF6B7468),
+                      ),
+                    ),
                   ],
                   if (current['scheduledFor'] != null) ...[
                     const SizedBox(height: 6),
-                    Text('Scheduled: ${formatSchedule(DateTime.parse(current['scheduledFor'].toString()))}',
-                        style: const TextStyle(fontSize: 12, color: Color(0xFF2E7D32))),
+                    Text(
+                      'Scheduled: ${formatSchedule(DateTime.parse(current['scheduledFor'].toString()))}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF2E7D32),
+                      ),
+                    ),
                   ],
                 ],
               ),
@@ -3595,7 +4529,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     );
   }
 
-  Widget _amountRow(String title, num? amount, String? currency, {bool bold = false}) {
+  Widget _amountRow(
+    String title,
+    num? amount,
+    String? currency, {
+    bool bold = false,
+  }) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
@@ -3603,12 +4542,16 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           Expanded(
             child: Text(
               title,
-              style: TextStyle(fontWeight: bold ? FontWeight.w800 : FontWeight.w400),
+              style: TextStyle(
+                fontWeight: bold ? FontWeight.w800 : FontWeight.w400,
+              ),
             ),
           ),
           Text(
             money(amount, currency),
-            style: TextStyle(fontWeight: bold ? FontWeight.w800 : FontWeight.w400),
+            style: TextStyle(
+              fontWeight: bold ? FontWeight.w800 : FontWeight.w400,
+            ),
           ),
         ],
       ),
@@ -3665,11 +4608,25 @@ class _LegacyOrdersScreenState extends State<LegacyOrdersScreen> {
                 padding: const EdgeInsets.all(24),
                 child: Column(
                   children: [
-                    const Icon(Icons.lock_clock_outlined, size: 48, color: Color(0xFFE8613D)),
+                    const Icon(
+                      Icons.lock_clock_outlined,
+                      size: 48,
+                      color: Color(0xFFE8613D),
+                    ),
                     const SizedBox(height: 12),
-                    const Text('Session Expired', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
+                    const Text(
+                      'Session Expired',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 18,
+                      ),
+                    ),
                     const SizedBox(height: 6),
-                    const Text('Please sign in again to view your active orders and delivery history.', textAlign: TextAlign.center, style: TextStyle(color: Color(0xFF6B7468))),
+                    const Text(
+                      'Please sign in again to view your active orders and delivery history.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Color(0xFF6B7468)),
+                    ),
                     const SizedBox(height: 16),
                     FilledButton(
                       onPressed: () async {
@@ -3721,7 +4678,10 @@ class _LegacyOrdersScreenState extends State<LegacyOrdersScreen> {
                   ),
                   isThreeLine: true,
                   trailing: Text(
-                    money(order['totalMinor'] as num?, order['currency']?.toString()),
+                    money(
+                      order['totalMinor'] as num?,
+                      order['currency']?.toString(),
+                    ),
                     style: const TextStyle(fontWeight: FontWeight.w800),
                   ),
                   onTap: () async {
@@ -3746,13 +4706,18 @@ class _LegacyOrdersScreenState extends State<LegacyOrdersScreen> {
 }
 
 class LegacyOrderDetailScreen extends StatefulWidget {
-  const LegacyOrderDetailScreen({super.key, required this.client, required this.orderId});
+  const LegacyOrderDetailScreen({
+    super.key,
+    required this.client,
+    required this.orderId,
+  });
 
   final ApiClient client;
   final String orderId;
 
   @override
-  State<LegacyOrderDetailScreen> createState() => _LegacyOrderDetailScreenState();
+  State<LegacyOrderDetailScreen> createState() =>
+      _LegacyOrderDetailScreenState();
 }
 
 class _LegacyOrderDetailScreenState extends State<LegacyOrderDetailScreen> {
@@ -3850,8 +4815,14 @@ class _LegacyOrderDetailScreenState extends State<LegacyOrderDetailScreen> {
           decoration: const InputDecoration(labelText: 'Reason'),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Keep order')),
-          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Cancel order')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Keep order'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Cancel order'),
+          ),
         ],
       ),
     );
@@ -3867,7 +4838,11 @@ class _LegacyOrderDetailScreenState extends State<LegacyOrderDetailScreen> {
       error = null;
     });
     try {
-      final result = asMap(await widget.client.postQueued('/v1/orders/${widget.orderId}/cancel', {'reason': reason}));
+      final result = asMap(
+        await widget.client.postQueued('/v1/orders/${widget.orderId}/cancel', {
+          'reason': reason,
+        }),
+      );
       if (!mounted) return;
       if (result['queued'] == true) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3903,21 +4878,44 @@ class _LegacyOrderDetailScreenState extends State<LegacyOrderDetailScreen> {
         return StatefulBuilder(
           builder: (sheetContext, setSheetState) {
             return Padding(
-              padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + MediaQuery.of(sheetContext).viewInsets.bottom),
+              padding: EdgeInsets.fromLTRB(
+                20,
+                20,
+                20,
+                20 + MediaQuery.of(sheetContext).viewInsets.bottom,
+              ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Report Delivery Issue', style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+                  Text(
+                    'Report Delivery Issue',
+                    style: Theme.of(sheetContext).textTheme.titleLarge
+                        ?.copyWith(fontWeight: FontWeight.w800),
+                  ),
                   const SizedBox(height: 6),
-                  const Text('Select an issue category and describe what happened.', style: TextStyle(color: Color(0xFF6B7468), fontSize: 13)),
+                  const Text(
+                    'Select an issue category and describe what happened.',
+                    style: TextStyle(color: Color(0xFF6B7468), fontSize: 13),
+                  ),
                   const SizedBox(height: 14),
                   DropdownButtonFormField<String>(
                     initialValue: selectedCategory,
-                    decoration: const InputDecoration(labelText: 'Issue Category'),
-                    items: categories.entries.map((entry) => DropdownMenuItem(value: entry.key, child: Text(entry.value))).toList(),
+                    decoration: const InputDecoration(
+                      labelText: 'Issue Category',
+                    ),
+                    items: categories.entries
+                        .map(
+                          (entry) => DropdownMenuItem(
+                            value: entry.key,
+                            child: Text(entry.value),
+                          ),
+                        )
+                        .toList(),
                     onChanged: (val) {
-                      if (val != null) setSheetState(() => selectedCategory = val);
+                      if (val != null) {
+                        setSheetState(() => selectedCategory = val);
+                      }
                     },
                   ),
                   const SizedBox(height: 12),
@@ -3926,7 +4924,8 @@ class _LegacyOrderDetailScreenState extends State<LegacyOrderDetailScreen> {
                     maxLines: 3,
                     decoration: const InputDecoration(
                       labelText: 'Describe the issue',
-                      hintText: 'Provide details to help support resolve your issue…',
+                      hintText:
+                          'Provide details to help support resolve your issue…',
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -3960,13 +4959,16 @@ class _LegacyOrderDetailScreenState extends State<LegacyOrderDetailScreen> {
         });
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Support ticket created. Our team will review your report.')),
+          const SnackBar(
+            content: Text(
+              'Support ticket created. Our team will review your report.',
+            ),
+          ),
         );
       } catch (cause) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(cause.toString())),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(cause.toString())));
       } finally {
         if (mounted) setState(() => busy = false);
       }
@@ -3983,20 +4985,35 @@ class _LegacyOrderDetailScreenState extends State<LegacyOrderDetailScreen> {
       ),
       builder: (sheetContext) {
         return Padding(
-          padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + MediaQuery.of(sheetContext).viewInsets.bottom),
+          padding: EdgeInsets.fromLTRB(
+            20,
+            20,
+            20,
+            20 + MediaQuery.of(sheetContext).viewInsets.bottom,
+          ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
                 children: [
-                  const Icon(Icons.chat_bubble_outline, color: Color(0xFFE8613D)),
+                  const Icon(
+                    Icons.chat_bubble_outline,
+                    color: Color(0xFFE8613D),
+                  ),
                   const SizedBox(width: 8),
-                  Text('Customer-Courier Chat', style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+                  Text(
+                    'Customer-Courier Chat',
+                    style: Theme.of(sheetContext).textTheme.titleLarge
+                        ?.copyWith(fontWeight: FontWeight.w800),
+                  ),
                 ],
               ),
               const SizedBox(height: 6),
-              const Text('Send instructions or notes directly to your assigned courier.', style: TextStyle(color: Color(0xFF6B7468), fontSize: 13)),
+              const Text(
+                'Send instructions or notes directly to your assigned courier.',
+                style: TextStyle(color: Color(0xFF6B7468), fontSize: 13),
+              ),
               const SizedBox(height: 14),
               TextField(
                 controller: chatController,
@@ -4009,7 +5026,8 @@ class _LegacyOrderDetailScreenState extends State<LegacyOrderDetailScreen> {
                       if (msg.isEmpty) return;
                       try {
                         await widget.client.post('/v1/support/tickets', {
-                          'subject': 'Courier message regarding order ${order?['orderNumber'] ?? ''}',
+                          'subject':
+                              'Courier message regarding order ${order?['orderNumber'] ?? ''}',
                           'category': 'delivery_instructions',
                           'orderId': widget.orderId,
                           'message': msg,
@@ -4018,7 +5036,9 @@ class _LegacyOrderDetailScreenState extends State<LegacyOrderDetailScreen> {
                         if (mounted) {
                           if (sheetContext.mounted) Navigator.pop(sheetContext);
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Message sent to courier.')),
+                            const SnackBar(
+                              content: Text('Message sent to courier.'),
+                            ),
                           );
                         }
                       } catch (err) {
@@ -4048,127 +5068,177 @@ class _LegacyOrderDetailScreenState extends State<LegacyOrderDetailScreen> {
       body: loading
           ? const Center(child: CircularProgressIndicator())
           : order == null
-              ? Padding(padding: const EdgeInsets.all(20), child: ErrorBanner(message: error ?? 'Order not found'))
-              : RefreshIndicator(
-                  onRefresh: _load,
-                  child: ListView(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 30),
-                    children: [
-                      if (error != null) ...[ErrorBanner(message: error!), const SizedBox(height: 12)],
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(18),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                order!['merchant'] is Map
-                                    ? asMap(order!['merchant'])['displayName']?.toString() ?? ''
-                                    : '',
-                                style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                '${label(order!['status']?.toString())} · ${label(order!['paymentStatus']?.toString())}',
-                                style: theme.textTheme.bodyMedium?.copyWith(color: const Color(0xFF6B7468)),
-                              ),
-                              if (order!['deliveryCode'] != null) ...[
-                                const SizedBox(height: 14),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFFF0EAD9),
-                                    borderRadius: BorderRadius.circular(10),
-                                  ),
-                                  child: Text(
-                                    'Delivery code: ${order!['deliveryCode']}',
-                                    style: const TextStyle(fontWeight: FontWeight.w800, letterSpacing: 1.2),
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
-                        ),
-                      ),
-                      if (liveTracking != null) ...[
-                        const SizedBox(height: 14),
-                        LegacyTrackingCard(tracking: liveTracking!, connected: liveConnected),
-                      ],
-                      const SizedBox(height: 14),
-                      Text('Items', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
-                      const SizedBox(height: 8),
-                      ...asList(order!['items']).map(
-                        (item) => Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          child: Row(
-                            children: [
-                              Expanded(child: Text('${item['quantity']} × ${item['displayName']}')),
-                              Text(money(item['lineTotalMinor'] as num?, order!['currency']?.toString())),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const Divider(height: 28),
-                      ..._totals(order!),
-                      const SizedBox(height: 18),
-                      Text('Timeline', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
-                      const SizedBox(height: 8),
-                      ...asList(order!['timeline']).map(
-                        (event) => Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Padding(
-                                padding: EdgeInsets.only(top: 4),
-                                child: Icon(Icons.circle, size: 8, color: Color(0xFFE8613D)),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  '${label(event['toStatus']?.toString())} · ${shortDate(event['createdAt']?.toString())}',
-                                  style: const TextStyle(fontSize: 13),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
+          ? Padding(
+              padding: const EdgeInsets.all(20),
+              child: ErrorBanner(message: error ?? 'Order not found'),
+            )
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 30),
+                children: [
+                  if (error != null) ...[
+                    ErrorBanner(message: error!),
+                    const SizedBox(height: 12),
+                  ],
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(18),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed: busy ? null : _openChat,
-                              icon: const Icon(Icons.chat_outlined, size: 18),
-                              label: const Text('Contact Courier'),
+                          Text(
+                            order!['merchant'] is Map
+                                ? asMap(
+                                        order!['merchant'],
+                                      )['displayName']?.toString() ??
+                                      ''
+                                : '',
+                            style: theme.textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w800,
                             ),
                           ),
-                          const SizedBox(width: 10),
+                          const SizedBox(height: 6),
+                          Text(
+                            '${label(order!['status']?.toString())} · ${label(order!['paymentStatus']?.toString())}',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: const Color(0xFF6B7468),
+                            ),
+                          ),
+                          if (order!['deliveryCode'] != null) ...[
+                            const SizedBox(height: 14),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 10,
+                              ),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF0EAD9),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Text(
+                                'Delivery code: ${order!['deliveryCode']}',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: 1.2,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (liveTracking != null) ...[
+                    const SizedBox(height: 14),
+                    LegacyTrackingCard(
+                      tracking: liveTracking!,
+                      connected: liveConnected,
+                    ),
+                  ],
+                  const SizedBox(height: 14),
+                  Text(
+                    'Items',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  ...asList(order!['items']).map(
+                    (item) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        children: [
                           Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed: busy ? null : _reportIssue,
-                              icon: const Icon(Icons.report_problem_outlined, size: 18),
-                              label: const Text('Report Issue'),
+                            child: Text(
+                              '${item['quantity']} × ${item['displayName']}',
+                            ),
+                          ),
+                          Text(
+                            money(
+                              item['lineTotalMinor'] as num?,
+                              order!['currency']?.toString(),
                             ),
                           ),
                         ],
                       ),
-                      if (asMap(order!['capabilities'])['canCancel'] == true) ...[
-                        const SizedBox(height: 10),
-                        SizedBox(
-                          width: double.infinity,
-                          child: OutlinedButton(
-                            onPressed: busy ? null : _cancel,
-                            style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFA63A32)),
-                            child: const Text('Cancel order'),
+                    ),
+                  ),
+                  const Divider(height: 28),
+                  ..._totals(order!),
+                  const SizedBox(height: 18),
+                  Text(
+                    'Timeline',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  ...asList(order!['timeline']).map(
+                    (event) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Padding(
+                            padding: EdgeInsets.only(top: 4),
+                            child: Icon(
+                              Icons.circle,
+                              size: 8,
+                              color: Color(0xFFE8613D),
+                            ),
                           ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '${label(event['toStatus']?.toString())} · ${shortDate(event['createdAt']?.toString())}',
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: busy ? null : _openChat,
+                          icon: const Icon(Icons.chat_outlined, size: 18),
+                          label: const Text('Contact Courier'),
                         ),
-                      ],
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: busy ? null : _reportIssue,
+                          icon: const Icon(
+                            Icons.report_problem_outlined,
+                            size: 18,
+                          ),
+                          label: const Text('Report Issue'),
+                        ),
+                      ),
                     ],
                   ),
-                ),
+                  if (asMap(order!['capabilities'])['canCancel'] == true) ...[
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton(
+                        onPressed: busy ? null : _cancel,
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFFA63A32),
+                        ),
+                        child: const Text('Cancel order'),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
     );
   }
 
@@ -4176,14 +5246,26 @@ class _LegacyOrderDetailScreenState extends State<LegacyOrderDetailScreen> {
     final totals = asMap(detail['totals']);
     final currency = detail['currency']?.toString();
     Widget row(String title, num? amount, {bool bold = false}) => Padding(
-          padding: const EdgeInsets.symmetric(vertical: 3),
-          child: Row(
-            children: [
-              Expanded(child: Text(title, style: TextStyle(fontWeight: bold ? FontWeight.w800 : FontWeight.w400))),
-              Text(money(amount, currency), style: TextStyle(fontWeight: bold ? FontWeight.w800 : FontWeight.w400)),
-            ],
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              style: TextStyle(
+                fontWeight: bold ? FontWeight.w800 : FontWeight.w400,
+              ),
+            ),
           ),
-        );
+          Text(
+            money(amount, currency),
+            style: TextStyle(
+              fontWeight: bold ? FontWeight.w800 : FontWeight.w400,
+            ),
+          ),
+        ],
+      ),
+    );
     return [
       row('Items', totals['itemsSubtotalMinor'] as num?),
       row('Delivery', totals['deliveryFeeMinor'] as num?),
@@ -4196,7 +5278,11 @@ class _LegacyOrderDetailScreenState extends State<LegacyOrderDetailScreen> {
 }
 
 class LegacyTrackingCard extends StatelessWidget {
-  const LegacyTrackingCard({super.key, required this.tracking, required this.connected});
+  const LegacyTrackingCard({
+    super.key,
+    required this.tracking,
+    required this.connected,
+  });
 
   final Map<String, dynamic> tracking;
   final bool connected;
@@ -4220,22 +5306,35 @@ class LegacyTrackingCard extends StatelessWidget {
               children: [
                 const Icon(Icons.near_me_outlined, size: 20),
                 const SizedBox(width: 8),
-                Text('Live delivery', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+                Text(
+                  'Live delivery',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
                 const Spacer(),
                 Container(
                   width: 8,
                   height: 8,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: connected ? const Color(0xFF2F6B4F) : const Color(0xFFA63A32),
+                    color: connected
+                        ? const Color(0xFF2F6B4F)
+                        : const Color(0xFFA63A32),
                   ),
                 ),
                 const SizedBox(width: 6),
-                Text(connected ? 'Live' : 'Reconnecting', style: theme.textTheme.labelSmall),
+                Text(
+                  connected ? 'Live' : 'Reconnecting',
+                  style: theme.textTheme.labelSmall,
+                ),
               ],
             ),
             const SizedBox(height: 10),
-            Text(label(tracking['status']?.toString()), style: const TextStyle(fontWeight: FontWeight.w700)),
+            Text(
+              label(tracking['status']?.toString()),
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
             if (courier['displayName'] != null) ...[
               const SizedBox(height: 6),
               Text('Courier: ${courier['displayName']}'),
@@ -4244,16 +5343,23 @@ class LegacyTrackingCard extends StatelessWidget {
               Text('Vehicle: ${label(courier['vehicleType']?.toString())}'),
             if (distance != null || eta != null) ...[
               const SizedBox(height: 8),
-              Text([
-                if (distance != null) '${(distance / 1000).toStringAsFixed(1)} km away',
-                if (eta != null) 'about $eta min',
-              ].join(' · ')),
+              Text(
+                [
+                  if (distance != null)
+                    '${(distance / 1000).toStringAsFixed(1)} km away',
+                  if (eta != null) 'about $eta min',
+                ].join(' · '),
+              ),
             ],
             if (location['lastSeenAt'] != null) ...[
               const SizedBox(height: 4),
-              Text('Location updated ${shortDate(location['lastSeenAt']?.toString())}', style: theme.textTheme.labelSmall),
+              Text(
+                'Location updated ${shortDate(location['lastSeenAt']?.toString())}',
+                style: theme.textTheme.labelSmall,
+              ),
             ],
-            if (destination['latitude'] != null && destination['longitude'] != null) ...[
+            if (destination['latitude'] != null &&
+                destination['longitude'] != null) ...[
               const SizedBox(height: 4),
               Text(
                 'Destination: ${(destination['latitude'] as num).toStringAsFixed(5)}, ${(destination['longitude'] as num).toStringAsFixed(5)}',
@@ -4262,7 +5368,10 @@ class LegacyTrackingCard extends StatelessWidget {
             ],
             if (!active) ...[
               const SizedBox(height: 8),
-              Text('Live location is paused for this order.', style: theme.textTheme.labelSmall),
+              Text(
+                'Live location is paused for this order.',
+                style: theme.textTheme.labelSmall,
+              ),
             ],
           ],
         ),
@@ -4281,13 +5390,19 @@ class _CartHint extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(color: const Color(0xFFF4F0E8), borderRadius: BorderRadius.circular(10)),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F0E8),
+        borderRadius: BorderRadius.circular(10),
+      ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(icon, size: 13, color: const Color(0xFF6B7468)),
           const SizedBox(width: 5),
-          Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+          ),
         ],
       ),
     );
@@ -4315,12 +5430,19 @@ class EmptyState extends StatelessWidget {
         children: [
           Icon(icon, size: 48, color: const Color(0xFFB7B3AB)),
           const SizedBox(height: 14),
-          Text(title, style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+          Text(
+            title,
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w800,
+            ),
+          ),
           const SizedBox(height: 5),
           Text(
             message,
             textAlign: TextAlign.center,
-            style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF6B7468)),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: const Color(0xFF6B7468),
+            ),
           ),
         ],
       ),
@@ -4344,7 +5466,8 @@ class SkeletonBox extends StatefulWidget {
   State<SkeletonBox> createState() => _SkeletonBoxState();
 }
 
-class _SkeletonBoxState extends State<SkeletonBox> with SingleTickerProviderStateMixin {
+class _SkeletonBoxState extends State<SkeletonBox>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
   late final Animation<double> _animation;
 
@@ -4413,7 +5536,3 @@ class MerchantCardSkeleton extends StatelessWidget {
     );
   }
 }
-
-
-
-

@@ -935,7 +935,11 @@ class _OrderDetailScreenState extends State<OrderDetailScreen>
                       children: [
                         _OxHero(order: order, tracking: _tracking),
                         const SizedBox(height: 12),
-                        _OxMapCard(tracking: _tracking, order: order),
+                        _OxMapCard(
+                          tracking: _tracking,
+                          order: order,
+                          client: widget.client,
+                        ),
                         const SizedBox(height: 12),
                         if (asMap(order['delivery'])['courier'] is Map) ...[
                           _OxCourierCard(
@@ -1177,10 +1181,15 @@ class _OxHero extends StatelessWidget {
 }
 
 class _OxMapCard extends StatelessWidget {
-  const _OxMapCard({required this.tracking, required this.order});
+  const _OxMapCard({
+    required this.tracking,
+    required this.order,
+    required this.client,
+  });
 
   final Map<String, dynamic>? tracking;
   final Map<String, dynamic> order;
+  final ApiClient client;
 
   @override
   Widget build(BuildContext context) {
@@ -1218,35 +1227,11 @@ class _OxMapCard extends StatelessWidget {
           ),
           SizedBox(
             height: 220,
-            child: hasAnyPoint
-                ? _OxLiveMap(tracking: tracking!)
-                : Container(
-                    width: double.infinity,
-                    color: theme.colorScheme.surfaceContainerHighest.withValues(
-                      alpha: 0.45,
-                    ),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.location_searching_rounded,
-                          size: 38,
-                          color: theme.colorScheme.primary,
-                        ),
-                        const SizedBox(height: 8),
-                        const Text(
-                          'Waiting for courier location',
-                          style: TextStyle(fontWeight: FontWeight.w700),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'The map will update automatically once the courier starts moving.',
-                          textAlign: TextAlign.center,
-                          style: theme.textTheme.bodySmall,
-                        ),
-                      ],
-                    ),
-                  ),
+            child: _OxLiveMap(
+              tracking: tracking,
+              client: client,
+              hasAnyPoint: hasAnyPoint,
+            ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
@@ -1261,7 +1246,7 @@ class _OxMapCard extends StatelessWidget {
                 ],
                 const Spacer(),
                 Text(
-                  'OpenStreetMap',
+                  'OpenStreetMap · MapLibre',
                   style: theme.textTheme.labelSmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -1299,24 +1284,63 @@ class _OxLegendDot extends StatelessWidget {
 }
 
 class _OxLiveMap extends StatefulWidget {
-  const _OxLiveMap({required this.tracking});
+  const _OxLiveMap({
+    required this.tracking,
+    required this.client,
+    required this.hasAnyPoint,
+  });
 
-  final Map<String, dynamic> tracking;
+  final Map<String, dynamic>? tracking;
+  final ApiClient client;
+  final bool hasAnyPoint;
 
   @override
   State<_OxLiveMap> createState() => _OxLiveMapState();
 }
 
 class _OxLiveMapState extends State<_OxLiveMap> {
-  final MapController _controller = MapController();
+  MapLibreMapController? _map;
+  String _styleUrl = _absoluteStyle('/api/v1/maps/styles/hybrid/style.json');
+  bool _styleReady = false;
   bool _fitted = false;
-  bool _userMoved = false;
+  bool _syncing = false;
+  bool _syncQueued = false;
   int _lastSignature = 0;
 
   @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    _loadStyle();
+  }
+
+  static String _absoluteStyle(String path) {
+    final value = Uri.tryParse(path);
+    if (value != null && value.hasScheme) return path;
+    final base = Uri.parse(apiBaseUrl);
+    return base
+        .replace(
+          path: path.startsWith('/') ? path : '/$path',
+          query: null,
+          fragment: null,
+        )
+        .toString();
+  }
+
+  Future<void> _loadStyle() async {
+    try {
+      final config = asMap(await widget.client.get('/v1/maps/config'));
+      final defaultStyle = config['defaultStyle']?.toString() ?? 'hybrid';
+      final styles = asMap(config['styleUrls']);
+      final path =
+          styles[defaultStyle]?.toString() ??
+          '/api/v1/maps/styles/hybrid/style.json';
+      final url = _absoluteStyle(path);
+      if (mounted && url != _styleUrl) {
+        setState(() => _styleUrl = url);
+      }
+    } catch (_) {
+      // The fallback hybrid style remains available when config cannot load.
+    }
   }
 
   LatLng? _point(dynamic value) {
@@ -1330,184 +1354,214 @@ class _OxLiveMapState extends State<_OxLiveMap> {
     return null;
   }
 
-  List<LatLng> _allPoints() {
-    final points = <LatLng>[];
-    final route = widget.tracking['route'];
-    if (route is List) {
-      for (final item in route) {
-        final point = _point(item);
-        if (point != null) points.add(point);
-      }
-    }
-    final location = _point(asMap(widget.tracking['courier'])['location']);
-    if (location != null) points.add(location);
-    final pickup = _point(widget.tracking['pickup']);
-    if (pickup != null) points.add(pickup);
-    final destination = _point(widget.tracking['destination']);
-    if (destination != null) points.add(destination);
-    return points;
-  }
-
-  @override
-  void didUpdateWidget(covariant _OxLiveMap oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    final points = _allPoints();
-    if (points.isEmpty) return;
-    final signature =
-        points.length * 1000 +
-        points.last.latitude.round() * 7 +
-        points.last.longitude.round();
-    if (signature != _lastSignature) {
-      _lastSignature = signature;
-      if (!_userMoved) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _fit(points);
-        });
-      }
-    }
-  }
-
-  void _fit(List<LatLng> points) {
-    if (points.isEmpty) return;
-    _fitted = true;
-    if (points.length == 1) {
-      _controller.move(points.first, 15);
-      return;
-    }
-    _controller.fitCamera(
-      CameraFit.bounds(
-        bounds: LatLngBounds.fromPoints(points),
-        padding: const EdgeInsets.all(42),
-        maxZoom: 16,
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final points = _allPoints();
-    final center = points.isEmpty ? const LatLng(0, 0) : points.last;
-    final courier = _point(asMap(widget.tracking['courier'])['location']);
-    final pickup = _point(widget.tracking['pickup']);
-    final destination = _point(widget.tracking['destination']);
+  List<LatLng> _routePoints() {
+    final tracking = widget.tracking;
+    if (tracking == null) return const [];
     final route = <LatLng>[];
-    final rawRoute = widget.tracking['route'];
+    final rawRoute = tracking['route'];
     if (rawRoute is List) {
       for (final item in rawRoute) {
         final point = _point(item);
         if (point != null) route.add(point);
       }
     }
-    if (courier != null && route.isEmpty) route.add(courier);
-    if (destination != null && route.isNotEmpty) route.add(destination);
-    if (!_fitted) {
-      _fitted = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _fit(points);
-      });
-    }
-    return FlutterMap(
-      mapController: _controller,
-      options: MapOptions(
-        initialCenter: center,
-        initialZoom: 14,
-        minZoom: 3,
-        maxZoom: 18,
-        onPositionChanged: (camera, hasGesture) {
-          if (hasGesture) _userMoved = true;
-        },
-      ),
-      children: [
-        TileLayer(
-          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-          userAgentPackageName: 'com.deliveryapp.customer',
-          maxNativeZoom: 19,
-        ),
-        if (route.length > 1)
-          PolylineLayer(
-            polylines: [
-              Polyline(
-                points: route,
-                strokeWidth: 4,
-                color: const Color(0xFF0B6E99).withValues(alpha: 0.55),
-              ),
-            ],
-          ),
-        MarkerLayer(
-          markers: [
-            if (pickup != null)
-              Marker(
-                point: pickup,
-                width: 40,
-                height: 40,
-                child: _OxMapMarker(
-                  icon: Icons.storefront_rounded,
-                  color: const Color(0xFFE8613D),
-                  tooltip: 'Store',
-                ),
-              ),
-            if (destination != null)
-              Marker(
-                point: destination,
-                width: 40,
-                height: 40,
-                child: _OxMapMarker(
-                  icon: Icons.location_on_rounded,
-                  color: const Color(0xFF2E7D5B),
-                  tooltip: 'Your address',
-                ),
-              ),
-            if (courier != null)
-              Marker(
-                point: courier,
-                width: 46,
-                height: 46,
-                child: _OxMapMarker(
-                  icon: Icons.delivery_dining_rounded,
-                  color: const Color(0xFF0B6E99),
-                  tooltip: 'Courier',
-                  pulse: true,
-                ),
-              ),
-          ],
-        ),
-      ],
+    return route;
+  }
+
+  List<LatLng> _allPoints() {
+    final points = <LatLng>[];
+    final tracking = widget.tracking;
+    if (tracking == null) return points;
+    points.addAll(_routePoints());
+    final location = _point(asMap(tracking['courier'])['location']);
+    if (location != null) points.add(location);
+    final pickup = _point(tracking['pickup']);
+    if (pickup != null) points.add(pickup);
+    final destination = _point(tracking['destination']);
+    if (destination != null) points.add(destination);
+    return points;
+  }
+
+  int _signature(List<LatLng> points) {
+    if (points.isEmpty) return 0;
+    final last = points.last;
+    return Object.hash(
+      points.length,
+      (last.latitude * 100000).round(),
+      (last.longitude * 100000).round(),
     );
   }
-}
 
-class _OxMapMarker extends StatelessWidget {
-  const _OxMapMarker({
-    required this.icon,
-    required this.color,
-    required this.tooltip,
-    this.pulse = false,
-  });
+  @override
+  void didUpdateWidget(covariant _OxLiveMap oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (identical(oldWidget.tracking, widget.tracking)) return;
+    final points = _allPoints();
+    final signature = _signature(points);
+    if (signature == _lastSignature && !widget.hasAnyPoint) return;
+    _lastSignature = signature;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _sync();
+    });
+  }
 
-  final IconData icon;
-  final Color color;
-  final String tooltip;
-  final bool pulse;
+  Future<void> _sync() async {
+    final map = _map;
+    if (!_styleReady || map == null) return;
+    if (_syncing) {
+      _syncQueued = true;
+      return;
+    }
+    _syncing = true;
+    try {
+      await map.clearCircles();
+      await map.clearLines();
+      final tracking = widget.tracking;
+      if (tracking == null) return;
+      final route = _routePoints();
+      if (route.length > 1) {
+        await map.addLine(
+          LineOptions(
+            geometry: route,
+            lineColor: '#0B6E99',
+            lineWidth: 4,
+            lineOpacity: 0.55,
+            lineJoin: 'round',
+          ),
+        );
+      }
+      final pickup = _point(tracking['pickup']);
+      if (pickup != null) {
+        await map.addCircle(
+          CircleOptions(
+            geometry: pickup,
+            circleRadius: 8,
+            circleColor: '#E8613D',
+            circleStrokeColor: '#FFFFFF',
+            circleStrokeWidth: 2.5,
+          ),
+        );
+      }
+      final destination = _point(tracking['destination']);
+      if (destination != null) {
+        await map.addCircle(
+          CircleOptions(
+            geometry: destination,
+            circleRadius: 8,
+            circleColor: '#2E7D5B',
+            circleStrokeColor: '#FFFFFF',
+            circleStrokeWidth: 2.5,
+          ),
+        );
+      }
+      final courier = _point(asMap(tracking['courier'])['location']);
+      if (courier != null) {
+        await map.addCircle(
+          CircleOptions(
+            geometry: courier,
+            circleRadius: 10,
+            circleColor: '#0B6E99',
+            circleStrokeColor: '#FFFFFF',
+            circleStrokeWidth: 3,
+          ),
+        );
+      }
+      final points = _allPoints();
+      if (!_fitted && points.isNotEmpty) {
+        _fitted = true;
+        await _fit(map, points);
+      }
+    } catch (_) {
+      // Keep the last usable map state when an annotation update fails.
+    } finally {
+      _syncing = false;
+      if (_syncQueued && mounted) {
+        _syncQueued = false;
+        await _sync();
+      }
+    }
+  }
+
+  Future<void> _fit(MapLibreMapController map, List<LatLng> points) async {
+    if (points.length == 1) {
+      await map.animateCamera(
+        CameraUpdate.newLatLngZoom(points.first, 15),
+        duration: const Duration(milliseconds: 450),
+      );
+      return;
+    }
+    var south = points.first.latitude;
+    var north = points.first.latitude;
+    var west = points.first.longitude;
+    var east = points.first.longitude;
+    for (final point in points.skip(1)) {
+      south = point.latitude < south ? point.latitude : south;
+      north = point.latitude > north ? point.latitude : north;
+      west = point.longitude < west ? point.longitude : west;
+      east = point.longitude > east ? point.longitude : east;
+    }
+    await map.animateCamera(
+      CameraUpdate.newLatLngBounds(
+        LatLngBounds(
+          southwest: LatLng(south, west),
+          northeast: LatLng(north, east),
+        ),
+        left: 42,
+        right: 42,
+        top: 42,
+        bottom: 42,
+      ),
+      duration: const Duration(milliseconds: 450),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      child: Container(
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-          border: Border.all(color: Colors.white, width: 2.5),
-          boxShadow: [
-            BoxShadow(
-              color: color.withValues(alpha: pulse ? 0.45 : 0.25),
-              blurRadius: pulse ? 14 : 8,
-              spreadRadius: pulse ? 3 : 1,
-            ),
-          ],
+    final theme = Theme.of(context);
+    return Stack(
+      children: [
+        MapLibreMap(
+          styleString: _styleUrl,
+          initialCameraPosition: const CameraPosition(
+            target: LatLng(8.9806, 38.7578),
+            zoom: 12,
+          ),
+          onMapCreated: (controller) => _map = controller,
+          onStyleLoadedCallback: () {
+            _styleReady = true;
+            _sync();
+          },
         ),
-        child: Icon(icon, color: Colors.white, size: 21),
-      ),
+        if (!widget.hasAnyPoint)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: ColoredBox(
+                color: theme.colorScheme.surface.withValues(alpha: 0.74),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.location_searching_rounded,
+                      size: 38,
+                      color: theme.colorScheme.primary,
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Waiting for courier location',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'The map will update automatically once the courier starts moving.',
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

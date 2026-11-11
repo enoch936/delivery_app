@@ -8,6 +8,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'main.dart';
+import 'navigation_screen.dart';
 
 /// Delivery execution surface for one assigned order.
 ///
@@ -250,18 +251,19 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
       case 'picked_up':
         if (!await _confirm(
           title: 'Confirm package handoff',
-          message:
-              'Confirm the merchant handed over the sealed package and the items match the order before you leave.',
+          message: 'Confirm the merchant handed over the sealed package and the items match the order before you leave.',
           confirmLabel: 'Confirm pickup',
         )) {
           return;
         }
-        await _submit('picked_up', body: {'notes': 'Package handed over by merchant'});
+        await _submit(
+          'picked_up',
+          body: {'notes': 'Package handed over by merchant'},
+        );
       case 'in_transit':
         if (!await _confirm(
           title: 'Start delivery',
-          message:
-              'The customer will be told you are on the way. Drive safely and follow the delivery instructions.',
+          message: 'The customer will be told you are on the way. Drive safely and follow the delivery instructions.',
           confirmLabel: 'Start delivery',
         )) {
           return;
@@ -272,8 +274,7 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
       case 'returned':
         if (!await _confirm(
           title: 'Confirm merchant return',
-          message:
-              'Confirm the goods were handed back to the merchant and the return is complete.',
+          message: 'Confirm the goods were handed back to the merchant and the return is complete.',
           confirmLabel: 'Confirm return',
         )) {
           return;
@@ -394,9 +395,8 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
       // Fall through to the user-facing message below.
     }
     if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(failureMessage)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(failureMessage)));
     }
   }
 
@@ -404,7 +404,9 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
     final phone = _cleanPhone(phoneValue);
     if (phone == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No permitted phone number is available.')),
+        const SnackBar(
+          content: Text('No permitted phone number is available.'),
+        ),
       );
       return;
     }
@@ -418,7 +420,9 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
     final phone = _cleanPhone(phoneValue);
     if (phone == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No permitted phone number is available.')),
+        const SnackBar(
+          content: Text('No permitted phone number is available.'),
+        ),
       );
       return;
     }
@@ -438,36 +442,23 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
     final latitude = (stop['latitude'] as num?)?.toDouble();
     final longitude = (stop['longitude'] as num?)?.toDouble();
     final address = (stop['address']?.toString() ?? '').trim();
-    if (latitude == null || longitude == null) {
-      if (address.isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$fallbackName has no map location yet.')),
-        );
-        return;
-      }
-      await _openUri(
-        Uri.parse(
-          'https://www.google.com/maps/dir/?api=1&destination=${Uri.encodeComponent(address)}',
-        ),
-        'No navigation app is available on this device.',
+    if (latitude == null && longitude == null && address.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$fallbackName has no map location yet.')),
       );
       return;
     }
-    final geo = Uri.parse('geo:$latitude,$longitude?q=$latitude,$longitude');
-    try {
-      if (await canLaunchUrl(geo)) {
-        await launchUrl(geo, mode: LaunchMode.externalApplication);
-        return;
-      }
-    } catch (_) {
-      // Fall back to the universal maps link.
-    }
-    await _openUri(
-      Uri.parse(
-        'https://www.google.com/maps/dir/?api=1&destination=$latitude,$longitude&travelmode=two_wheeler',
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => NavigationScreen(
+          client: widget.client,
+          title: fallbackName,
+          latitude: latitude,
+          longitude: longitude,
+          address: address,
+        ),
       ),
-      'No navigation app is available on this device.',
     );
   }
 
@@ -516,7 +507,10 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
                       !widget.client.connected.value)
                     Container(
                       margin: const EdgeInsets.only(bottom: 12),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
                       decoration: BoxDecoration(
                         color: const Color(0xFFFFF3D8),
                         border: Border.all(color: const Color(0xFFE7D3A4)),
@@ -524,20 +518,28 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
                       ),
                       child: Row(
                         children: [
-                          const Icon(Icons.sync, size: 18, color: Color(0xFF8A5A00)),
+                          const Icon(
+                            Icons.sync,
+                            size: 18,
+                            color: Color(0xFF8A5A00),
+                          ),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
                               !widget.client.connected.value
                                   ? 'Offline${widget.client.pendingSync.value > 0 ? ' · ${widget.client.pendingSync.value} updates pending' : '; saved delivery data available'}'
                                   : '${widget.client.pendingSync.value} update${widget.client.pendingSync.value == 1 ? '' : 's'} waiting for server confirmation',
-                              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                              style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
                           if (widget.client.pendingSync.value > 0)
                             IconButton(
                               tooltip: 'Sync pending updates',
-                              onPressed: () => unawaited(widget.client.flushQueue()),
+                              onPressed: () =>
+                                  unawaited(widget.client.flushQueue()),
                               icon: const Icon(Icons.cloud_upload_outlined),
                             ),
                         ],
@@ -685,7 +687,9 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
                     children: [
                       Container(
                         height: 4,
-                        margin: EdgeInsets.only(right: i == steps.length - 1 ? 0 : 4),
+                        margin: EdgeInsets.only(
+                          right: i == steps.length - 1 ? 0 : 4,
+                        ),
                         decoration: BoxDecoration(
                           color: steps[i].$2
                               ? const Color(0xFF88C9A3)
@@ -742,7 +746,10 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
         children: [
           Row(
             children: [
-              const Icon(Icons.assignment_return_outlined, color: Color(0xFFB26A00)),
+              const Icon(
+                Icons.assignment_return_outlined,
+                color: Color(0xFFB26A00),
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -790,7 +797,8 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
               name: pickup['name']?.toString().isNotEmpty == true
                   ? pickup['name'].toString()
                   : delivery['merchantName']?.toString() ?? 'Merchant',
-              address: pickup['address']?.toString() ??
+              address:
+                  pickup['address']?.toString() ??
                   delivery['pickupAddress']?.toString(),
               contact: pickup['contactName']?.toString(),
               phone: pickup['contactPhone'],
@@ -807,7 +815,8 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
               name: dropoff['name']?.toString().isNotEmpty == true
                   ? dropoff['name'].toString()
                   : delivery['customerName']?.toString() ?? 'Customer',
-              address: dropoff['address']?.toString() ??
+              address:
+                  dropoff['address']?.toString() ??
                   delivery['deliveryAddress']?.toString(),
               contact: dropoff['contactName']?.toString(),
               phone: dropoff['contactPhone'] ?? delivery['customerPhone'],
@@ -903,9 +912,7 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
               ),
             ),
             OutlinedButton.icon(
-              onPressed: disabled
-                  ? null
-                  : () => _message(phone, orderNumber),
+              onPressed: disabled ? null : () => _message(phone, orderNumber),
               icon: const Icon(Icons.sms_outlined, size: 16),
               label: const Text('Message'),
               style: OutlinedButton.styleFrom(
@@ -1105,7 +1112,9 @@ class _DeliveryExecutionScreenState extends State<DeliveryExecutionScreen> {
                     ),
                     Expanded(
                       child: Text(
-                        row.$2 == null ? 'Pending' : shortDate(row.$2.toString()),
+                        row.$2 == null
+                            ? 'Pending'
+                            : shortDate(row.$2.toString()),
                         style: const TextStyle(
                           fontSize: 12,
                           color: Color(0xFF6B7468),
@@ -1214,9 +1223,8 @@ class _ProofSheetState extends State<_ProofSheet> {
   }
 
   Future<void> _scanQr() async {
-    final payload = await Navigator.of(context).push<String>(
-      MaterialPageRoute(builder: (_) => const _QrScanScreen()),
-    );
+    final payload = await Navigator.of(context)
+        .push<String>(MaterialPageRoute(builder: (_) => const _QrScanScreen()));
     if (payload != null && payload.isNotEmpty && mounted) {
       setState(() {
         _qrController.text = payload;
@@ -1240,7 +1248,9 @@ class _ProofSheetState extends State<_ProofSheet> {
       if (file == null) return;
       final bytes = await file.readAsBytes();
       if (bytes.length > 480000) {
-        setState(() => _error = 'The photo is too large. Retake it and try again.');
+        setState(
+          () => _error = 'The photo is too large. Retake it and try again.',
+        );
         return;
       }
       setState(() {
@@ -1300,9 +1310,7 @@ class _ProofSheetState extends State<_ProofSheet> {
         }
         body = {'proofStorageKey': dataUrl, 'recipientName': recipient};
       default:
-        body = {
-          if (recipient.isNotEmpty) 'recipientName': recipient,
-        };
+        body = {if (recipient.isNotEmpty) 'recipientName': recipient};
     }
     if (notes.isNotEmpty) body['notes'] = notes;
     if (!mounted) return;
@@ -1377,17 +1385,15 @@ class _ProofSheetState extends State<_ProofSheet> {
                   _capturing
                       ? 'Opening camera…'
                       : _photoDataUrl == null
-                          ? 'Capture delivery photo'
-                          : 'Retake photo',
+                      ? 'Capture delivery photo'
+                      : 'Retake photo',
                 ),
               ),
             ],
             if (_mode == 'signature') ...[
               TextField(
                 controller: _recipientController,
-                decoration: const InputDecoration(
-                  labelText: 'Recipient name',
-                ),
+                decoration: const InputDecoration(labelText: 'Recipient name'),
               ),
               const SizedBox(height: 10),
               Container(
@@ -1554,7 +1560,9 @@ class _FailureSheetState extends State<_FailureSheet> {
   void _submit() {
     final notes = _notesController.text.trim();
     if (_reason['requiresNotes'] == true && notes.length < 10) {
-      setState(() => _error = 'Describe what happened in at least 10 characters.');
+      setState(
+        () => _error = 'Describe what happened in at least 10 characters.',
+      );
       return;
     }
     Navigator.of(context).pop(<String, Object?>{
@@ -1603,7 +1611,9 @@ class _FailureSheetState extends State<_FailureSheet> {
                 setState(() {
                   _code = value;
                   _returnRequired =
-                      _reasons.firstWhere((reason) => reason['code'] == value)['requiresReturn']!
+                      _reasons.firstWhere(
+                            (reason) => reason['code'] == value,
+                          )['requiresReturn']!
                           as bool;
                   _error = null;
                 });
@@ -1802,10 +1812,14 @@ class _SignaturePadState extends State<_SignaturePad> {
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
           onPanStart: (details) {
-            setState(() => widget.model.start(normalize(details.localPosition)));
+            setState(
+              () => widget.model.start(normalize(details.localPosition)),
+            );
           },
           onPanUpdate: (details) {
-            setState(() => widget.model.extend(normalize(details.localPosition)));
+            setState(
+              () => widget.model.extend(normalize(details.localPosition)),
+            );
           },
           onPanEnd: (_) => widget.model.end(),
           child: CustomPaint(

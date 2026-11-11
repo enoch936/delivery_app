@@ -68,6 +68,55 @@ export class BusinessService {
     };
   }
 
+  async costCenters(userId: string, accountId: string) {
+    await this.requireMember(userId, accountId);
+    const result = await this.database.query(
+      `SELECT id, code, display_name, is_active, created_at, updated_at
+       FROM business_cost_centers WHERE business_account_id = $1 ORDER BY code ASC`,
+      [accountId]
+    );
+    return {
+      items: result.rows.map((row) => ({
+        id: row.id as string,
+        code: row.code as string,
+        displayName: row.display_name as string,
+        isActive: row.is_active as boolean,
+        createdAt: (row.created_at as Date).toISOString(),
+        updatedAt: (row.updated_at as Date).toISOString()
+      }))
+    };
+  }
+
+  async createCostCenter(userId: string, accountId: string, input: Readonly<{ code: string; displayName: string }>) {
+    const membership = await this.requireMember(userId, accountId);
+    if (!["owner", "admin"].includes(membership.role)) {
+      throw new ForbiddenException("Only business owners and admins can manage cost centers.");
+    }
+    const existing = await this.database.query(
+      "SELECT 1 FROM business_cost_centers WHERE business_account_id = $1 AND code = $2",
+      [accountId, input.code]
+    );
+    if ((existing.rowCount ?? 0) > 0) throw new ConflictException("This cost center code already exists.");
+    const result = await this.database.query<{ id: string; code: string; display_name: string; created_at: Date }>(
+      `INSERT INTO business_cost_centers (business_account_id, code, display_name)
+       VALUES ($1,$2,$3) RETURNING id, code, display_name, created_at`,
+      [accountId, input.code, input.displayName]
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error("Cost center creation failed.");
+    await this.audit.record({
+      actorUserId: userId, action: "business.cost_center_created", entityType: "business_cost_center",
+      entityId: row.id, requestId: null, metadata: { businessAccountId: accountId, code: row.code }
+    });
+    return {
+      id: row.id,
+      code: row.code,
+      displayName: row.display_name,
+      isActive: true,
+      createdAt: row.created_at.toISOString()
+    };
+  }
+
   async addMember(userId: string, accountId: string, phoneE164: string, role: "admin" | "member" | "driver") {
     const membership = await this.requireMember(userId, accountId);
     if (!["owner", "admin"].includes(membership.role)) throw new ForbiddenException("Only business owners and admins can add members.");
@@ -551,10 +600,137 @@ export class BusinessService {
     };
   }
 
-  async review(accountId: string, actorUserId: string, decision: "approve" | "reject") {
+  async adminDetail(accountId: string) {
+    const [account, members, locations, costCenters, spend] = await Promise.all([
+      this.database.query(
+        `SELECT ba.id, ba.display_name AS name, ba.status, ba.billing_email, ba.billing_phone_e164, ba.tax_identifier,
+                ba.monthly_spend_limit_minor, ba.spending_limit_minor, ba.monthly_spending_limit_minor, ba.currency,
+                ba.verification_notes, ba.rejection_reason, ba.approved_at, ba.created_at,
+                creator.phone_e164 AS creator_phone, approver.phone_e164 AS approved_by_phone
+         FROM business_accounts ba
+         LEFT JOIN users creator ON creator.id = ba.created_by
+         LEFT JOIN users approver ON approver.id = ba.approved_by
+         WHERE ba.id = $1`,
+        [accountId]
+      ),
+      this.database.query(
+        `SELECT bm.user_id, bm.member_role, bm.joined_at, u.display_name, u.phone_e164, u.account_status
+         FROM business_members bm JOIN users u ON u.id = bm.user_id
+         WHERE bm.business_account_id = $1 ORDER BY bm.joined_at ASC`,
+        [accountId]
+      ),
+      this.database.query(
+        `SELECT id, label, address_line, contact_name, contact_phone_e164, is_billing, is_pickup,
+                ST_Y(location::geometry) AS latitude, ST_X(location::geometry) AS longitude
+         FROM business_locations WHERE business_account_id = $1 ORDER BY label`,
+        [accountId]
+      ),
+      this.database.query(
+        `SELECT id, code, display_name, is_active, created_at FROM business_cost_centers
+         WHERE business_account_id = $1 ORDER BY code`,
+        [accountId]
+      ),
+      this.database.query<{ month_spend: string; total_spend: string; total_orders: number }>(
+        `SELECT COALESCE(sum(o.total_minor) FILTER (WHERE o.created_at >= date_trunc('month', now()) AND o.status NOT IN ('CANCELLED','FAILED')),0)::text AS month_spend,
+                COALESCE(sum(o.total_minor) FILTER (WHERE o.status NOT IN ('CANCELLED','FAILED')),0)::text AS total_spend,
+                count(*)::int AS total_orders
+         FROM business_orders bo JOIN orders o ON o.id = bo.order_id WHERE bo.business_account_id = $1`,
+        [accountId]
+      )
+    ]);
+    const row = account.rows[0];
+    if (!row) throw new NotFoundException("Business account not found.");
+    const totals = spend.rows[0];
+    return {
+      id: row.id, name: row.name, status: row.status, billingEmail: row.billing_email,
+      billingPhone: row.billing_phone_e164, taxIdentifier: row.tax_identifier, currency: row.currency,
+      monthlySpendLimitMinor: row.monthly_spend_limit_minor === null ? null : Number(row.monthly_spend_limit_minor),
+      spendingLimitMinor: row.spending_limit_minor === null ? null : Number(row.spending_limit_minor),
+      monthlySpendingLimitMinor: row.monthly_spending_limit_minor === null ? null : Number(row.monthly_spending_limit_minor),
+      verificationNotes: row.verification_notes, rejectionReason: row.rejection_reason,
+      approvedAt: (row.approved_at as Date | null)?.toISOString() ?? null,
+      approvedByPhone: row.approved_by_phone, creatorPhone: row.creator_phone,
+      createdAt: (row.created_at as Date).toISOString(),
+      members: members.rows.map((member) => ({
+        userId: member.user_id, role: member.member_role, displayName: member.display_name,
+        phoneE164: member.phone_e164, accountStatus: member.account_status,
+        joinedAt: (member.joined_at as Date).toISOString()
+      })),
+      locations: locations.rows.map((location) => ({
+        id: location.id, label: location.label, addressLine: location.address_line,
+        contactName: location.contact_name, contactPhoneE164: location.contact_phone_e164,
+        isBilling: location.is_billing, isPickup: location.is_pickup,
+        latitude: location.latitude === null ? null : Number(location.latitude),
+        longitude: location.longitude === null ? null : Number(location.longitude)
+      })),
+      costCenters: costCenters.rows.map((costCenter) => ({
+        id: costCenter.id, code: costCenter.code, displayName: costCenter.display_name,
+        isActive: costCenter.is_active, createdAt: (costCenter.created_at as Date).toISOString()
+      })),
+      spend: {
+        monthSpendMinor: Number(totals?.month_spend ?? 0),
+        totalSpendMinor: Number(totals?.total_spend ?? 0),
+        totalOrders: totals?.total_orders ?? 0
+      }
+    };
+  }
+
+  async updateAdminSpendLimits(accountId: string, actorUserId: string, input: Readonly<{ spendingLimitMinor?: number | null; monthlySpendingLimitMinor?: number | null }>) {
     const result = await this.database.query(
-      `UPDATE business_accounts SET status = $2, approved_by = $3, approved_at = now(), updated_at = now() WHERE id = $1`,
-      [accountId, decision === "approve" ? "active" : "closed", actorUserId]
+      `UPDATE business_accounts SET
+         spending_limit_minor = CASE WHEN $2::boolean THEN $3::bigint ELSE spending_limit_minor END,
+         monthly_spending_limit_minor = CASE WHEN $4::boolean THEN $5::bigint ELSE monthly_spending_limit_minor END,
+         updated_at = now()
+       WHERE id = $1
+       RETURNING spending_limit_minor, monthly_spending_limit_minor`,
+      [accountId, Object.hasOwn(input, "spendingLimitMinor"), input.spendingLimitMinor ?? null,
+        Object.hasOwn(input, "monthlySpendingLimitMinor"), input.monthlySpendingLimitMinor ?? null]
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundException("Business account not found.");
+    await this.audit.record({
+      actorUserId, action: "business.spending_limits_updated", entityType: "business_account",
+      entityId: accountId, requestId: null,
+      metadata: { spendingLimitMinor: row.spending_limit_minor, monthlySpendingLimitMinor: row.monthly_spending_limit_minor }
+    });
+    return {
+      spendingLimitMinor: row.spending_limit_minor === null ? null : Number(row.spending_limit_minor),
+      monthlySpendingLimitMinor: row.monthly_spending_limit_minor === null ? null : Number(row.monthly_spending_limit_minor)
+    };
+  }
+
+  async updateAdminMemberRole(accountId: string, memberId: string, actorUserId: string, role: "admin" | "member" | "driver") {
+    const member = await this.database.query<{ member_role: string }>(
+      "SELECT member_role FROM business_members WHERE business_account_id = $1 AND user_id = $2",
+      [accountId, memberId]
+    );
+    const current = member.rows[0];
+    if (!current) throw new NotFoundException("Business member not found.");
+    if (current.member_role === "owner") throw new ConflictException("The business owner role cannot be changed here.");
+    await this.database.query(
+      "UPDATE business_members SET member_role = $3 WHERE business_account_id = $1 AND user_id = $2",
+      [accountId, memberId, role]
+    );
+    await this.audit.record({
+      actorUserId, action: "business.member_role_updated", entityType: "business_member",
+      entityId: memberId, requestId: null,
+      metadata: { businessAccountId: accountId, previousRole: current.member_role, role }
+    });
+    return { userId: memberId, role };
+  }
+
+  async review(accountId: string, actorUserId: string, decision: "approve" | "reject", input: Readonly<{ verificationNotes?: string | null | undefined; rejectionReason?: string | null | undefined }> = {}) {
+    const result = await this.database.query(
+      `UPDATE business_accounts SET
+         status = $2,
+         verification_notes = COALESCE($4, verification_notes),
+         rejection_reason = CASE WHEN $2 = 'active' THEN NULL ELSE COALESCE($5, rejection_reason) END,
+         approved_by = CASE WHEN $2 = 'active' THEN $3 ELSE approved_by END,
+         approved_at = CASE WHEN $2 = 'active' THEN now() ELSE approved_at END,
+         updated_at = now()
+       WHERE id = $1`,
+      [accountId, decision === "approve" ? "active" : "closed", actorUserId,
+        input.verificationNotes ?? null, input.rejectionReason ?? null]
     );
     if (result.rowCount === 0) throw new NotFoundException("Business account not found.");
     return { status: decision === "approve" ? "active" : "closed" };

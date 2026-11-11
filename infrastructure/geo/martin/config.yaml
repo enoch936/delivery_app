@@ -1,0 +1,24 @@
+listen_addresses: 0.0.0.0:3000
+cache_size_mb: 512
+mbtiles:
+  sources:
+    ethiopia: /data/ethiopia.mbtiles
+postgres:
+  connection_string: ${DATABASE_URL}
+  pool_size: 10
+  default_srid: 4326
+  tables:
+    building_footprints:
+      schema: public
+      table: building_footprints
+      geometry_column: geometry
+      srid: 4326
+      minzoom: 13
+      maxzoom: 16
+      extent: 4096
+      buffer: 64
+      clip_geom: true
+      properties:
+        name: text
+        building_type: text
+        verification_status: text

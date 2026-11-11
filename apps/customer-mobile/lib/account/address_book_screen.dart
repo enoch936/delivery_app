@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../main.dart';
 import 'account_ui.dart';
+import 'address_map_picker.dart';
 
 class AddressBookScreen extends StatefulWidget {
   const AddressBookScreen({super.key, required this.client});
@@ -221,6 +222,9 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
   late final TextEditingController line;
   late final TextEditingController instructions;
   late bool isDefault;
+  double? latitude;
+  double? longitude;
+  String? pinnedAddress;
   bool busy = false;
 
   bool get editing => widget.address != null;
@@ -235,6 +239,8 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
     line = TextEditingController(text: address['addressLine']?.toString() ?? '');
     instructions = TextEditingController(text: address['deliveryInstructions']?.toString() ?? '');
     isDefault = address['isDefault'] == true;
+    latitude = (address['latitude'] as num?)?.toDouble();
+    longitude = (address['longitude'] as num?)?.toDouble();
   }
 
   @override
@@ -247,8 +253,32 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
     super.dispose();
   }
 
+  Future<void> pickLocation() async {
+    final selected = await Navigator.of(context).push<AddressLocation>(
+      MaterialPageRoute(
+        builder: (_) => AddressMapPickerScreen(
+          client: widget.client,
+          initialLatitude: latitude,
+          initialLongitude: longitude,
+          initialAddress: line.text.trim(),
+        ),
+      ),
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      latitude = selected.latitude;
+      longitude = selected.longitude;
+      pinnedAddress = selected.addressLine;
+      if (line.text.trim().length < 5) line.text = selected.addressLine;
+    });
+  }
+
   Future<void> save() async {
     if (!(formKey.currentState?.validate() ?? false)) return;
+    if (latitude == null || longitude == null) {
+      showAccountMessage(context, 'Pin the delivery location on the map before saving.');
+      return;
+    }
     setState(() => busy = true);
     final payload = {
       'label': label.text.trim(),
@@ -256,6 +286,8 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
       'phoneE164': phone.text.trim(),
       'addressLine': line.text.trim(),
       'deliveryInstructions': instructions.text.trim().isEmpty ? null : instructions.text.trim(),
+      'latitude': latitude,
+      'longitude': longitude,
       'isDefault': isDefault,
     };
     try {
@@ -312,6 +344,54 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
               maxLines: 2,
               decoration: const InputDecoration(labelText: 'Address', hintText: 'Building, street, area, city'),
               validator: (value) => (value ?? '').trim().length < 5 ? 'Enter a complete address.' : null,
+            ),
+            const SizedBox(height: 14),
+            InkWell(
+              onTap: busy ? null : pickLocation,
+              borderRadius: BorderRadius.circular(16),
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: latitude == null ? const Color(0xFFFFF4E8) : accountSurface,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: latitude == null ? const Color(0xFFF0A34A) : accountBorder,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      latitude == null ? Icons.add_location_alt_outlined : Icons.location_on_rounded,
+                      color: latitude == null ? const Color(0xFFB26A00) : accountAccent,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            latitude == null ? 'Pin the exact delivery point' : 'Map location pinned',
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            latitude == null
+                                ? 'Required for checkout and courier navigation.'
+                                : (pinnedAddress ?? 'Tap to adjust the pin or search again.'),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: accountMuted, fontSize: 12, height: 1.35),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Icon(
+                      latitude == null ? Icons.chevron_right_rounded : Icons.edit_location_alt_outlined,
+                      color: accountMuted,
+                    ),
+                  ],
+                ),
+              ),
             ),
             const SizedBox(height: 14),
             TextFormField(
